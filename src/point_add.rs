@@ -59,7 +59,49 @@
 use alloy_primitives::U256;
 
 use crate::builder::{Builder, Layout};
-use crate::circuit::{BitId, QubitId};
+use crate::circuit::{BitId, OperationType, QubitId};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  emit_inverse: run a closure, pop the ops it emitted, and re-emit them
+//  reversed. The closure MUST NOT allocate/free qubits or call `b.r` — it
+//  can only emit reversible Clifford+Toffoli gates on pre-allocated qubits.
+// ═══════════════════════════════════════════════════════════════════════════
+fn emit_inverse<F: FnOnce(&mut Builder)>(b: &mut Builder, f: F) {
+    let start = b.ops.len();
+    f(b);
+    let end = b.ops.len();
+    // Extract the forward slice and drop it from the builder.
+    let fwd: Vec<_> = b.ops[start..end].to_vec();
+    b.ops.truncate(start);
+    for op in fwd.into_iter().rev() {
+        match op.kind {
+            OperationType::X
+            | OperationType::Z
+            | OperationType::CX
+            | OperationType::CZ
+            | OperationType::CCX
+            | OperationType::CCZ
+            | OperationType::Swap => b.ops.push(op),
+            _ => panic!(
+                "emit_inverse: non-invertible op kind {:?} inside forward block",
+                op.kind
+            ),
+        }
+    }
+}
+
+/// Runs `compute`, then `body`, then the inverse of `compute` — the
+/// "with conjugate" pattern from qrisp. `compute` must emit only
+/// reversible gates (no alloc/free/R).
+fn conjugate<F, G>(b: &mut Builder, compute: F, body: G)
+where
+    F: Fn(&mut Builder),
+    G: FnOnce(&mut Builder),
+{
+    compute(b);
+    body(b);
+    emit_inverse(b, compute);
+}
 
 pub const N: usize = 256;
 
@@ -120,48 +162,66 @@ fn uma(b: &mut Builder, x: QubitId, y: QubitId, w: QubitId) {
 }
 
 /// In-place addition `acc += a mod 2^n` on quantum n-bit registers.
-/// * `c_in`, `z` are fresh ancilla qubits at 0. `c_in` returns to 0;
-///   `z` returns holding the n-th output carry bit (XORed into its
-///   entry value).
-/// * `a` unchanged; `acc` becomes (a + acc) mod 2^n with the top carry in `z`.
-fn cuccaro_add(b: &mut Builder, a: &[QubitId], acc: &[QubitId], c_in: QubitId, z: QubitId) {
+/// * `c_in` is a fresh ancilla qubit at 0 on entry and returns to 0.
+/// * `a` unchanged; `acc` becomes (a + acc) mod 2^n.
+/// Pure mod-2^n: the high carry is discarded (no `z` ancilla). This is
+/// honestly reversible because the last MAJ/UMA pair cancel out the
+/// carry information on `a[n-1]`.
+fn cuccaro_add(b: &mut Builder, a: &[QubitId], acc: &[QubitId], c_in: QubitId) {
     let n = a.len();
     assert_eq!(n, acc.len());
     if n == 0 { return; }
+    if n == 1 {
+        // acc[0] += a[0] + c_in  mod 2 ; c_in → 0
+        b.cx(c_in, acc[0]);
+        b.cx(a[0], acc[0]);
+        return;
+    }
 
     // Forward MAJ sweep.
     maj(b, c_in, acc[0], a[0]);
-    for i in 1..n {
+    for i in 1..n - 1 {
         maj(b, a[i - 1], acc[i], a[i]);
     }
 
-    // Output carry: a[n-1] now holds the carry-out; copy to z.
-    b.cx(a[n - 1], z);
+    // Final sum bit: sum[n-1] = acc[n-1] XOR a[n-1] XOR carry_in_to_n-1,
+    // where carry_in_to_n-1 is in a[n-2] after the MAJ sweep.
+    b.cx(a[n - 2], acc[n - 1]);
+    b.cx(a[n - 1], acc[n - 1]);
 
-    // Reverse UMA sweep.
-    for i in (1..n).rev() {
+    // Reverse UMA sweep (skips the final MAJ since we didn't do it).
+    for i in (1..n - 1).rev() {
         uma(b, a[i - 1], acc[i], a[i]);
     }
     uma(b, c_in, acc[0], a[0]);
 }
 
 /// Reverse of `cuccaro_add`: performs `acc -= a mod 2^n`.
-/// Implemented as the inverse sequence of `cuccaro_add`.
-fn cuccaro_sub(b: &mut Builder, a: &[QubitId], acc: &[QubitId], c_in: QubitId, z: QubitId) {
+/// Implemented as the exact inverse gate sequence of `cuccaro_add`.
+fn cuccaro_sub(b: &mut Builder, a: &[QubitId], acc: &[QubitId], c_in: QubitId) {
     let n = a.len();
     assert_eq!(n, acc.len());
     if n == 0 { return; }
+    if n == 1 {
+        // Inverse of (cx c_in acc; cx a acc) is the same two gates in reverse.
+        b.cx(a[0], acc[0]);
+        b.cx(c_in, acc[0]);
+        return;
+    }
 
-    // Reverse of: uma(c_in, acc[0], a[0])
-    //   original: CCX; CX(w,x); CX(x,y)
-    //   inverse (inner): CX(x,y); CX(w,x); CCX
-    // We'll just run the `uma` / `maj` patterns backwards.
+    // Inverse of `uma(c_in, acc[0], a[0])`, then the rest of UMA sweep
+    // in reverse order.
     inv_uma(b, c_in, acc[0], a[0]);
-    for i in 1..n {
+    for i in 1..n - 1 {
         inv_uma(b, a[i - 1], acc[i], a[i]);
     }
-    b.cx(a[n - 1], z);
-    for i in (1..n).rev() {
+
+    // Inverse of the final sum writes (both CX self-inverse; reverse order).
+    b.cx(a[n - 1], acc[n - 1]);
+    b.cx(a[n - 2], acc[n - 1]);
+
+    // Inverse of the forward MAJ sweep.
+    for i in (1..n - 1).rev() {
         inv_maj(b, a[i - 1], acc[i], a[i]);
     }
     inv_maj(b, c_in, acc[0], a[0]);
@@ -260,13 +320,44 @@ fn mod_add_qq(b: &mut Builder, acc: &[QubitId], a: &[QubitId], p: U256) {
     let (acc_ext, acc_ovf) = ext_reg(b, acc);
     let (a_ext, a_ovf) = ext_reg(b, a);
 
-    // (n+1)-bit add.
+    // (n+1)-bit add. acc_ext ∈ [0, 2p) ⊂ [0, 2^{n+1}).
     add_nbit_qq(b, &a_ext, &acc_ext);
-    // acc_ext is in [0, 2p) ⊂ [0, 2^{n+1}). Subtract p.
+
+    // Compute `ge = (sum >= p)` into a fresh non-aliased flag via a
+    // non-destructive sub/read/add-back. This avoids the aliasing bug
+    // where acc_ovf doubles as the reduction control and the target of
+    // the reduction's top bit.
+    let ge = b.alloc_qubit();
     sub_nbit_const(b, &acc_ext, p);
-    // Sign bit (acc_ovf) = 1 iff we went negative. Conditionally add p.
-    cadd_nbit_const(b, &acc_ext, p, acc_ovf);
-    // acc_ovf is now 0.
+    // acc_ovf == 1 iff sum < p. ge := !acc_ovf.
+    b.x(acc_ovf);
+    b.cx(acc_ovf, ge);
+    b.x(acc_ovf);
+    add_nbit_const(b, &acc_ext, p);
+    // Now acc_ext == sum, acc_ovf == 0 again.
+
+    // Conditional subtract p using the non-aliased ge control.
+    csub_nbit_const(b, &acc_ext, p, ge);
+    // acc_ext is now the reduced result in [0, p); acc_ovf still 0.
+
+    // Uncompute ge via the identity: ge = (acc_final >= a).
+    //   if ge==1: acc_final = sum - p, so acc_orig = sum - p - a ∈ [0,p),
+    //             so acc_final = acc_orig + p - a. Since acc_orig < p,
+    //             acc_final - a = acc_orig + p - 2a. Better proof: ge=1
+    //             means sum >= p, i.e. acc_orig + a >= p, so
+    //             acc_orig >= p - a, so acc_final = acc_orig - (p - a) ...
+    //   Simpler: in both branches, acc_final ≡ acc_orig + a (mod p) and
+    //   acc_final ∈ [0,p). Case ge=0: acc_final = acc_orig + a < p, so
+    //   acc_final >= a always (since acc_orig >= 0). Case ge=1:
+    //   acc_final = acc_orig + a - p ∈ [0,p), so acc_final < a iff
+    //   acc_orig < p - a + a - acc_final ... i.e. acc_final + p - a
+    //   = acc_orig < p, always true, so acc_orig < p means
+    //   acc_final - a < p - p = 0, hence acc_final < a.
+    // Therefore ge == (acc_final >= a). XOR that in via cmp_lt on n bits.
+    b.x(ge);
+    cmp_lt_into(b, &acc_ext[..n], &a_ext[..n], ge);
+    b.free_qubit(ge);
+
     unext_reg(b, a_ovf);
     unext_reg(b, acc_ovf);
     let _ = (acc_ext, a_ext);
@@ -363,17 +454,14 @@ fn mod_neg_inplace(b: &mut Builder, v: &[QubitId], p: U256) {
 fn add_nbit_qq(b: &mut Builder, a: &[QubitId], acc: &[QubitId]) {
     assert_eq!(a.len(), acc.len());
     let c_in = b.alloc_qubit();
-    let z = b.alloc_qubit();
-    cuccaro_add(b, a, acc, c_in, z);
-    b.free_qubit(z);
+    cuccaro_add(b, a, acc, c_in);
     b.free_qubit(c_in);
 }
 
 fn sub_nbit_qq(b: &mut Builder, a: &[QubitId], acc: &[QubitId]) {
+    assert_eq!(a.len(), acc.len());
     let c_in = b.alloc_qubit();
-    let z = b.alloc_qubit();
-    cuccaro_sub(b, a, acc, c_in, z);
-    b.free_qubit(z);
+    cuccaro_sub(b, a, acc, c_in);
     b.free_qubit(c_in);
 }
 
@@ -633,38 +721,49 @@ fn mod_mul_sub_qb(
 //  Kaliski almost-inverse
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Custom modular halving:  v ← v/2 mod p.
-/// If v odd: v := (v + p)/2; else v := v/2.
-fn mod_halve_v2(b: &mut Builder, v: &[QubitId], p: U256) {
-    let n = v.len();
-    let odd = b.alloc_qubit();
-    b.cx(v[0], odd);
-    let ovf = b.alloc_qubit();
-    let mut v_ext: Vec<QubitId> = v.to_vec(); v_ext.push(ovf);
-    cadd_nbit_const(b, &v_ext, p, odd);
-    // Now v_ext is even and in [0, 2p) ⊂ [0, 2^{n+1}).
-    // Shift right: drop bit 0, fill new top bit from ovf.
-    for i in 0..n - 1 {
-        b.swap(v[i], v[i + 1]);
-    }
-    b.swap(v[n - 1], ovf);
-    b.free_qubit(ovf);
-    b.free_qubit(odd);
+/// Fredkin (controlled swap): swap (a, t) if ctrl. Decomposed as CX/CCX/CX.
+fn cswap(b: &mut Builder, ctrl: QubitId, a: QubitId, t: QubitId) {
+    b.cx(t, a);
+    b.ccx(ctrl, a, t);
+    b.cx(t, a);
 }
 
 fn cmod_double_inplace(b: &mut Builder, v: &[QubitId], p: U256, ctrl: QubitId) {
     let n = v.len();
-    let tmp = b.alloc_qubits(n);
-    for i in 0..n { b.ccx(ctrl, v[i], tmp[i]); }
-    mod_add_qq(b, v, &tmp, p);
-    b.free_qubits_vec(&tmp);
+    let ovf = b.alloc_qubit();
+    let mut v_ext: Vec<QubitId> = v.to_vec();
+    v_ext.push(ovf);
+
+    // Conditional left-shift: if ctrl=1, v[n-1] → ovf; v[i] → v[i+1].
+    cswap(b, ctrl, v[n - 1], ovf);
+    for i in (0..n - 1).rev() {
+        cswap(b, ctrl, v[i], v[i + 1]);
+    }
+
+    csub_nbit_const(b, &v_ext, p, ctrl);
+    cadd_nbit_const(b, &v_ext, p, ovf);
+    // ovf ends at 0 by the same argument as mod_double_inplace.
+    b.free_qubit(ovf);
 }
 
+/// `cmod_halve_inplace` = exact inverse of `cmod_double_inplace`.
 fn cmod_halve_inplace(b: &mut Builder, v: &[QubitId], p: U256, ctrl: QubitId) {
-    mod_halve_v2(b, v, p);
-    b.x(ctrl);
-    cmod_double_inplace(b, v, p, ctrl);
-    b.x(ctrl);
+    let n = v.len();
+    let ovf = b.alloc_qubit();
+    let mut v_ext: Vec<QubitId> = v.to_vec();
+    v_ext.push(ovf);
+
+    // Inverse of: cadd(v_ext, p, ovf).
+    csub_nbit_const(b, &v_ext, p, ovf);
+    // Inverse of: csub(v_ext, p, ctrl).
+    cadd_nbit_const(b, &v_ext, p, ctrl);
+    // Inverse of cswap cascade (self-inverse; reversed order).
+    for i in 0..n - 1 {
+        cswap(b, ctrl, v[i], v[i + 1]);
+    }
+    cswap(b, ctrl, v[n - 1], ovf);
+
+    b.free_qubit(ovf);
 }
 
 /// flag ^= (u < v).  u and v are n-wide qubit registers, both holding values
@@ -685,34 +784,55 @@ fn cmp_lt_into(b: &mut Builder, u: &[QubitId], v: &[QubitId], flag: QubitId) {
     let _ = (ue, ve);
 }
 
-/// flag ^= (v != 0).  Computes OR of all bits.
+/// flag ^= (v != 0). Computes OR of all bits of v into a scratch ancilla,
+/// CXs into flag, then properly uncomputes the scratch.
+///
+/// We use the simple chain: `or[0] = v[0]`, `or[i] = or[i-1] OR v[i]`.
+/// OR via de Morgan: `or[i] = NOT((NOT or[i-1]) AND (NOT v[i]))`, i.e.
+///   x(or[i-1]); x(v[i]); ccx(or[i-1], v[i], or[i]); x(or[i]);
+///   x(v[i]); x(or[i-1]);
+/// Each `or[i]` is a fresh ancilla. We compute the chain, CX `or[n-1]`
+/// into `flag`, then reverse the chain to return every ancilla to |0⟩.
 fn cmp_neq_zero_into(b: &mut Builder, v: &[QubitId], flag: QubitId) {
-    // Compute or = OR(v). Then flag ^= NOT or.
-    // We build a tree of CCX-based ORs (a OR b = NOT( NOT a AND NOT b ),
-    // implementable as: c = a^b^(a&b)).  Simpler: any_set := 1 iff any bit set.
-    // Use a chain ancilla.
     let n = v.len();
-    let any = b.alloc_qubit();
-    // any := OR of v[0..n].  Implement: for each bit i, if v[i]=1 then any:=1.
-    // Reversible OR: any := any XOR v[i] XOR (any AND v[i]). With any starting 0:
-    //   iter 0: any := 0 XOR v0 XOR 0 = v0
-    //   iter 1: any := v0 XOR v1 XOR (v0 AND v1) = v0 OR v1
-    // Pattern: ccx(any, v[i], tmp_then_swap)... easier: use 2 ancillas?
-    // Simpler: any starts 0. For each i:
-    //   tmp := any AND v[i]   (ccx)
-    //   any ^= v[i]
-    //   any ^= tmp
-    //   free tmp dirty
-    for i in 0..n {
-        let t = b.alloc_qubit();
-        b.ccx(any, v[i], t);
-        b.cx(v[i], any);
-        b.cx(t, any);
-        b.free_qubit(t);
+    assert!(n > 0);
+    if n == 1 {
+        b.cx(v[0], flag);
+        return;
     }
-    // flag ^= any (which is OR(v) = (v != 0))
-    b.cx(any, flag);
-    b.free_qubit(any);
+
+    let or_chain: Vec<QubitId> = b.alloc_qubits(n - 1);
+    // or_chain[0] = v[0] OR v[1]
+    or_step(b, v[0], v[1], or_chain[0]);
+    for i in 1..n - 1 {
+        or_step(b, or_chain[i - 1], v[i + 1], or_chain[i]);
+    }
+
+    // flag ^= or_chain[n-2]
+    b.cx(or_chain[n - 2], flag);
+
+    // Uncompute.
+    for i in (1..n - 1).rev() {
+        or_step(b, or_chain[i - 1], v[i + 1], or_chain[i]);
+    }
+    or_step(b, v[0], v[1], or_chain[0]);
+
+    b.free_qubits_vec(&or_chain);
+}
+
+/// out ^= (x OR y). `out` starts 0. Uses the de-Morgan form:
+///   x(x); x(y); ccx(x, y, out); x(out); x(y); x(x);
+/// After this, out = x OR y (assuming out started at 0). Its inverse is
+/// the same gate sequence run in reverse — since it's symmetric (all gates
+/// involutions, palindromic structure), running the exact same helper
+/// again uncomputes it.
+fn or_step(b: &mut Builder, x: QubitId, y: QubitId, out: QubitId) {
+    b.x(x);
+    b.x(y);
+    b.ccx(x, y, out);
+    b.x(out);
+    b.x(y);
+    b.x(x);
 }
 
 fn kaliski_inv_inplace(b: &mut Builder, v_in: &[QubitId], p: U256) {

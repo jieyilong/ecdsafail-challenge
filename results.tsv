@@ -1,1 +1,6 @@
 timestamp	commit	toffoli	clifford	qubits	ops	correct	notes
+1776208394	dc8fe9d	0.000	0.000	2573	230996450	FAIL	WIP: fixed cuccaro mod-2^n and cmp_neq_zero uncompute
+1776208684	266f418	0.000	0.000	2573	199408066	FAIL	WIP: + cmod_double/halve honest
+1776208920	fe8875a	0.000	0.000	2573	199408066	FAIL	WIP debug
+1776208996	fe8875a	0.000	0.000	2573	199408066	FAIL	debug
+1776209728	fe8875a	0.000	0.000	2574	253351852	FAIL	mod_add_qq: alias-free reduction via ge flag
