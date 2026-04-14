@@ -25,6 +25,10 @@ use builder::{Builder, Layout};
 use circuit::{Op, QubitOrBit, analyze_ops};
 use sha3::{digest::{ExtendableOutput, Update, XofReader}, Shake256};
 use sim::Simulator;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 use weierstrass_elliptic_curve::WeierstrassEllipticCurve;
 
 // ─── secp256k1 parameters ──────────────────────────────────────────────────
@@ -45,7 +49,7 @@ fn secp256k1() -> WeierstrassEllipticCurve {
 const NUM_TESTS: usize = 64;
 
 fn run_tests(ops: &[Op], layout_regs: &[Vec<QubitOrBit>], total_qubits: u32, num_bits: u32)
-    -> (bool, u64, u64)
+    -> (bool, f64, f64, u64, u64, usize)
 {
     let curve = secp256k1();
     let mut hasher = Shake256::default();
@@ -118,12 +122,63 @@ fn run_tests(ops: &[Op], layout_regs: &[Vec<QubitOrBit>], total_qubits: u32, num
         println!("         exp =({:#x}, {:#x})", expected[i].0, expected[i].1);
     }
 
-    let avg_cliff = sim.stats.clifford_gates / n.max(1) as u64;
-    let avg_tof = sim.stats.toffoli_gates / n.max(1) as u64;
-    (ok, avg_cliff, avg_tof)
+    let denom = n.max(1) as f64;
+    let avg_cliff = sim.stats.clifford_gates as f64 / denom;
+    let avg_tof = sim.stats.toffoli_gates as f64 / denom;
+    (ok, avg_cliff, avg_tof, sim.stats.toffoli_gates, sim.stats.clifford_gates, n)
+}
+
+fn parse_note() -> String {
+    let mut args = std::env::args().skip(1);
+    let mut note = String::new();
+    while let Some(a) = args.next() {
+        if a == "--note" {
+            if let Some(v) = args.next() { note = v; }
+        } else if let Some(rest) = a.strip_prefix("--note=") {
+            note = rest.to_string();
+        }
+    }
+    note.replace('\t', " ").replace('\n', " ")
+}
+
+fn git_commit_short() -> String {
+    Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
+        .unwrap_or_else(|| "nogit".to_string())
+}
+
+fn append_results_row(
+    correct: &str,
+    avg_tof: f64,
+    avg_cliff: f64,
+    qubits: u32,
+    ops_len: usize,
+    note: &str,
+) {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let commit = git_commit_short();
+    let row = format!(
+        "{ts}\t{commit}\t{avg_tof:.3}\t{avg_cliff:.3}\t{qubits}\t{ops_len}\t{correct}\t{note}\n"
+    );
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/results.tsv");
+    match OpenOptions::new().create(true).append(true).open(path) {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(row.as_bytes()) {
+                eprintln!("warning: failed to write results.tsv: {e}");
+            }
+        }
+        Err(e) => eprintln!("warning: failed to open results.tsv: {e}"),
+    }
 }
 
 fn main() {
+    let note = parse_note();
     println!("=== quantum_ecc: secp256k1 point addition baseline ===\n");
     let curve = secp256k1();
 
@@ -152,18 +207,23 @@ fn main() {
     println!("  bits      : {}", num_bits);
 
     println!("\n-- running correctness tests --");
-    let (ok, avg_cliff, avg_tof) = run_tests(&ops, &regs, total_qubits, num_bits);
+    let (ok, avg_cliff, avg_tof, tot_tof, tot_cliff, n_shots) = run_tests(&ops, &regs, total_qubits, num_bits);
     if !ok {
         println!("\n!! correctness FAILED");
+        append_results_row("FAIL", avg_tof, avg_cliff, total_qubits, ops.len(), &note);
         std::process::exit(1);
     }
     println!("  all {} shots OK", NUM_TESTS);
 
     println!("\n=== circuit metrics (secp256k1, n=256) ===");
-    println!("  Toffoli (CCX/CCZ) : {}", avg_tof);
-    println!("  Clifford          : {}", avg_cliff);
-    println!("  Total ops         : {}", ops.len());
-    println!("  Qubits            : {}", total_qubits);
+    println!("  avg executed Toffoli  : {:.3}", avg_tof);
+    println!("  avg executed Clifford : {:.3}", avg_cliff);
+    println!("  total Toffoli (sum)   : {} over {} shots", tot_tof, n_shots);
+    println!("  total Clifford (sum)  : {}", tot_cliff);
+    println!("  emitted ops           : {}", ops.len());
+    println!("  qubits                : {}", total_qubits);
+
+    append_results_row("OK", avg_tof, avg_cliff, total_qubits, ops.len(), &note);
 
     println!("\n=== experiment OK ===");
 }
