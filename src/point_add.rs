@@ -268,7 +268,7 @@ fn unload_const(b: &mut Builder, qs: &[QubitId], c: U256) {
             b.x(qs[i]);
         }
     }
-    b.free_qubits_vec(qs);
+    b.assert_zero_and_free_vec(qs);
 }
 
 fn load_bits(b: &mut Builder, bits: &[BitId]) -> Vec<QubitId> {
@@ -285,7 +285,7 @@ fn unload_bits(b: &mut Builder, qs: &[QubitId], bits: &[BitId]) {
     for i in 0..qs.len() {
         b.x_if(qs[i], bits[i]);
     }
-    b.free_qubits_vec(qs);
+    b.assert_zero_and_free_vec(qs);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -307,7 +307,7 @@ fn ext_reg(b: &mut Builder, reg: &[QubitId]) -> (Vec<QubitId>, QubitId) {
 
 /// Release the overflow ancilla (which must be 0 on exit).
 fn unext_reg(b: &mut Builder, ovf: QubitId) {
-    b.free_qubit(ovf);
+    b.assert_zero_and_free(ovf);
 }
 
 /// `acc := (acc + a) mod p`. Both `acc` and `a` are n-bit quantum registers
@@ -356,7 +356,7 @@ fn mod_add_qq(b: &mut Builder, acc: &[QubitId], a: &[QubitId], p: U256) {
     // Therefore ge == (acc_final >= a). XOR that in via cmp_lt on n bits.
     b.x(ge);
     cmp_lt_into(b, &acc_ext[..n], &a_ext[..n], ge);
-    b.free_qubit(ge);
+    b.assert_zero_and_free(ge);
 
     unext_reg(b, a_ovf);
     unext_reg(b, acc_ovf);
@@ -387,7 +387,7 @@ fn mod_sub_qq(b: &mut Builder, acc: &[QubitId], a: &[QubitId], p: U256) {
     for i in 0..n {
         b.cx(a[i], tmp[i]);
     }
-    b.free_qubits_vec(&tmp);
+    b.assert_zero_and_free_vec(&tmp);
 }
 
 fn mod_add_qc(b: &mut Builder, acc: &[QubitId], c: U256, p: U256) {
@@ -455,14 +455,14 @@ fn add_nbit_qq(b: &mut Builder, a: &[QubitId], acc: &[QubitId]) {
     assert_eq!(a.len(), acc.len());
     let c_in = b.alloc_qubit();
     cuccaro_add(b, a, acc, c_in);
-    b.free_qubit(c_in);
+    b.assert_zero_and_free(c_in);
 }
 
 fn sub_nbit_qq(b: &mut Builder, a: &[QubitId], acc: &[QubitId]) {
     assert_eq!(a.len(), acc.len());
     let c_in = b.alloc_qubit();
     cuccaro_sub(b, a, acc, c_in);
-    b.free_qubit(c_in);
+    b.assert_zero_and_free(c_in);
 }
 
 fn add_nbit_const(b: &mut Builder, acc: &[QubitId], c: U256) {
@@ -494,7 +494,7 @@ fn csub_nbit_const(b: &mut Builder, acc: &[QubitId], c: U256, ctrl: QubitId) {
             b.cx(ctrl, a[i]);
         }
     }
-    b.free_qubits_vec(&a);
+    b.assert_zero_and_free_vec(&a);
 }
 
 fn cadd_nbit_const(b: &mut Builder, acc: &[QubitId], c: U256, ctrl: QubitId) {
@@ -515,7 +515,7 @@ fn cadd_nbit_const(b: &mut Builder, acc: &[QubitId], c: U256, ctrl: QubitId) {
             b.cx(ctrl, a[i]);
         }
     }
-    b.free_qubits_vec(&a);
+    b.assert_zero_and_free_vec(&a);
 }
 
 
@@ -558,7 +558,7 @@ fn mod_double_inplace(b: &mut Builder, v: &[QubitId], p: U256) {
     cadd_nbit_const(b, &v_ext, p, ovf);
 
     // ovf should now be 0.
-    b.free_qubit(ovf);
+    b.assert_zero_and_free(ovf);
 }
 
 /// Inverse of `mod_double_inplace`: `v := v/2 mod p` (where the "halving"
@@ -578,7 +578,7 @@ fn mod_halve_inplace(b: &mut Builder, v: &[QubitId], p: U256) {
         b.swap(v[i], v[i + 1]);
     }
     b.swap(v[n - 1], ovf);
-    b.free_qubit(ovf);
+    b.assert_zero_and_free(ovf);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -599,7 +599,7 @@ fn cmod_add_qq(b: &mut Builder, acc: &[QubitId], a: &[QubitId], ctrl: QubitId, p
     for i in 0..n {
         b.ccx(ctrl, a[i], f[i]);
     }
-    b.free_qubits_vec(&f);
+    b.assert_zero_and_free_vec(&f);
 }
 
 fn cmod_sub_qq(b: &mut Builder, acc: &[QubitId], a: &[QubitId], ctrl: QubitId, p: U256) {
@@ -612,7 +612,7 @@ fn cmod_sub_qq(b: &mut Builder, acc: &[QubitId], a: &[QubitId], ctrl: QubitId, p
     for i in 0..n {
         b.ccx(ctrl, a[i], f[i]);
     }
-    b.free_qubits_vec(&f);
+    b.assert_zero_and_free_vec(&f);
 }
 
 fn cmod_add_qq_bit(b: &mut Builder, acc: &[QubitId], a: &[QubitId], ctrl: BitId, p: U256) {
@@ -625,7 +625,7 @@ fn cmod_add_qq_bit(b: &mut Builder, acc: &[QubitId], a: &[QubitId], ctrl: BitId,
     for i in 0..n {
         b.cx_if(a[i], f[i], ctrl);
     }
-    b.free_qubits_vec(&f);
+    b.assert_zero_and_free_vec(&f);
 }
 
 fn cmod_sub_qq_bit(b: &mut Builder, acc: &[QubitId], a: &[QubitId], ctrl: BitId, p: U256) {
@@ -638,7 +638,7 @@ fn cmod_sub_qq_bit(b: &mut Builder, acc: &[QubitId], a: &[QubitId], ctrl: BitId,
     for i in 0..n {
         b.cx_if(a[i], f[i], ctrl);
     }
-    b.free_qubits_vec(&f);
+    b.assert_zero_and_free_vec(&f);
 }
 
 fn mod_mul_add_qq(
@@ -657,7 +657,7 @@ fn mod_mul_add_qq(
     }
     for _ in 0..(n - 1) { mod_halve_inplace(b, &tmp, p); }
     for i in 0..n { b.cx(x[i], tmp[i]); }
-    b.free_qubits_vec(&tmp);
+    b.assert_zero_and_free_vec(&tmp);
 }
 
 fn mod_mul_sub_qq(
@@ -676,7 +676,7 @@ fn mod_mul_sub_qq(
     }
     for _ in 0..(n - 1) { mod_halve_inplace(b, &tmp, p); }
     for i in 0..n { b.cx(x[i], tmp[i]); }
-    b.free_qubits_vec(&tmp);
+    b.assert_zero_and_free_vec(&tmp);
 }
 
 fn mod_mul_add_qb(
@@ -695,7 +695,7 @@ fn mod_mul_add_qb(
     }
     for _ in 0..(n - 1) { mod_halve_inplace(b, &tmp, p); }
     for i in 0..n { b.cx(x[i], tmp[i]); }
-    b.free_qubits_vec(&tmp);
+    b.assert_zero_and_free_vec(&tmp);
 }
 
 fn mod_mul_sub_qb(
@@ -714,7 +714,7 @@ fn mod_mul_sub_qb(
     }
     for _ in 0..(n - 1) { mod_halve_inplace(b, &tmp, p); }
     for i in 0..n { b.cx(x[i], tmp[i]); }
-    b.free_qubits_vec(&tmp);
+    b.assert_zero_and_free_vec(&tmp);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -743,7 +743,7 @@ fn cmod_double_inplace(b: &mut Builder, v: &[QubitId], p: U256, ctrl: QubitId) {
     csub_nbit_const(b, &v_ext, p, ctrl);
     cadd_nbit_const(b, &v_ext, p, ovf);
     // ovf ends at 0 by the same argument as mod_double_inplace.
-    b.free_qubit(ovf);
+    b.assert_zero_and_free(ovf);
 }
 
 /// `cmod_halve_inplace` = exact inverse of `cmod_double_inplace`.
@@ -763,7 +763,7 @@ fn cmod_halve_inplace(b: &mut Builder, v: &[QubitId], p: U256, ctrl: QubitId) {
     }
     cswap(b, ctrl, v[n - 1], ovf);
 
-    b.free_qubit(ovf);
+    b.assert_zero_and_free(ovf);
 }
 
 /// flag ^= (u < v).  u and v are n-wide qubit registers, both holding values
@@ -779,8 +779,8 @@ fn cmp_lt_into(b: &mut Builder, u: &[QubitId], v: &[QubitId], flag: QubitId) {
     sub_nbit_qq(b, &ve, &ue);
     b.cx(u_top, flag);
     add_nbit_qq(b, &ve, &ue);
-    b.free_qubit(v_top);
-    b.free_qubit(u_top);
+    b.assert_zero_and_free(v_top);
+    b.assert_zero_and_free(u_top);
     let _ = (ue, ve);
 }
 
@@ -817,7 +817,7 @@ fn cmp_neq_zero_into(b: &mut Builder, v: &[QubitId], flag: QubitId) {
     }
     or_step(b, v[0], v[1], or_chain[0]);
 
-    b.free_qubits_vec(&or_chain);
+    b.assert_zero_and_free_vec(&or_chain);
 }
 
 /// out ^= (x OR y). `out` starts 0. Uses the de-Morgan form:
@@ -898,7 +898,7 @@ fn kaliski_inv_inplace(b: &mut Builder, v_in: &[QubitId], p: U256) {
         b.x(v_even);
         b.ccx(t1, v_even, both_odd);
         b.x(v_even);
-        b.free_qubit(t1);
+        b.assert_zero_and_free(t1);
 
         // case_C = both_odd & gt   (u > v_w)
         let case_c = b.alloc_qubit();
@@ -919,7 +919,7 @@ fn kaliski_inv_inplace(b: &mut Builder, v_in: &[QubitId], p: U256) {
         b.ccx(active, v_even, t2);
         b.x(v_even);
         b.ccx(t2, u_even, case_b);
-        b.free_qubit(t2);
+        b.assert_zero_and_free(t2);
 
         // ─ Apply C: u -= v_w; r -= s; (both controlled by case_c) ─
         cmod_sub_qq(b, &u, &v_w, case_c, p);
@@ -951,17 +951,17 @@ fn kaliski_inv_inplace(b: &mut Builder, v_in: &[QubitId], p: U256) {
         cmod_halve_inplace(b, &r, p, halve_r);
         cmod_halve_inplace(b, &s, p, halve_s);
 
-        b.free_qubit(halve_v);
-        b.free_qubit(halve_u);
-        b.free_qubit(case_b);
-        b.free_qubit(case_a);
-        b.free_qubit(case_d);
-        b.free_qubit(case_c);
-        b.free_qubit(both_odd);
-        b.free_qubit(gt);
-        b.free_qubit(v_even);
-        b.free_qubit(u_even);
-        b.free_qubit(active);
+        b.assert_zero_and_free(halve_v);
+        b.assert_zero_and_free(halve_u);
+        b.assert_zero_and_free(case_b);
+        b.assert_zero_and_free(case_a);
+        b.assert_zero_and_free(case_d);
+        b.assert_zero_and_free(case_c);
+        b.assert_zero_and_free(both_odd);
+        b.assert_zero_and_free(gt);
+        b.assert_zero_and_free(v_even);
+        b.assert_zero_and_free(u_even);
+        b.assert_zero_and_free(active);
     }
 
     // After the loop, u should be 1 and r ≡ v_orig^{-1} (mod p) (or its negation;
@@ -972,10 +972,10 @@ fn kaliski_inv_inplace(b: &mut Builder, v_in: &[QubitId], p: U256) {
     // Copy r into v_in.
     for i in 0..n { b.cx(r[i], v_in[i]); }
 
-    b.free_qubits_vec(&s);
-    b.free_qubits_vec(&r);
-    b.free_qubits_vec(&v_w);
-    b.free_qubits_vec(&u);
+    b.assert_zero_and_free_vec(&s);
+    b.assert_zero_and_free_vec(&r);
+    b.assert_zero_and_free_vec(&v_w);
+    b.assert_zero_and_free_vec(&u);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1039,7 +1039,7 @@ pub fn build(b: &mut Builder) -> Layout {
     mod_neg_inplace(b, &tx, p);
     mod_add_qb(b, &tx, &ox, p);
 
-    b.free_qubits_vec(&lam);
+    b.assert_zero_and_free_vec(&lam);
 
     Layout { target_x, target_y, offset_x, offset_y }
 }
