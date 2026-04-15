@@ -26,3 +26,4 @@ timestamp	commit	toffoli	clifford	qubits	ops	correct	notes
 1776230725	fb60dee	19041786.000	35457341.000	3339	61607361	OK	session end status check
 1776232220	fb60dee	19041786.000	35457341.000	3339	61607361	OK	session kickoff sanity
 1776232419	fb60dee	19041786.000	35456317.000	3339	61606337	OK	use b_f as scratch in kaliski step 1 mcx3
+1776232896	5929552	19041786.000	35454269.000	3339	61604289	OK	reuse add_f as scratch in kaliski step 0 and step 2

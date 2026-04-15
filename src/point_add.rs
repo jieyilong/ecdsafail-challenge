@@ -1126,11 +1126,11 @@ fn kaliski_iteration(
     let n1 = r.len();  // n+1
 
     // ─── STEP 0: is_zero = (v_w == 0);  m[i] ^= (f AND is_zero);  f ^= m[i] ───
-    let is_zero = b.alloc_qubit();
-    with_eq_zero(b, v_w, is_zero, |b| {
-        b.ccx(f, is_zero, m_i);
+    // add_f is zero here (uncomputed in step 5 of the prior iter, or 0 at
+    // init). Borrow it as the is_zero scratch instead of allocating.
+    with_eq_zero(b, v_w, add_f, |b| {
+        b.ccx(f, add_f, m_i);
     });
-    b.assert_zero_and_free(is_zero);
     b.cx(m_i, f);
 
     // ─── STEP 1 ───
@@ -1150,14 +1150,14 @@ fn kaliski_iteration(
     // of f and l_gt once, apply to both targets, then uncompute.
     let l_gt = b.alloc_qubit();
     with_gt(b, u, v_w, l_gt, |b| {
-        let scratch = b.alloc_qubit();
+        // add_f is 0 at this point (not yet computed in step 4). Borrow it
+        // as the inner scratch for the (f AND l_gt) helper.
         b.x(b_f);                          // negate polarity of b_f
-        b.ccx(f, l_gt, scratch);           // scratch = f AND l_gt
-        b.ccx(scratch, b_f, a_f);          // a_f ^= scratch AND ¬b_f_orig
-        b.ccx(scratch, b_f, m_i);          // m_i ^= same
-        b.ccx(f, l_gt, scratch);           // uncompute scratch
+        b.ccx(f, l_gt, add_f);             // add_f = f AND l_gt
+        b.ccx(add_f, b_f, a_f);            // a_f ^= add_f AND ¬b_f_orig
+        b.ccx(add_f, b_f, m_i);            // m_i ^= same
+        b.ccx(f, l_gt, add_f);             // uncompute add_f
         b.x(b_f);
-        b.assert_zero_and_free(scratch);
     });
     b.assert_zero_and_free(l_gt);
 
