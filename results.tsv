@@ -15,3 +15,4 @@ timestamp	commit	toffoli	clifford	qubits	ops	correct	notes
 1776222151	34c64b9	31642202.000	55053049.812	3339	102286375	OK	with_eq_zero fusion in kaliski step 0
 1776224365	b655093	20608890.000	39266755.016	3339	69105779	OK	with_kal_inv: hold st across body, halve kaliski calls
 1776225760	8e0c9f6	19826234.000	37392622.719	3339	65360410	OK	fuse lam*(Qx-Rx) for Ry
+1776225795	a444e60	19045882.000	35458109.000	3595	61616321	OK	fuse pair-2 body: lam -= inv*(Ry+Qy)

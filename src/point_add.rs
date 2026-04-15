@@ -1524,10 +1524,15 @@ pub fn build(b: &mut Builder) -> Layout {
     // Uncompute lam using λ = (Qy + Ry) / (Qx - Rx).
     mod_sub_qb(b, &tx, &ox, p);
     mod_neg_inplace(b, &tx, p);                   // tx = Qx - Rx
-    // Pair 2: keep tx = Qx-Rx throughout, with_kal_inv supplies its inverse.
+    // Pair 2: lam -= inv * (Ry + Qy). Fuse the two muls via a temporary.
     with_kal_inv(b, &tx, p, |b, inv| {
-        mod_mul_sub_qq(b, &lam, &ty, inv, p);
-        mod_mul_sub_qb(b, &lam, inv, &oy, p);
+        let sum_y = b.alloc_qubits(N);
+        for i in 0..N { b.cx(ty[i], sum_y[i]); }     // sum_y = Ry
+        mod_add_qb(b, &sum_y, &oy, p);                // sum_y += Qy
+        mod_mul_sub_qq(b, &lam, inv, &sum_y, p);      // lam -= inv·(Ry + Qy)
+        mod_sub_qb(b, &sum_y, &oy, p);                // sum_y -= Qy
+        for i in 0..N { b.cx(ty[i], sum_y[i]); }     // sum_y = 0
+        b.assert_zero_and_free_vec(&sum_y);
     });
     mod_neg_inplace(b, &tx, p);                   // tx = -(Qx-Rx) = Rx - Qx
     mod_add_qb(b, &tx, &ox, p);                   // tx = Rx
