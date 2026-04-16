@@ -46,3 +46,5 @@ timestamp	commit	toffoli	clifford	qubits	ops	correct	notes
 1776301972	b9f45f6	18506238.000	36093692.000	3083	61693388	OK	post-refactor: builder inlined, build() returns Vec<Op>
 1776302819	e029267	18506238.000	36093692.000	3083	61693388	OK	Builder removed, struct B with pub fields
 1776303438	e584a7f	18506238.000	36093692.000	3083	61693388	OK	upstream sim.rs restored, phase check only
+1776303562	b15b7c9	18506238.000	36093692.000	3083	61693388	OK	final baseline verify
+1776312552	b15b7c9	18506238.000	36093692.000	3083	61693388	OK	all IR ops in builder + uncompute_and

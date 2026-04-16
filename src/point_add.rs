@@ -104,6 +104,33 @@ impl B {
     fn ccx_if(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::CCX; op.q_control2 = c1; op.q_control1 = c2; op.q_target = tgt; op.c_condition = cond; self.ops.push(op); }
     fn push_condition(&mut self, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::PushCondition; op.c_condition = cond; self.ops.push(op); }
     fn pop_condition(&mut self) { let mut op = Op::empty(); op.kind = OperationType::PopCondition; self.ops.push(op); }
+    // ── Measurement / phase / classical bit ops ──
+    fn hmr(&mut self, q: QubitId, c: BitId) { let mut op = Op::empty(); op.kind = OperationType::Hmr; op.q_target = q; op.c_target = c; self.ops.push(op); }
+    fn neg(&mut self) { let mut op = Op::empty(); op.kind = OperationType::Neg; self.ops.push(op); }
+    fn bit_invert(&mut self, c: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitInvert; op.c_target = c; self.ops.push(op); }
+    fn bit_store0(&mut self, c: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitStore0; op.c_target = c; self.ops.push(op); }
+    fn bit_store1(&mut self, c: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitStore1; op.c_target = c; self.ops.push(op); }
+    // ── Classically-conditioned variants for all remaining gates ──
+    fn z_if(&mut self, q: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::Z; op.q_target = q; op.c_condition = cond; self.ops.push(op); }
+    fn cz_if(&mut self, a: QubitId, b: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::CZ; op.q_control1 = a; op.q_target = b; op.c_condition = cond; self.ops.push(op); }
+    fn ccz_if(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::CCZ; op.q_control2 = c1; op.q_control1 = c2; op.q_target = tgt; op.c_condition = cond; self.ops.push(op); }
+    fn swap_if(&mut self, a: QubitId, b: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::Swap; op.q_control1 = a; op.q_target = b; op.c_condition = cond; self.ops.push(op); }
+    fn neg_if(&mut self, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::Neg; op.c_condition = cond; self.ops.push(op); }
+    fn hmr_if(&mut self, q: QubitId, c: BitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::Hmr; op.q_target = q; op.c_target = c; op.c_condition = cond; self.ops.push(op); }
+    fn bit_invert_if(&mut self, c: BitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitInvert; op.c_target = c; op.c_condition = cond; self.ops.push(op); }
+    fn bit_store0_if(&mut self, c: BitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitStore0; op.c_target = c; op.c_condition = cond; self.ops.push(op); }
+    fn bit_store1_if(&mut self, c: BitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitStore1; op.c_target = c; op.c_condition = cond; self.ops.push(op); }
+    fn r_if(&mut self, q: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::R; op.q_target = q; op.c_condition = cond; self.ops.push(op); }
+    // ── Gidney measurement-based AND uncomputation (convenience) ──
+    // Uncomputes `tgt = c1 AND c2` using HMR + phase feedback.
+    // Cost: 0 Toffoli (1 HMR + 1 classically-conditioned CZ).
+    // Precondition: tgt holds (c1 AND c2) computed by a prior CCX.
+    fn uncompute_and(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId) {
+        let m = self.alloc_bit();
+        self.hmr(tgt, m);
+        self.cz_if(c1, c2, m);
+        self.neg_if(m);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
