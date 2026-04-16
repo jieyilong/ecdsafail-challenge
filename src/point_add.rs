@@ -1873,7 +1873,7 @@ fn alloc_kaliski_state(b: &mut B, n: usize) -> KaliskiState {
         v_w: b.alloc_qubits(n),
         r: b.alloc_qubits(n + 1),
         s: b.alloc_qubits(n + 1),
-        m_hist: b.alloc_qubits(2 * n),
+        m_hist: b.alloc_qubits(2 * n - 1),
         f_flag: b.alloc_qubit(),
         a_flag: b.alloc_qubit(),
         b_flag: b.alloc_qubit(),
@@ -1916,7 +1916,7 @@ fn kaliski_forward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256) {
     b.x(st.f_flag);
 
     // ─── 2n iterations ───
-    for i in 0..(2 * n) {
+    for i in 0..(2 * n - 1) {
         kaliski_iteration(
             b, p, &st.u, &st.v_w, &st.r, &st.s,
             st.m_hist[i],
@@ -2171,7 +2171,7 @@ fn kaliski_backward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256) {
     let n = v_in.len();
 
     // ─── Reverse 2n iterations (in reverse order) ───
-    for i in (0..(2 * n)).rev() {
+    for i in (0..(2 * n - 1)).rev() {
         kaliski_iteration_backward(
             b, p, &st.u, &st.v_w, &st.r, &st.s,
             st.m_hist[i],
@@ -2212,12 +2212,12 @@ fn with_kal_inv<F: FnOnce(&mut B, &[QubitId])>(
     // and its CX-copy/cancel pair. We restore st.r[..n] after the body
     // so emit_inverse(kaliski_forward) sees its expected post-forward state.
     let r_low: Vec<QubitId> = st.r[..n].to_vec();
-    for _ in 0..(2 * n) { mod_halve_inplace_fast(b, &r_low, p); }
+    for _ in 0..(2 * n - 1) { mod_halve_inplace_fast(b, &r_low, p); }
 
     body(b, &r_low);
 
     // Un-halve st.r[..n] back to raw form.
-    for _ in 0..(2 * n) { mod_double_inplace_fast(b, &r_low, p); }
+    for _ in 0..(2 * n - 1) { mod_double_inplace_fast(b, &r_low, p); }
     // Explicit backward pass (uses measurement-based uncompute, saves
     // ~511 CCX per iteration vs the emit_inverse version).
     kaliski_backward(b, v_in, &st, p);
