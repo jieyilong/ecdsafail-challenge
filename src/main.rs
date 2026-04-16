@@ -125,12 +125,9 @@ fn run_tests(ops: &[Op], layout_regs: &[Vec<QubitOrBit>], total_qubits: u32, num
         }
 
         // ─── Forward pass ────────────────────────────────────────────────
-        // `sim.apply` enforces the R-as-assertion contract internally
-        // (modified `sim.rs`), so a dirty ancilla free is caught here.
-        if let Err(e) = sim.apply(ops) {
-            eprintln!("\n!! {e}");
-            return (false, 0.0, 0.0, 0, 0, n, Some(e));
-        }
+        // sim.rs is upstream verbatim. R randomizes the phase on dirty
+        // frees; the phase check below catches it probabilistically.
+        sim.apply(ops);
 
         // ─── Correctness check ──────────────────────────────────────────
         for shot in 0..bs {
