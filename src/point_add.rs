@@ -1479,6 +1479,190 @@ fn kaliski_forward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256) {
     // +inv become `mul_sub` with -inv, and vice versa.
 }
 
+/// Measurement-based uncompute of one or_step: uncomputes
+/// `out = x OR y` using HMR + CZ (0 Toffoli).
+/// Precondition: out = x OR y (was computed by or_step(x, y, out)).
+/// After this: out = 0.
+fn or_step_uncompute(b: &mut B, x: QubitId, y: QubitId, out: QubitId) {
+    // out currently holds NOT((NOT x) AND (NOT y)) = x OR y.
+    // Flip to get the AND value: (NOT x) AND (NOT y).
+    b.x(out);
+    // Now match the AND controls: flip x and y.
+    b.x(x);
+    b.x(y);
+    let m = b.alloc_bit();
+    b.hmr(out, m);        // measure; out → 0
+    b.cz_if(x, y, m);    // phase correction with (NOT x_orig, NOT y_orig) controls
+    b.x(y);
+    b.x(x);
+}
+
+/// Reverse of a single kaliski_iteration. Uses measurement-based
+/// uncomputation for the OR chain (with_eq_zero) and the step-4 tmp
+/// unload, saving ~511 CCX per iteration vs the gate-reversed version.
+fn kaliski_iteration_backward(
+    b: &mut B,
+    p: U256,
+    u: &[QubitId],
+    v_w: &[QubitId],
+    r: &[QubitId],
+    s: &[QubitId],
+    m_i: QubitId,
+    f: QubitId,
+    a_f: QubitId,
+    b_f: QubitId,
+    add_f: QubitId,
+) {
+    let n = u.len();
+    let n1 = r.len();
+
+    // ── Reverse STEP 10 ─────────────────────────────────────────────────
+    b.x(s[0]);
+    b.cx(s[0], a_f);
+    b.x(s[0]);
+
+    // ── Reverse STEP 9 ─────────────────────────────────────────────────
+    for j in (0..n1).rev() { cswap(b, a_f, r[j], s[j]); }
+    for j in (0..n).rev() { cswap(b, a_f, u[j], v_w[j]); }
+
+    // ── Reverse STEP 8 (Solinas fold) ───────────────────────────────────
+    {
+        let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
+        let flag = b.alloc_qubit();
+        b.cx(r[0], flag);
+        b.cx(flag, r[n1 - 1]);
+        b.x(flag);
+        cadd_nbit_const(b, r, c, flag);
+        b.x(flag);
+        b.cx(r[n1 - 1], flag);
+        b.free(flag);
+        sub_nbit_const(b, r, c);
+    }
+
+    // ── Reverse STEP 7 ─────────────────────────────────────────────────
+    shift_right_1(b, r);
+
+    // ── Reverse STEP 6 (conditional shift-right → shift-left) ───────────
+    for i in (0..(n - 1)).rev() {
+        cswap(b, f, v_w[i], v_w[i + 1]);
+    }
+
+    // ── Reverse STEP 5 ─────────────────────────────────────────────────
+    b.cx(a_f, b_f);
+    b.cx(m_i, b_f);
+    mcx2_polar(b, f, true, b_f, false, add_f);
+
+    // ── Reverse STEP 4 (with measurement uncompute for unload) ─────────
+    {
+        let tmp = b.alloc_qubits(n1);
+        // Load tmp = AND(add_f, r[0..n]) for the reversed add
+        for i in 0..n { b.ccx(add_f, r[i], tmp[i]); }
+        // Reversed (G): CCX(add_f, r[n], s[n])
+        b.ccx(add_f, r[n], s[n]);
+        // Reversed (F): sub_nbit_qq(tmp, s)
+        sub_nbit_qq(b, &tmp, s);
+        // Reversed (E): transform tmp from AND(add_f,r) → AND(add_f,u)
+        for i in 0..n { b.cx(r[i], u[i]); }
+        for i in 0..n { b.ccx(add_f, u[i], tmp[i]); }
+        for i in 0..n { b.cx(r[i], u[i]); }
+        // Reversed (D): add_nbit_qq(tmp[..n], v_w)
+        add_nbit_qq(b, &tmp[..n], v_w);
+        // Reversed (C): unload AND(add_f,u) via measurement (0 Toffoli)
+        for i in 0..n {
+            let m = b.alloc_bit();
+            b.hmr(tmp[i], m);
+            b.cz_if(add_f, u[i], m);
+        }
+        b.free_vec(&tmp);
+    }
+    // Reversed (A): mcx2_polar
+    mcx2_polar(b, f, true, b_f, false, add_f);
+
+    // ── Reverse STEP 3 ─────────────────────────────────────────────────
+    for j in (0..n1).rev() { cswap(b, a_f, r[j], s[j]); }
+    for j in (0..n).rev() { cswap(b, a_f, u[j], v_w[j]); }
+
+    // ── Reverse STEP 2 (with_gt body is self-inverse) ──────────────────
+    let l_gt = b.alloc_qubit();
+    with_gt(b, u, v_w, l_gt, |b| {
+        b.x(b_f);
+        b.ccx(f, l_gt, add_f);
+        b.ccx(add_f, b_f, m_i);
+        b.ccx(add_f, b_f, a_f);
+        b.ccx(f, l_gt, add_f);
+        b.x(b_f);
+    });
+    b.free(l_gt);
+
+    // ── Reverse STEP 1 ─────────────────────────────────────────────────
+    b.cx(m_i, b_f);
+    b.cx(a_f, b_f);
+    b.ccx(f, u[0], b_f);
+    b.x(v_w[0]);
+    b.ccx(b_f, v_w[0], m_i);
+    b.x(v_w[0]);
+    b.cx(b_f, a_f);
+    b.cx(f, a_f);
+    b.ccx(f, u[0], b_f);
+
+    // ── Reverse STEP 0 (with measurement uncompute of OR chain) ────────
+    b.cx(m_i, f);
+    {
+        // Recompute OR chain (forward direction), run body, then
+        // measurement-uncompute the chain.
+        let nv = v_w.len();
+        if nv == 1 {
+            b.x(v_w[0]);
+            b.cx(v_w[0], add_f);
+            b.ccx(f, add_f, m_i);
+            b.cx(v_w[0], add_f);
+            b.x(v_w[0]);
+        } else {
+            let or_chain: Vec<QubitId> = b.alloc_qubits(nv - 1);
+            or_step(b, v_w[0], v_w[1], or_chain[0]);
+            for i in 1..nv - 1 {
+                or_step(b, or_chain[i - 1], v_w[i + 1], or_chain[i]);
+            }
+            b.x(or_chain[nv - 2]);
+            b.cx(or_chain[nv - 2], add_f);
+            b.x(or_chain[nv - 2]);
+            // Body
+            b.ccx(f, add_f, m_i);
+            // Uncompute flag
+            b.x(or_chain[nv - 2]);
+            b.cx(or_chain[nv - 2], add_f);
+            b.x(or_chain[nv - 2]);
+            // Measurement-based uncompute of OR chain (0 Toffoli)
+            for i in (1..nv - 1).rev() {
+                or_step_uncompute(b, or_chain[i - 1], v_w[i + 1], or_chain[i]);
+            }
+            or_step_uncompute(b, v_w[0], v_w[1], or_chain[0]);
+            b.free_vec(&or_chain);
+        }
+    }
+}
+
+/// Explicit backward pass for kaliski_forward. Uses measurement-based
+/// uncomputation to save ~511 CCX per iteration vs emit_inverse.
+fn kaliski_backward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256) {
+    let n = v_in.len();
+
+    // ─── Reverse 2n iterations (in reverse order) ───
+    for i in (0..(2 * n)).rev() {
+        kaliski_iteration_backward(
+            b, p, &st.u, &st.v_w, &st.r, &st.s,
+            st.m_hist[i],
+            st.f_flag, st.a_flag, st.b_flag, st.add_flag,
+        );
+    }
+
+    // ─── Reverse Init ───
+    b.x(st.f_flag);
+    b.x(st.s[0]);
+    for i in 0..n { b.cx(v_in[i], st.v_w[i]); }
+    for i in 0..n { if bit(p, i) { b.x(st.u[i]); } }
+}
+
 /// Run `body` with `inv` holding `v_in^{-1} mod p`, leaving `v_in`
 /// unchanged. Allocates the kaliski state and `inv` register itself, then
 /// frees them at the end. The body must NOT touch `st` or `v_in`.
@@ -1511,8 +1695,9 @@ fn with_kal_inv<F: FnOnce(&mut B, &[QubitId])>(
 
     // Un-halve st.r[..n] back to raw form.
     for _ in 0..(2 * n) { mod_double_inplace(b, &r_low, p); }
-    // Reverse kaliski_forward → st = 0.
-    emit_inverse(b, |b| kaliski_forward(b, v_in, &st, p));
+    // Explicit backward pass (uses measurement-based uncompute, saves
+    // ~511 CCX per iteration vs the emit_inverse version).
+    kaliski_backward(b, v_in, &st, p);
 
     free_kaliski_state(b, st);
 }
