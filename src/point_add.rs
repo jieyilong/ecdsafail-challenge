@@ -885,6 +885,117 @@ fn mod_halve_no_corr(b: &mut B, v: &[QubitId]) {
     for i in 0..n - 1 { b.swap(v[i], v[i + 1]); }
 }
 
+/// Shift v left by k bits mod p. Returns (spill, flag_inv, ovf) which MUST
+/// be passed to mod_shift_right_by_k for cleanup. Bennett-pattern: flags
+/// stay alive across the body so the inverse can cleanly cancel them.
+///
+/// k must be small enough that spill·c < p. For k≤22 with secp256k1 this holds.
+fn mod_shift_left_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize) -> (Vec<QubitId>, QubitId, QubitId) {
+    let n = v.len();
+    debug_assert_eq!(n, 256);
+    let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
+
+    let spill = b.alloc_qubits(k);
+    let ovf = b.alloc_qubit();
+    let flag_inv = b.alloc_qubit();
+
+    // Step 1: k rounds of shift-by-1, capturing top bits into spill.
+    for shift_i in 0..k {
+        b.swap(v[n-1], spill[k-1-shift_i]);
+        for i in (0..n-1).rev() { b.swap(v[i], v[i+1]); }
+    }
+
+    // Step 2: add spill · c to v_ext (using ovf as bit n).
+    let mut v_ext = v.to_vec();
+    v_ext.push(ovf);
+    for j in 0..=32usize {
+        if bit(c, j) {
+            let pad_width = n + 1 - j;
+            let padded = b.alloc_qubits(pad_width);
+            for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
+            let v_slice: Vec<QubitId> = v_ext[j..n+1].to_vec();
+            let c_in = b.alloc_qubit();
+            cuccaro_add_fast(b, &padded, &v_slice, c_in);
+            b.free(c_in);
+            for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
+            b.free_vec(&padded);
+        }
+    }
+
+    // Step 3: flag_inv = (v_ext < p_padded).
+    {
+        let p_padded = load_const(b, n+1, p);
+        cmp_lt_into_fast(b, &v_ext, &p_padded, flag_inv);
+        unload_const(b, &p_padded, p);
+    }
+
+    // Step 4: if NOT flag_inv (= v_ext >= p), subtract p.
+    b.x(flag_inv);
+    {
+        let p_loaded = b.alloc_qubits(n+1);
+        for i in 0..(n+1) { if bit(p, i) { b.cx(flag_inv, p_loaded[i]); } }
+        sub_nbit_qq_fast(b, &p_loaded, &v_ext);
+        for i in 0..(n+1) { if bit(p, i) { b.cx(flag_inv, p_loaded[i]); } }
+        b.free_vec(&p_loaded);
+    }
+    b.x(flag_inv);
+
+    (spill, flag_inv, ovf)
+}
+
+/// Gate-level inverse of mod_shift_left_by_k.
+fn mod_shift_right_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize, spill: Vec<QubitId>, flag_inv: QubitId, ovf: QubitId) {
+    let n = v.len();
+    debug_assert_eq!(n, 256);
+    let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
+
+    let mut v_ext = v.to_vec();
+    v_ext.push(ovf);
+
+    // Reverse step 4: re-add p if NOT flag_inv.
+    b.x(flag_inv);
+    {
+        let p_loaded = b.alloc_qubits(n+1);
+        for i in 0..(n+1) { if bit(p, i) { b.cx(flag_inv, p_loaded[i]); } }
+        add_nbit_qq_fast(b, &p_loaded, &v_ext);
+        for i in 0..(n+1) { if bit(p, i) { b.cx(flag_inv, p_loaded[i]); } }
+        b.free_vec(&p_loaded);
+    }
+    b.x(flag_inv);
+
+    // Reverse step 3: cmp_lt is its own inverse on flag_inv.
+    {
+        let p_padded = load_const(b, n+1, p);
+        cmp_lt_into_fast(b, &v_ext, &p_padded, flag_inv);
+        unload_const(b, &p_padded, p);
+    }
+    b.free(flag_inv);
+
+    // Reverse step 2: cuccaro_sub_fast in reverse order.
+    for j in (0..=32usize).rev() {
+        if bit(c, j) {
+            let pad_width = n + 1 - j;
+            let padded = b.alloc_qubits(pad_width);
+            for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
+            let v_slice: Vec<QubitId> = v_ext[j..n+1].to_vec();
+            let c_in = b.alloc_qubit();
+            cuccaro_sub_fast(b, &padded, &v_slice, c_in);
+            b.free(c_in);
+            for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
+            b.free_vec(&padded);
+        }
+    }
+
+    // Reverse step 1: reverse swap cascades.
+    for shift_i in (0..k).rev() {
+        for i in 0..n-1 { b.swap(v[i], v[i+1]); }
+        b.swap(v[n-1], spill[k-1-shift_i]);
+    }
+
+    b.free(ovf);
+    b.free_vec(&spill);
+}
+
 /// Fast `v := v/2 mod p`. Explicit reverse of `mod_double_inplace` with
 /// measurement-based Cuccaro (not emit_inverse).
 fn mod_halve_inplace_fast(b: &mut B, v: &[QubitId], p: U256) {
@@ -1320,18 +1431,27 @@ fn mod_mul_add_into_acc_schoolbook(
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
     let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
     mod_add_qq_fast(b, acc, &lo, p);
-    let max_set_bit: usize = 32;
-    for k in 0..=max_set_bit {
+    // Solinas: c = 2^32 + 977 has set bits {0, 4, 6, 7, 8, 9, 32}.
+    // Iters 0..9: standard add+double pattern.
+    // Iters 10..31: no adds, just 22 doubles → replaced by mod_shift_left_by_22.
+    // Iter 32: final add.
+    for k in 0..=9 {
         if bit(c, k) {
             mod_add_qq_fast(b, acc, &hi, p);
         }
-        if k < max_set_bit {
-            mod_double_inplace_fast(b, &hi, p);
-        }
+        mod_double_inplace_fast(b, &hi, p);
     }
-    for _ in 0..max_set_bit {
+    // hi = hi_orig · 2^10 mod p.
+    let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
+    // hi = hi_orig · 2^32 mod p.
+    mod_add_qq_fast(b, acc, &hi, p);
+    // Undo: shift right (gate-level inverse).
+    mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
+    // hi = hi_orig · 2^10 mod p again.
+    for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
     }
+    // hi = hi_orig mod p.
 
     schoolbook_mul_into_inverse(b, x, y, &tmp_ext);
     b.free_vec(&tmp_ext);
