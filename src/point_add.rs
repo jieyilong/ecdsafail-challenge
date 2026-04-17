@@ -906,21 +906,31 @@ fn mod_shift_left_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize) -> (Vec<Qubi
     }
 
     // Step 2: add spill · c to v_ext (using ovf as bit n).
+    // c = 2^32 + 977 = 2^32 + 2^10 - 2^6 + 2^4 + 2^0.
+    // Consolidate 4 bits (6,7,8,9) of 977 into 2^10 - 2^6: saves 2 Cuccaros per shift.
+    // Op list: ADD at 0, 4, 10, 32; SUB at 6. Total 5 ops instead of 7.
     let mut v_ext = v.to_vec();
     v_ext.push(ovf);
-    for j in 0..=32usize {
-        if bit(c, j) {
-            let pad_width = n + 1 - j;
-            let padded = b.alloc_qubits(pad_width);
-            for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
-            let v_slice: Vec<QubitId> = v_ext[j..n+1].to_vec();
-            let c_in = b.alloc_qubit();
+    let cuccaro_op = |b: &mut B, pos: usize, is_sub: bool| {
+        let pad_width = n + 1 - pos;
+        let padded = b.alloc_qubits(pad_width);
+        for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
+        let v_slice: Vec<QubitId> = v_ext[pos..n+1].to_vec();
+        let c_in = b.alloc_qubit();
+        if is_sub {
+            cuccaro_sub_fast(b, &padded, &v_slice, c_in);
+        } else {
             cuccaro_add_fast(b, &padded, &v_slice, c_in);
-            b.free(c_in);
-            for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
-            b.free_vec(&padded);
         }
-    }
+        b.free(c_in);
+        for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
+        b.free_vec(&padded);
+    };
+    cuccaro_op(b, 0, false);   // +spill·2^0
+    cuccaro_op(b, 4, false);   // +spill·2^4
+    cuccaro_op(b, 6, true);    // -spill·2^6
+    cuccaro_op(b, 10, false);  // +spill·2^10
+    cuccaro_op(b, 32, false);  // +spill·2^32
 
     // Step 3: flag_inv = (v_ext < p_padded).
     {
@@ -971,20 +981,28 @@ fn mod_shift_right_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize, spill: Vec<
     }
     b.free(flag_inv);
 
-    // Reverse step 2: cuccaro_sub_fast in reverse order.
-    for j in (0..=32usize).rev() {
-        if bit(c, j) {
-            let pad_width = n + 1 - j;
-            let padded = b.alloc_qubits(pad_width);
-            for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
-            let v_slice: Vec<QubitId> = v_ext[j..n+1].to_vec();
-            let c_in = b.alloc_qubit();
+    // Reverse step 2: inverse of the consolidated op list (5 ops, in reverse order, flipped signs).
+    let cuccaro_op = |b: &mut B, pos: usize, is_sub: bool| {
+        let pad_width = n + 1 - pos;
+        let padded = b.alloc_qubits(pad_width);
+        for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
+        let v_slice: Vec<QubitId> = v_ext[pos..n+1].to_vec();
+        let c_in = b.alloc_qubit();
+        if is_sub {
             cuccaro_sub_fast(b, &padded, &v_slice, c_in);
-            b.free(c_in);
-            for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
-            b.free_vec(&padded);
+        } else {
+            cuccaro_add_fast(b, &padded, &v_slice, c_in);
         }
-    }
+        b.free(c_in);
+        for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
+        b.free_vec(&padded);
+    };
+    // Reverse: undo ADD at 32, 10; undo SUB at 6; undo ADD at 4, 0.
+    cuccaro_op(b, 32, true);   // undo +spill·2^32
+    cuccaro_op(b, 10, true);   // undo +spill·2^10
+    cuccaro_op(b, 6, false);   // undo -spill·2^6
+    cuccaro_op(b, 4, true);    // undo +spill·2^4
+    cuccaro_op(b, 0, true);    // undo +spill·2^0
 
     // Reverse step 1: reverse swap cascades.
     for shift_i in (0..k).rev() {
