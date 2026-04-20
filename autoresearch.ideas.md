@@ -1,0 +1,4 @@
+- **Kill the second Kaliski pass entirely.** Treat the current 398/397 asymmetry result as evidence that the second inverse is more optional than the first. Explore preserving enough first-pass information to uncompute `lam` without recomputing `(Qx-Rx)^{-1}`.
+- **Replace 1-bit Kaliski with grouped divsteps / safegcd.** The current loop costs about 4.2k Toffoli per iteration per pass; shaving single iterations is irrelevant against a 2M target. Need a multi-bit quotient / grouped-step redesign.
+- **One-inversion mixed/projective add.** Compare `2I + 4M + 1S` affine-style flow against a `1I + more M/S` mixed-coordinate flow. Only pursue if rough cost model suggests a net >1M win.
+- **Batch-style reuse across the two required denominators.** Look for algebraic rewrites that derive the cleanup denominator from first-pass state or from a shared product inverse, instead of paying two independent Kaliski traversals.

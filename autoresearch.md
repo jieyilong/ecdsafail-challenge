@@ -73,7 +73,21 @@ Dominant structures:
   - `2n-120` Kaliski iterations fails classical correctness
   - `2n-115` fails phase-garbage checks
   - `shift10 + shift22` Solinas variant failed with phase garbage
+- Kaliski-floor probing outcome:
+  - 399 iterations is safe
+  - 398 iterations is safe
+  - 397/397 fails badly
+  - asymmetric split works: first pass must stay at 398, second pass can drop to 397
+  - current best after that split: ~4,927,684 Toffoli
+- Important conclusion:
+  - single-iteration trims only buy ~4.2k Toffoli per affected Kaliski pass; this is nowhere near the ~2M improvement target.
+  - The first Kaliski invocation is the fragile one; the second has a little extra slack.
+- Google paper / Appendix A takeaways:
+  - Their proof target uses the same kickmix gate set and the same average-executed-Toffoli style metric over Fiat-Shamir-derived tests.
+  - Appendix A explicitly calls out measurement-based uncomputation (MBUC), but we already use MBUC inside the current design for Cuccaro sweeps, OR-chain cleanup, and many temporary AND unloads.
+  - Therefore the remaining gap is unlikely to be a single missed MBUC trick on our current affine+two-Kaliski architecture.
+  - More plausible hidden savings sources are: a cheaper inversion architecture, a materially different point-add formula / coordinate choice, or more aggressive multiplication architecture.
 - Immediate promising directions:
-  - probe the exact safe Kaliski iteration floor between 397 and 400
-  - look for larger structured wins in Kaliski STEP 4 / STEP 2 temporary handling
-  - reduce repeated scale-up/scale-down work around raw inverse / `lam`
+  - eliminate the second inverse entirely by restructuring lambda uncomputation around preserved first-pass information
+  - replace the 1-bit Kaliski loop with multi-bit divsteps / safegcd-style grouped iterations
+  - try larger multiplier-architecture swaps (Karatsuba / beyond) as intermediate structural steps while investigating the inversion/formula gap

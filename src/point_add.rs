@@ -1437,6 +1437,238 @@ fn schoolbook_mul_into_inverse(b: &mut B, x: &[QubitId], y: &[QubitId], tmp_ext:
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  1-level Karatsuba multiplication
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn karatsuba_half_sum_compute(b: &mut B, lo: &[QubitId], hi: &[QubitId], acc: &[QubitId]) {
+    let h = lo.len();
+    debug_assert_eq!(h, hi.len());
+    debug_assert_eq!(acc.len(), h + 1);
+    for i in 0..h { b.cx(lo[i], acc[i]); }
+    let hi_pad = b.alloc_qubit();
+    let mut hi_ext = hi.to_vec();
+    hi_ext.push(hi_pad);
+    add_nbit_qq_fast(b, &hi_ext, acc);
+    b.free(hi_pad);
+}
+
+fn karatsuba_half_sum_uncompute(b: &mut B, lo: &[QubitId], hi: &[QubitId], acc: &[QubitId]) {
+    let h = lo.len();
+    let hi_pad = b.alloc_qubit();
+    let mut hi_ext = hi.to_vec();
+    hi_ext.push(hi_pad);
+    sub_nbit_qq_fast(b, &hi_ext, acc);
+    b.free(hi_pad);
+    for i in 0..h { b.cx(lo[i], acc[i]); }
+}
+
+fn karatsuba_forward(
+    b: &mut B,
+    x: &[QubitId],
+    y: &[QubitId],
+    tmp_ext: &[QubitId],
+    z1_reg: &[QubitId],
+) {
+    let n = x.len();
+    let h = n / 2;
+    let x_lo: Vec<QubitId> = x[0..h].to_vec();
+    let x_hi: Vec<QubitId> = x[h..n].to_vec();
+    let y_lo: Vec<QubitId> = y[0..h].to_vec();
+    let y_hi: Vec<QubitId> = y[h..n].to_vec();
+
+    {
+        let slice: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        schoolbook_mul_into(b, &x_lo, &y_lo, &slice);
+    }
+    {
+        let slice: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        schoolbook_mul_into(b, &x_hi, &y_hi, &slice);
+    }
+
+    let x_sum = b.alloc_qubits(h + 1);
+    let y_sum = b.alloc_qubits(h + 1);
+    karatsuba_half_sum_compute(b, &x_lo, &x_hi, &x_sum);
+    karatsuba_half_sum_compute(b, &y_lo, &y_hi, &y_sum);
+    schoolbook_mul_into(b, &x_sum, &y_sum, z1_reg);
+    karatsuba_half_sum_uncompute(b, &y_lo, &y_hi, &y_sum);
+    karatsuba_half_sum_uncompute(b, &x_lo, &x_hi, &x_sum);
+    b.free_vec(&y_sum);
+    b.free_vec(&x_sum);
+
+    {
+        let pad = b.alloc_qubits(2);
+        let mut z0_ext: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        z0_ext.extend_from_slice(&pad);
+        sub_nbit_qq_fast(b, &z0_ext, z1_reg);
+        b.free_vec(&pad);
+    }
+    {
+        let pad = b.alloc_qubits(2);
+        let mut z2_ext: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        z2_ext.extend_from_slice(&pad);
+        sub_nbit_qq_fast(b, &z2_ext, z1_reg);
+        b.free_vec(&pad);
+    }
+    {
+        let pad = b.alloc_qubits(3 * h - 2 * (h + 1));
+        let mut z1_ext: Vec<QubitId> = z1_reg.to_vec();
+        z1_ext.extend_from_slice(&pad);
+        let acc_slice: Vec<QubitId> = tmp_ext[h..4*h].to_vec();
+        add_nbit_qq_fast(b, &z1_ext, &acc_slice);
+        b.free_vec(&pad);
+    }
+}
+
+fn karatsuba_inverse(
+    b: &mut B,
+    x: &[QubitId],
+    y: &[QubitId],
+    tmp_ext: &[QubitId],
+    z1_reg: &[QubitId],
+) {
+    let n = x.len();
+    let h = n / 2;
+    let x_lo: Vec<QubitId> = x[0..h].to_vec();
+    let x_hi: Vec<QubitId> = x[h..n].to_vec();
+    let y_lo: Vec<QubitId> = y[0..h].to_vec();
+    let y_hi: Vec<QubitId> = y[h..n].to_vec();
+
+    {
+        let pad = b.alloc_qubits(3 * h - 2 * (h + 1));
+        let mut z1_ext: Vec<QubitId> = z1_reg.to_vec();
+        z1_ext.extend_from_slice(&pad);
+        let acc_slice: Vec<QubitId> = tmp_ext[h..4*h].to_vec();
+        sub_nbit_qq_fast(b, &z1_ext, &acc_slice);
+        b.free_vec(&pad);
+    }
+    {
+        let pad = b.alloc_qubits(2);
+        let mut z2_ext: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        z2_ext.extend_from_slice(&pad);
+        add_nbit_qq_fast(b, &z2_ext, z1_reg);
+        b.free_vec(&pad);
+    }
+    {
+        let pad = b.alloc_qubits(2);
+        let mut z0_ext: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        z0_ext.extend_from_slice(&pad);
+        add_nbit_qq_fast(b, &z0_ext, z1_reg);
+        b.free_vec(&pad);
+    }
+
+    let x_sum = b.alloc_qubits(h + 1);
+    let y_sum = b.alloc_qubits(h + 1);
+    karatsuba_half_sum_compute(b, &x_lo, &x_hi, &x_sum);
+    karatsuba_half_sum_compute(b, &y_lo, &y_hi, &y_sum);
+    schoolbook_mul_into_inverse(b, &x_sum, &y_sum, z1_reg);
+    karatsuba_half_sum_uncompute(b, &y_lo, &y_hi, &y_sum);
+    karatsuba_half_sum_uncompute(b, &x_lo, &x_hi, &x_sum);
+    b.free_vec(&y_sum);
+    b.free_vec(&x_sum);
+
+    {
+        let slice: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        schoolbook_mul_into_inverse(b, &x_hi, &y_hi, &slice);
+    }
+    {
+        let slice: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        schoolbook_mul_into_inverse(b, &x_lo, &y_lo, &slice);
+    }
+}
+
+fn mod_mul_add_into_acc_karatsuba_with_tmp_ext(
+    b: &mut B,
+    acc: &[QubitId],
+    x: &[QubitId],
+    y: &[QubitId],
+    p: U256,
+    tmp_ext: &[QubitId],
+) {
+    let n = acc.len();
+    debug_assert_eq!(n, 256);
+    debug_assert_eq!(tmp_ext.len(), 2 * n);
+    let h = n / 2;
+    let z1_reg = b.alloc_qubits(2 * (h + 1));
+    karatsuba_forward(b, x, y, tmp_ext, &z1_reg);
+
+    let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
+    let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
+    mod_add_qq_fast(b, acc, &lo, p);
+    mod_add_qq_fast(b, acc, &hi, p);
+    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    mod_add_qq_fast(b, acc, &hi, p);
+    for _ in 0..2 { mod_double_inplace_fast(b, &hi, p); }
+    mod_sub_qq_fast(b, acc, &hi, p);
+    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    mod_add_qq_fast(b, acc, &hi, p);
+    let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
+    mod_add_qq_fast(b, acc, &hi, p);
+    mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
+    for _ in 0..10 { mod_halve_inplace_fast(b, &hi, p); }
+
+    karatsuba_inverse(b, x, y, tmp_ext, &z1_reg);
+    b.free_vec(&z1_reg);
+}
+
+fn mod_mul_add_into_acc_karatsuba(
+    b: &mut B,
+    acc: &[QubitId],
+    x: &[QubitId],
+    y: &[QubitId],
+    p: U256,
+) {
+    let tmp_ext = b.alloc_qubits(2 * acc.len());
+    mod_mul_add_into_acc_karatsuba_with_tmp_ext(b, acc, x, y, p, &tmp_ext);
+    b.free_vec(&tmp_ext);
+}
+
+fn mod_mul_write_into_zero_acc_karatsuba_with_tmp_ext(
+    b: &mut B,
+    acc: &[QubitId],
+    x: &[QubitId],
+    y: &[QubitId],
+    p: U256,
+    tmp_ext: &[QubitId],
+) {
+    let n = acc.len();
+    debug_assert_eq!(n, 256);
+    debug_assert_eq!(tmp_ext.len(), 2 * n);
+    let h = n / 2;
+    let z1_reg = b.alloc_qubits(2 * (h + 1));
+    karatsuba_forward(b, x, y, tmp_ext, &z1_reg);
+
+    let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
+    let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
+    mod_add_qq_fast_from_zero(b, acc, &lo, p);
+    mod_add_qq_fast(b, acc, &hi, p);
+    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    mod_add_qq_fast(b, acc, &hi, p);
+    for _ in 0..2 { mod_double_inplace_fast(b, &hi, p); }
+    mod_sub_qq_fast(b, acc, &hi, p);
+    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    mod_add_qq_fast(b, acc, &hi, p);
+    let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
+    mod_add_qq_fast(b, acc, &hi, p);
+    mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
+    for _ in 0..10 { mod_halve_inplace_fast(b, &hi, p); }
+
+    karatsuba_inverse(b, x, y, tmp_ext, &z1_reg);
+    b.free_vec(&z1_reg);
+}
+
+fn mod_mul_write_into_zero_acc_karatsuba(
+    b: &mut B,
+    acc: &[QubitId],
+    x: &[QubitId],
+    y: &[QubitId],
+    p: U256,
+) {
+    let tmp_ext = b.alloc_qubits(2 * acc.len());
+    mod_mul_write_into_zero_acc_karatsuba_with_tmp_ext(b, acc, x, y, p, &tmp_ext);
+    b.free_vec(&tmp_ext);
+}
+
 /// Add x*y mod p to acc, via schoolbook into a wide accumulator + Solinas
 /// reduction + Bennett uncompute. Saves ~100k CCX vs Horner-on-acc per call.
 fn mod_mul_add_into_acc_schoolbook(
@@ -2919,11 +3151,11 @@ pub fn build() -> Vec<Op> {
     // inverse-register restore pass entirely.
     with_kal_inv_raw(b, &tx, p, pair1_iters, |b, inv_raw| {
         // First mul: lam starts at 0, use zero-acc fast path (saves n-1 CCX).
-        mod_mul_write_into_zero_acc_schoolbook(b, &lam, &ty, inv_raw, p);
+        mod_mul_write_into_zero_acc_karatsuba(b, &lam, &ty, inv_raw, p);
         // Halve the raw inverse scale off lam: lam = -λ.
         for _ in 0..pair1_iters { mod_halve_inplace_fast(b, &lam, p); }
         // Second mul via schoolbook: ty += lam*tx = dy + (-λ)*dx = 0.
-        mod_mul_add_into_acc_schoolbook(b, &ty, &lam, &tx, p);
+        mod_mul_add_into_acc_karatsuba(b, &ty, &lam, &tx, p);
     });
 
     // Px := λ² - Px_orig - Qx. Rearranged: tx = dx - λ². Add 2Qx, then
@@ -2936,12 +3168,12 @@ pub fn build() -> Vec<Op> {
     mod_add_qb(b, &tx, &ox, p);                          // tx = dx - λ² + 3Qx
     mod_neg_inplace_fast(b, &tx, p);                     // tx = -(...)= Rx - Qx
     // ty starts at 0 here (mul2 cleared it), use zero-acc fast path.
-    mod_mul_write_into_zero_acc_schoolbook(b, &ty, &lam, &tx, p);
+    mod_mul_write_into_zero_acc_karatsuba(b, &ty, &lam, &tx, p);
     with_kal_inv_raw(b, &tx, p, pair2_iters, |b, inv_raw| {
         // Schoolbook approach: pre-double lam to the second raw-inverse scale,
         // then add inv_raw·ty mod p to zero lam.
         for _ in 0..pair2_iters { mod_double_inplace_fast(b, &lam, p); }
-        mod_mul_add_into_acc_schoolbook(b, &lam, inv_raw, &ty, p);
+        mod_mul_add_into_acc_karatsuba(b, &lam, inv_raw, &ty, p);
         mod_sub_qb(b, &ty, &oy, p);                      // ty = (Ry+Qy) - Qy = Ry
     });
     mod_add_qb(b, &tx, &ox, p);                           // tx = Rx
