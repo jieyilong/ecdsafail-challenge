@@ -66,20 +66,32 @@ struct B {
     pub next_bit: u32,
     pub next_register: u32,
     pub free_qubits: Vec<u32>,
+    pub active_qubits: u32,
+    pub peak_qubits: u32,
+    pub peak_ops_idx: usize,
+    pub peak_phase: &'static str,
+    pub phase: &'static str,
 }
 
 impl B {
     fn new() -> Self {
-        Self { ops: Vec::new(), next_qubit: 0, next_bit: 0, next_register: 0, free_qubits: Vec::new() }
+        Self { ops: Vec::new(), next_qubit: 0, next_bit: 0, next_register: 0, free_qubits: Vec::new(), active_qubits: 0, peak_qubits: 0, peak_ops_idx: 0, peak_phase: "", phase: "init" }
     }
+    fn set_phase(&mut self, p: &'static str) { self.phase = p; }
     fn alloc_qubit(&mut self) -> QubitId {
+        self.active_qubits += 1;
+        if self.active_qubits > self.peak_qubits {
+            self.peak_qubits = self.active_qubits;
+            self.peak_ops_idx = self.ops.len();
+            self.peak_phase = self.phase;
+        }
         if let Some(q) = self.free_qubits.pop() { QubitId(q) }
         else { let q = self.next_qubit; self.next_qubit += 1; QubitId(q) }
     }
     fn alloc_qubits(&mut self, n: usize) -> Vec<QubitId> { (0..n).map(|_| self.alloc_qubit()).collect() }
     fn alloc_bit(&mut self) -> BitId { let b = self.next_bit; self.next_bit += 1; BitId(b) }
     fn alloc_bits(&mut self, n: usize) -> Vec<BitId> { (0..n).map(|_| self.alloc_bit()).collect() }
-    fn free(&mut self, q: QubitId) { self.r(q); self.free_qubits.push(q.0); }
+    fn free(&mut self, q: QubitId) { self.r(q); self.free_qubits.push(q.0); if self.active_qubits > 0 { self.active_qubits -= 1; } }
     fn free_vec(&mut self, qs: &[QubitId]) { for &q in qs { self.free(q); } }
     fn declare_qubit_register(&mut self, qs: &[QubitId]) {
         let r = RegisterId(self.next_register); self.next_register += 1;
@@ -931,31 +943,41 @@ fn mod_shift_left_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize) -> (Vec<Qubi
         for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
         let v_slice: Vec<QubitId> = v_ext[pos..n+1].to_vec();
         let c_in = b.alloc_qubit();
+        // In-place cuccaro (no carry ancillae) for lower peak qubits.
         if is_sub {
-            cuccaro_sub_fast(b, &padded, &v_slice, c_in);
+            cuccaro_sub(b, &padded, &v_slice, c_in);
         } else {
-            cuccaro_add_fast(b, &padded, &v_slice, c_in);
+            cuccaro_add(b, &padded, &v_slice, c_in);
         }
         b.free(c_in);
         for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
         b.free_vec(&padded);
     };
-    cuccaro_op(b, 0, false);   // +spill·2^0
-    cuccaro_op(b, 4, false);   // +spill·2^4
-    cuccaro_op(b, 6, true);    // -spill·2^6
-    cuccaro_op(b, 10, false);  // +spill·2^10
-    cuccaro_op(b, 32, false);  // +spill·2^32
+    b.set_phase("shift22_cuccaro_op_0");
+    cuccaro_op(b, 0, false);
+    b.set_phase("shift22_cuccaro_op_4");
+    cuccaro_op(b, 4, false);
+    b.set_phase("shift22_cuccaro_op_6");
+    cuccaro_op(b, 6, true);
+    b.set_phase("shift22_cuccaro_op_10");
+    cuccaro_op(b, 10, false);
+    b.set_phase("shift22_cuccaro_op_32");
+    cuccaro_op(b, 32, false);
 
     // Step 3: value is guaranteed < 2p, so secp256k1 reduction can use the
     // sparse pseudo-Mersenne correction directly: add c, inspect the top bit.
-    add_nbit_const_fast(b, &v_ext, c);
+    // In-place cuccaro (no carry ancillae) for lower peak qubits at this
+    // wide (n+1)-bit const-add step — critical peak driver inside Solinas.
+    b.set_phase("shift22_step3");
+    add_nbit_const(b, &v_ext, c);
     b.x(ovf);
     b.cx(ovf, flag_inv); // flag_inv = NOT(top_bit_after_add) = (value < p)
     b.x(ovf);
 
     // Step 4: if the add did not overflow, undo it; otherwise keep it and
     // clear the top bit, which drops the extra 2^256 = p + c.
-    csub_nbit_const_fast(b, &v_ext, c, flag_inv);
+    b.set_phase("shift22_step4");
+    csub_nbit_const(b, &v_ext, c, flag_inv);
     b.x(flag_inv);
     b.cx(flag_inv, ovf);
     b.x(flag_inv);
@@ -976,14 +998,18 @@ fn mod_shift_right_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize, spill: Vec<
     b.x(flag_inv);
     b.cx(flag_inv, ovf);
     b.x(flag_inv);
-    cadd_nbit_const_fast(b, &v_ext, c, flag_inv);
+    b.set_phase("rshift22_rev_step4");
+    // In-place cuccaro (no carry ancillae) to match forward for lower peak.
+    cadd_nbit_const(b, &v_ext, c, flag_inv);
 
     // Reverse step 3.
     b.x(ovf);
     b.cx(ovf, flag_inv);
     b.x(ovf);
-    sub_nbit_const_fast(b, &v_ext, c);
+    b.set_phase("rshift22_rev_step3");
+    sub_nbit_const(b, &v_ext, c);
     b.free(flag_inv);
+    b.set_phase("rshift22_rev_step2");
 
     // Reverse step 2: inverse of the consolidated op list (5 ops, in reverse order, flipped signs).
     let cuccaro_op = |b: &mut B, pos: usize, is_sub: bool| {
@@ -992,10 +1018,11 @@ fn mod_shift_right_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize, spill: Vec<
         for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
         let v_slice: Vec<QubitId> = v_ext[pos..n+1].to_vec();
         let c_in = b.alloc_qubit();
+        // In-place cuccaro (no carry ancillae) for lower peak qubits.
         if is_sub {
-            cuccaro_sub_fast(b, &padded, &v_slice, c_in);
+            cuccaro_sub(b, &padded, &v_slice, c_in);
         } else {
-            cuccaro_add_fast(b, &padded, &v_slice, c_in);
+            cuccaro_add(b, &padded, &v_slice, c_in);
         }
         b.free(c_in);
         for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
@@ -1209,7 +1236,7 @@ fn mod_mul_write_into_zero_acc_schoolbook(
     for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    mod_add_qq_fast(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -1727,6 +1754,7 @@ fn karatsuba_forward(
         let mut z1_ext: Vec<QubitId> = z1_reg.to_vec();
         z1_ext.extend_from_slice(&pad);
         let acc_slice: Vec<QubitId> = tmp_ext[h..4*h].to_vec();
+        b.set_phase("kara_z1_add");
         add_nbit_qq_fast(b, &z1_ext, &acc_slice);
         b.free_vec(&pad);
     }
@@ -1815,7 +1843,7 @@ fn mod_mul_add_into_acc_karatsuba_with_tmp_ext(
     for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    mod_add_qq_fast(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 { mod_halve_inplace_fast(b, &hi, p); }
 
@@ -1848,7 +1876,9 @@ fn mod_mul_write_into_zero_acc_karatsuba_with_tmp_ext(
     debug_assert_eq!(tmp_ext.len(), 2 * n);
     let h = n / 2;
     let z1_reg = b.alloc_qubits(2 * (h + 1));
+    b.set_phase("kara_fwd");
     karatsuba_forward(b, x, y, tmp_ext, &z1_reg);
+    b.set_phase("kara_solinas");
 
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
     let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
@@ -1860,11 +1890,18 @@ fn mod_mul_write_into_zero_acc_karatsuba_with_tmp_ext(
     mod_sub_qq_fast(b, acc, &hi, p);
     for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
     mod_add_qq_fast(b, acc, &hi, p);
+    b.set_phase("kara_solinas_shift22L");
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    mod_add_qq_fast(b, acc, &hi, p);
+    b.set_phase("kara_solinas_post32_add");
+    // Use non-fast mod_add at peak site (after shift_left, with extra locals alive)
+    // to save 256 carry qubits at the expense of ~n Toffoli.
+    mod_add_qq(b, acc, &hi, p);
+    b.set_phase("kara_solinas_shift22R");
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
+    b.set_phase("kara_solinas_post_halve");
     for _ in 0..10 { mod_halve_inplace_fast(b, &hi, p); }
 
+    b.set_phase("kara_inv");
     karatsuba_inverse(b, x, y, tmp_ext, &z1_reg);
     b.free_vec(&z1_reg);
 }
@@ -2031,7 +2068,7 @@ fn mod_mul_add_into_acc_karatsuba2(
     for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    mod_add_qq_fast(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 { mod_halve_inplace_fast(b, &hi, p); }
 
@@ -2070,7 +2107,7 @@ fn mod_mul_write_into_zero_acc_karatsuba2(
     for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    mod_add_qq_fast(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 { mod_halve_inplace_fast(b, &hi, p); }
 
@@ -2111,7 +2148,7 @@ fn mod_mul_add_into_acc_schoolbook(
     for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
     mod_add_qq_fast(b, acc, &hi, p);  // position 10
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    mod_add_qq_fast(b, acc, &hi, p);  // position 32
+    mod_add_qq(b, acc, &hi, p);  // position 32
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -2215,7 +2252,7 @@ fn squaring_add_to_acc_schoolbook(
     for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    mod_add_qq_fast(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -2278,7 +2315,7 @@ fn squaring_sub_from_acc_schoolbook(
     for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
     mod_sub_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    mod_sub_qq_fast(b, acc, &hi, p);
+    mod_sub_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -3612,13 +3649,15 @@ pub fn build() -> Vec<Op> {
     // Pair 1: Kaliski's raw inverse carries a 2^(2N-1) factor. Fold that
     // scale onto lam itself, then halve lam down once. This avoids the
     // inverse-register restore pass entirely.
+    b.set_phase("pair1_kaliski_forward");
     with_kal_inv_raw(b, &tx, p, pair1_iters, |b, inv_raw| {
-        // First mul: lam starts at 0, use zero-acc fast path (saves n-1 CCX).
+        b.set_phase("pair1_mul1");
         mod_mul_write_into_zero_acc_karatsuba(b, &lam, &ty, inv_raw, p);
-        // Halve the raw inverse scale off lam: lam = -λ.
+        b.set_phase("pair1_halve");
         for _ in 0..pair1_iters { mod_halve_inplace_fast(b, &lam, p); }
-        // Second mul via schoolbook: ty += lam*tx = dy + (-λ)*dx = 0.
+        b.set_phase("pair1_mul2");
         mod_mul_add_into_acc_karatsuba(b, &ty, &lam, &tx, p);
+        b.set_phase("pair1_kaliski_backward");
     });
 
     // Px := λ² - Px_orig - Qx. Rearranged: tx = dx - λ². Add 2Qx, then
@@ -3631,13 +3670,17 @@ pub fn build() -> Vec<Op> {
     mod_add_qb(b, &tx, &ox, p);                          // tx = dx - λ² + 3Qx
     mod_neg_inplace_fast(b, &tx, p);                     // tx = -(...)= Rx - Qx
     // ty starts at 0 here (mul2 cleared it), use zero-acc fast path.
+    b.set_phase("mul3_between_pair");
     mod_mul_write_into_zero_acc_karatsuba2(b, &ty, &lam, &tx, p);
+    b.set_phase("pair2_kaliski_forward");
     with_kal_inv_raw(b, &tx, p, pair2_iters, |b, inv_raw| {
-        // Schoolbook approach: pre-double lam to the second raw-inverse scale,
-        // then add inv_raw·ty mod p to zero lam.
+        b.set_phase("pair2_double");
         for _ in 0..pair2_iters { mod_double_inplace_fast(b, &lam, p); }
+        b.set_phase("pair2_mul");
         mod_mul_add_into_acc_karatsuba(b, &lam, inv_raw, &ty, p);
-        mod_sub_qb(b, &ty, &oy, p);                      // ty = (Ry+Qy) - Qy = Ry
+        b.set_phase("pair2_cleanup");
+        mod_sub_qb(b, &ty, &oy, p);
+        b.set_phase("pair2_kaliski_backward");
     });
     mod_add_qb(b, &tx, &ox, p);                           // tx = Rx
 
