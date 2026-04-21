@@ -34,3 +34,22 @@ These require multi-day implementation with unit-test infrastructure (not availa
 ## Session ceiling: 4,306,887 Toffoli @ 3,614 qubits (−13% from 4.95M)
 This beats published HRSL (~12M) and Kim 2026 (~17M) in our metric. 
 Google's 2.1M SOTA uses undisclosed techniques not in public literature.
+
+## Qubit-focused session update (2026-04-21): 3614 → 2709 qubits (-25%)
+Big wins that stacked cleanly (with minor Toffoli cost):
+- Non-fast mod_add_qq at "position 32" Solinas + in-place cuccaro in shift22: -107 qubits.
+- Iter reduction 400 → 398 (saves m_hist and per-iter cost): -3 qubits, -16k Toffoli.
+- Move iter-local flags (a_f,b_f,add_f) out of KaliskiState: -3 qubits, 0 Toffoli.
+- Free `v_w` (256 qubits, known = 0 post-forward) + `f_flag` (1) during body: -257 qubits, 0 Toffoli.
+- Swap Karatsuba → schoolbook (Litinski addsub) for the 3 in-Kaliski muls: -256 qubits, +100k Toffoli.
+- Gate STEP 10 on f (prevents post-convergence a_f→1) + free `u` (known = 1) during body: -256 qubits, +800 Toffoli.
+
+Current state: 2,709 qubits @ 4,420,298 Toffoli (+2.6% Toffoli vs 4,306,887 start).
+
+## Remaining blockers at 2,709 (toward SOTA 1,175-1,425)
+- Peak 2709 hits simultaneously at (a) Kaliski iter STEP 7+8 (mod_double_inplace_fast 513 transient), (b) mul Solinas (mod_add_qq_fast ~517), (c) Kaliski STEP 4 (tmp+carries). Reducing ONE site doesn't drop global; need ALL lowpeak. Cost ~300k+ Toffoli.
+- Body peak = mul peak = 2709. Forward/backward iter peak = 2709. Both limit global.
+- `s` register (256): holds non-zero quantum state post-forward; can't free without classical knowledge.
+- `m_hist` (400 qubits): persistent, blocked by HMR randomization (no deterministic qubit→bit primitive).
+- Kim-style unconditional Kaliski: would save 400 qubits from m_hist elimination, costs ~9-28% Toffoli. Multi-session task.
+- Full Bennett pattern: saves ~650 qubits during body, costs +1.2M Toffoli (28%). Too expensive.
