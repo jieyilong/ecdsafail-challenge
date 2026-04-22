@@ -608,54 +608,51 @@ So the live integration now gives a real end-to-end saving of:
 - **459,264 emitted ops**,
 - with qubits unchanged.
 
-Current hard truth (updated):
-- on the **standard circuit-seeded 9024-shot harness**, the observed pass/fail
-  frontier looks wildly nonmonotone,
-- but on a **fixed 9024-point A/B sample** the story is completely different:
-  every tested setting up to at least **128** replacement iterations produced
-  **0 output mismatches** and **0 ancilla-garbage batches**.
+Current hard truth (updated again):
+- the standard `main.rs` harness is the only truth source we should trust for
+  actual integration decisions,
+- and with the improved full-count reporting, the passing set is no longer just
+  a small curiosity.
 
-Representative fixed-sample A/B results:
+Strict `main.rs`-validated passing settings I have now directly confirmed:
+- `k = 24`
+- `k = 32`
+- `k = 72`
+- `k = 96`
 
-| iters | mismatches / 9024 | avg Toffoli |
+The best strict passing result currently confirmed is:
+
+| metric | baseline | integrated specialized bulk-prefix96 |
 |---|---:|---:|
-| 32  | 0 | 4,361,458 |
-| 40  | 0 | 4,353,186 |
-| 64  | 0 | 4,328,370 |
-| 96  | 0 | 4,295,282 |
-| 112 | 0 | 4,278,738 |
-| 128 | 0 | **4,262,194** |
+| avg executed Toffoli | 4,394,546 | **4,295,282** |
+| emitted ops | 35,186,356 | **33,808,564** |
+| qubits | 2,729 | 2,729 |
 
-So the earlier apparent “spiky correctness frontier” is **not** evidence of a
-1%-ish ordinary output error rate. It is almost certainly a harness-level
-artifact caused by the outer test protocol being **circuit-seeded**:
-- changing the circuit changes the sampled points and simulator randomness,
-- the harness also aborts on the first phase/garbage failure,
-- and when that failure happens inside one 64-shot batch, it can make a whole
-  contiguous block of outputs look catastrophically wrong (`got = 0,0`) even if
-  the underlying transformation is not randomly failing at that rate.
+So the current best strict end-to-end saving is:
+- **99,264 Toffoli** per point-add,
+- **1,377,792 emitted ops**,
+- with qubits unchanged.
 
-That means the right interpretation is:
-- the “thousands of failures” pattern is a **batch-correlated harness failure**,
-  not a smooth per-shot Bernoulli error process,
-- and the fixed-sample A/B comparison is the better guide for approximate-
-  correctness experiments on this moonshot.
+The main failure signature on nonpassing settings is still overwhelmingly:
+- **phase-garbage batches**,
+- with only occasional tiny classical mismatch counts,
+- and essentially no ancilla-garbage batches.
 
-This is still much smaller than the original moonshot pitch, but it is now a
-substantially more credible **real integrated** line than it first looked.
+This means the integrated bulk-prefix line is better than it first looked, but
+it is still fundamentally constrained by a coherent phase issue rather than a
+broad classical-output failure.
 
 ### Interpretation
 - The specialized early-bulk primitive is now the first **actually integrated**
   moonshot-derived improvement in the live point-add path.
-- The fixed-sample A/B results suggest the live replacement can be pushed far
-  beyond 32 iterations without visible output errors on the same 9024 points.
-- The standard circuit-seeded harness is still useful for baseline correctness,
-  but for this approximate-correctness line it can be misleading because it
-  conflates changed sampling, simulator randomness, phase garbage, and output
-  mismatches.
-- So from here on, the right hard-experiment loop is:
-  1. use fixed-sample A/B to estimate approximate correctness and value,
-  2. then use the standard harness as a stricter secondary filter.
+- The currently best strict known setting is `k = 96`, not `k = 32`.
+- The strange pass/fail structure is now best interpreted as a **phase-
+  cancellation / phase-defect** phenomenon in the full scaffold, not as a
+  generic approximation error on elliptic-curve points.
+- So the right hard-experiment loop remains:
+  1. push `k` using `main.rs`,
+  2. classify failures by phase/classical/ancilla counts,
+  3. and keep hunting the coherent phase source.
 
 ## Revised state of the moonshot
 The good news:
@@ -676,22 +673,24 @@ So the right concrete target is now:
 
 ## Proposed next sessions
 
-### P1. Push the integrated bulk-prefix replacement much further on fixed-sample A/B
+### P1. Push the strict `main.rs` frontier beyond 96
 The highest-value next step is now:
-- keep increasing the integrated replacement length beyond 128,
-- use the fixed 9024-point A/B harness as the primary approximate-correctness
-  filter,
-- and map the real Toffoli/correctness tradeoff curve.
+- keep increasing the integrated replacement length past `k = 96`,
+- only trust settings that pass the full `main.rs` harness,
+- and map the real Toffoli / phase-garbage frontier.
 
 This is the shortest path to juicing the integrated finding.
 
-### P2. Diagnose the harness-level phase/garbage spikes
-We now know the “thousands of failures” pattern is likely batch-correlated and
-protocol-driven. The next truth-finding step is to separate:
-- output mismatch,
-- phase garbage,
-- ancilla garbage,
-- and circuit-seeded sample drift.
+### P2. Find the coherent phase source in the full scaffold
+The local and semi-local probes now suggest the phase bug is not in:
+- the isolated specialized step,
+- the isolated Kaliski inverse identity,
+- the pair1 block,
+- the pair1+pair2 block,
+- or the mul-composed inverse block at the small tested failing case.
+
+So the next truth-finding step is to identify the first full top-level scaffold
+boundary where the generic and experimental circuits diverge in phase.
 
 ### P3. Apply the moonshot structure to other domains
 The real transferable idea here is not “3-step exact key lookup” but:
@@ -712,10 +711,10 @@ replacement is currently the harder and more productive implementation path.
 The strongest current research judgement is:
 
 > The best immediate hard-implementation line is the experimentally integrated
-> specialized nonterminal bulk-prefix replacement. On a fixed 9024-point A/B
-> sample it now shows **0 observed mismatches** out to at least `k = 128`, with
-> Toffoli steadily dropping to **4,262,194** at `k = 128`.
+> specialized nonterminal bulk-prefix replacement, and the best strict result
+> currently confirmed through `main.rs` is **`k = 96`**, giving a real end-to-
+> end reduction to **4,295,282 Toffoli**.
 
-The standard circuit-seeded harness remains important, but for this approximate-
-correctness direction it is no longer the only truth source; the fixed-sample
-A/B harness is the right tool for pushing this moonshot further.
+The remaining blocker is no longer whether the specialized primitive itself is
+classically sound; it is the coherent phase defect that appears only in the full
+integrated scaffold for many nonpassing `k` values.
