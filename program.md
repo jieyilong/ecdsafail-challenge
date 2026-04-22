@@ -26,7 +26,7 @@ Minimize the metric `avg executed Toffoli` printed by `cargo run --release`.
    - the forward∘reverse identity check passes — after running the
      circuit and then its gate-reversed inverse, every qubit returns to
      its pre-forward snapshot.
-2. `qubits` (peak live) must be ≤ **3700** (≈ current baseline).
+2. `qubits` (peak live) must be ≤ **2800** (≈ current baseline).
    We need to reduce qubits over time to the below results; never exceed the current best's
    qubit count by more than 5% unless the Toffoli win is >10%.
 3. `cargo build --release` must succeed with no warnings introduced by your
@@ -139,20 +139,17 @@ the row.
 - (Remaud et al. 2024 — Optimizing T and CNOT gates in quantum ripple-carry adders and comparators, https://arxiv.org/abs/2401.17921)                                                               
 - (Banegas et al. 2022 — Reducing the depth of quantum FLT-based inversion circuit, https://eprint.iacr.org/2022/463.pdf)
   
-To be clear, it takes enormous effort. But we need to do it. Please be thorough and get it done. Don't escape to me and loop forever. My trust is in you.    
-  
-You can create something crazy here. Scour the internet if need be, looks for inspiration in all different places, try you own ideasm synthesis, whatever. But dont stop. LOOP FOREVER.
+When you get stuck, try your own ideas and do more research.
 
 ## Go big
 
 We're trying to **win** against SOTA (2.1M–2.7M Toffoli target).
 You are authorized to make high-ambition changes: rewrite primitives
-from scratch, swap in a new algorithm (safegcd, Jacobian, Montgomery,
-windowed mul, Karatsuba), do thousand-line refactors in a single
+from scratch, swap in a new algorithm, do thousand-line refactors in a single
 commit, and spend full sessions on moonshots that might not pan out.
 The only immovable constraint is the harness contract.
 
-If there are small improvements that are worth implementing though, go ahead. But the big things will be the things that make us win.
+Micro optimizations are explicitly banned. They are a waste of time.
 
 ## Rules of thumb
 
@@ -167,9 +164,6 @@ If there are small improvements that are worth implementing though, go ahead. Bu
 
 Keep iterating until one of:
 - You hit the zenodo low-qubit target (2.7M Toffoli @ ≤1175 qubits).
-- You get stuck: 10 consecutive experiments with no improvement.
-  In that case, try a structurally different idea (switch category in the
-  seed list). Do not pause for human input.
 - The user interrupts.
 
 What is key is that you do not stop until you meet the above. The world is your oyster. LOOP FOREVER.
