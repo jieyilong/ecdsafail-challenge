@@ -45,6 +45,7 @@ use alloy_primitives::U256;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 
 use super::SECP256K1_P;
+use super::test_timeout::{check_deadline, two_min_deadline};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Mat2 {
@@ -237,6 +238,7 @@ pub fn hybrid_kaliski_window_survey(
     w: usize,
     t: usize,
 ) -> HybridStats {
+    let deadline = two_min_deadline();
     let mut sampler = Sampler::new(seed, SECP256K1_P);
     let mut global_uv_mats: BTreeSet<Mat2> = BTreeSet::new();
     let mut global_rs_mats: BTreeSet<Mat2> = BTreeSet::new();
@@ -252,7 +254,8 @@ pub fn hybrid_kaliski_window_survey(
     let mut sum_log2_rs_entry_abs = 0.0f64;
     let mut counted_rs_mats = 0usize;
 
-    for _ in 0..n_inputs {
+    for input_idx in 0..n_inputs {
+        if (input_idx & 31) == 0 { check_deadline(deadline, "kaliski_jump::hybrid_kaliski_window_survey"); }
         let mut u = SECP256K1_P;
         let mut v = sampler.next();
         for _ in 0..742 {

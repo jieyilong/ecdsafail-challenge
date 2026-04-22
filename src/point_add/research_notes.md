@@ -279,18 +279,27 @@ For `t = 4`, produce:
 - the exact `(uv_mat, rs_mat)` pair,
 - the low-bit preconditions / compare-bit conditions under which they occur.
 
-This is the final classical step before a real reversible design sketch.
+This remains the final classical step before a real reversible design sketch.
 
 ### P2. Design a compressed reversible lookup interface
-Use the ambiguity results to design a plausible lookup key:
-- `(u_low, v_low, cmp0, cmp1)`
-- or a slightly richer key if needed.
-Then estimate the actual reversible cost of selecting 1 of ≤4 possible classes.
+Use the ambiguity results to design a plausible lookup key.
+
+Current best empirical candidate for `w = 8, t = 4`:
+- key = `(u_low, v_low, cmp0, cmp1)`
+- ambiguity = **mean 1.742 classes**, max 4.
+
+This is already small enough that a reversible selector could plausibly choose
+among a handful of candidate 4-step transforms instead of indexing a huge QROM.
 
 ### P3. Choose between `t = 4` and `t = 6`
 `t = 4` has tiny matrices and tiny alphabet.
 `t = 6` has larger matrices but still a modest family (1133).
 Need to compare fewer batches vs. more expensive matrix-apply.
+
+Current empirical leaning: `t = 4` is the better first prototype because:
+- only 125 joint classes globally,
+- max entry only 16,
+- and ambiguity can be pushed near 1.7 with just two compare bits.
 
 ## Bottom line
 

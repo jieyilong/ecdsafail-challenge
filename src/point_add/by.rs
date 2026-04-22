@@ -24,8 +24,12 @@
 //! full `2^w` growth. So the original pessimistic reversible cost model was
 //! basically right.
 
+use std::time::Instant;
+
 use alloy_primitives::U256;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
+
+use super::test_timeout::{check_deadline, two_min_deadline};
 
 /// secp256k1 prime: p = 2^256 − 2^32 − 977.
 pub const SECP256K1_P: U256 = U256::from_limbs([
@@ -358,7 +362,9 @@ pub fn survey(
         modinv_mismatches: 0,
     };
 
-    for _ in 0..n_samples {
+    let deadline = two_min_deadline();
+    for i in 0..n_samples {
+        if (i & 127) == 0 { check_deadline(deadline, "by::survey"); }
         let x = sampler.next();
         let run = run_divsteps(x, p, max_iters);
         if !run.converged {
@@ -567,8 +573,10 @@ pub fn jump_matrix_entry_survey(seed: &[u8], n_samples: usize, w: usize) -> Jump
         sum_log2_entry_abs: 0.0,
         nonzero_entries: 0,
     };
+    let deadline = two_min_deadline();
     let mut buf = [0u8; 24];
-    for _ in 0..n_samples {
+    for i in 0..n_samples {
+        if (i & 1023) == 0 { check_deadline(deadline, "by::jump_matrix_entry_survey"); }
         reader.read(&mut buf);
         let mut f_low = u64::from_le_bytes(buf[0..8].try_into().unwrap()) as i128;
         let g_low = u64::from_le_bytes(buf[8..16].try_into().unwrap()) as i128;

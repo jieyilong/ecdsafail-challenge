@@ -63,6 +63,7 @@ use crate::circuit::{BitId, Op, OperationType, QubitId, RegisterId};
 pub mod by;
 pub mod kaliski_jump;
 pub mod kaliski_jump_extra;
+pub mod test_timeout;
 
 struct B {
     pub ops: Vec<Op>,

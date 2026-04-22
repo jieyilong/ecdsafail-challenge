@@ -18,6 +18,7 @@ use sha3::digest::{ExtendableOutput, Update, XofReader};
 
 use super::SECP256K1_P;
 use super::kaliski_jump::{observe_window, kaliski_step_uv};
+use super::test_timeout::{check_deadline, two_min_deadline};
 
 pub struct Sampler {
     reader: Box<dyn XofReader>,
@@ -96,6 +97,7 @@ pub fn ambiguity_survey(
     w: usize,
     t: usize,
 ) -> (AmbiguityStats, AmbiguityStats, AmbiguityStats, AmbiguityStats) {
+    let deadline = two_min_deadline();
     let mut sampler = Sampler::new(seed, SECP256K1_P);
     let mut low: BTreeMap<(u16,u16), BTreeSet<Vec<u8>>> = BTreeMap::new();
     let mut low_cmp0: BTreeMap<(u16,u16,bool), BTreeSet<Vec<u8>>> = BTreeMap::new();
@@ -104,7 +106,8 @@ pub fn ambiguity_survey(
     let mask = if w == 16 { U256::from(0xFFFFu64) } else { (U256::from(1u64) << w).wrapping_sub(U256::from(1u64)) };
 
     let mut total_windows = 0usize;
-    for _ in 0..n_inputs {
+    for input_idx in 0..n_inputs {
+        if (input_idx & 31) == 0 { check_deadline(deadline, "kaliski_jump_extra::ambiguity_survey"); }
         let mut u = SECP256K1_P;
         let mut v = sampler.next();
         for _ in 0..742 {
