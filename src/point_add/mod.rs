@@ -61,6 +61,8 @@ use alloy_primitives::U256;
 use crate::circuit::{BitId, Op, OperationType, QubitId, RegisterId};
 
 pub mod by;
+pub mod kaliski_jump;
+pub mod kaliski_jump_extra;
 
 struct B {
     pub ops: Vec<Op>,

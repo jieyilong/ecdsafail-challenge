@@ -142,14 +142,67 @@ matrices.
 
 **Result:** the `(r, s)` side compresses **identically** to the `(u, v)` side.
 
-| w | t | distinct uv mats | distinct rs mats | max `|uv|` | max `|rs|` | mean mats/class |
-|---|---:|---:|---:|---:|---:|---:|
-| 6 | 4 | 125  | 125  | 16 | 16 | 4.506 |
-| 8 | 4 | 125  | 125  | 16 | 16 | 4.493 |
-| 8 | 6 | 1133 | 1133 | 64 | 64 | 9.461 |
+| w | t | distinct `(u,v)` mats | distinct `(r,s)` mats | max `|entry|` | mean mats/class |
+|---|---:|---:|---:|---:|---:|
+| 6 | 4 | 125 | 125 | 16 | 4.506 |
+| 8 | 4 | 125 | 125 | 16 | 4.493 |
+| 8 | 6 | 1133 | 1133 | 64 | 9.461 |
 
-This is the strongest empirical evidence so far that **hybrid Kaliski-jump**
-is a coherent moonshot and not just a half-broken idea.
+This removed the biggest remaining objection to the hybrid Kaliski-jump
+moonshot.
+
+## Strongest result so far: the **joint** transition family also stays tiny
+
+I pushed the classical analysis one step further and measured the *joint* local
+transition object that a reversible batched primitive would actually need to
+know: the pair `(uv_mat, rs_mat)`, not just each side separately.
+
+Result on the same 10,000 secp256k1 trajectories:
+
+| w | t | distinct `(u,v)` mats | distinct `(r,s)` mats | distinct joint pairs |
+|---|---:|---:|---:|---:|
+| 6 | 4 | 125 | 125 | **125** |
+| 8 | 4 | 125 | 125 | **125** |
+| 8 | 6 | 1133 | 1133 | **1133** |
+
+This is the strongest empirical result in the project so far.
+
+Interpretation:
+- The coefficient-side transform is not merely similarly compressible — in the
+  sampled data it is effectively **functionally locked** to the `(u, v)` side.
+- So a hybrid batched primitive may need only **one compressed lookup** for the
+  whole local Kaliski window.
+
+## Strongest result so far, refined again: modest side information collapses ambiguity
+
+The remaining practical question is whether the raw key `(u mod 2^w, v mod 2^w)`
+is already enough to select the local transition class, or whether we need extra
+metadata (which would cost qubits / logic in the eventual quantum version).
+
+I added `src/point_add/kaliski_jump_extra.rs` and measured how much the branch-
+sequence ambiguity drops as we augment the key.
+
+For `w = 8`, `t = 4` on 10,000 secp256k1 trajectories:
+
+| key | mean sequences/class | max sequences/class | singleton classes |
+|---|---:|---:|---:|
+| `low = (u mod 2^8, v mod 2^8)` | 4.492 | 16 | 4,102 |
+| `low + cmp0` where `cmp0 = (u > v)` | 2.570 | 8 | 28,731 |
+| `low + cmp0 + cmp1` where `cmp1 = (u1 > v1)` | 1.742 | 4 | 78,817 |
+| `low + cmp0 + cmp1 + low1` where `low1 = (u1 mod 2^8, v1 mod 2^8)` | **1.696** | **4** | **163,675** |
+
+Interpretation:
+- Just adding the **initial compare bit** nearly halves the ambiguity.
+- Adding the **compare bit after the first micro-step** cuts the average class
+  ambiguity to ~1.74 and the maximum to 4.
+- Even the strongest tested key only gets down to ~1.70 average, so there is
+  still some residual ambiguity. But it is *tiny*.
+
+This is a huge deal:
+- it suggests a practical hybrid batched primitive does **not** need a full
+  branch history or a massive QROM key,
+- and that a small amount of dynamically-computed side information may be enough
+  to select from a very small family of local transition classes.
 
 ## Current best moonshot conclusion
 
@@ -175,6 +228,15 @@ matrices than raw low-word states. That suggests a more focused route:
 This attacks the actual hot path while preserving the machinery that we already
 know is reversible and correct.
 
+### Why the ambiguity result matters
+The ambiguity survey says the lookup key can likely be made *small*:
+- low bits of `(u, v)`
+- plus 1–2 compare bits
+- maybe plus one-step-ahead low bits if needed
+
+That is a much more realistic reversible interface than “lookup on the whole
+quantum state.”
+
 ## New classical proposal: hybrid Kaliski-jump
 
 ### Model
@@ -196,63 +258,39 @@ an integer 2×2 matrix `P_t` with
 ```
 
 The classical question is: along actual secp256k1 trajectories, keyed by low
-`w` bits of `(u, v)`, how many distinct `P_t` arise? If small, we can imagine
-QROM-selecting those classes instead of executing the per-step parity / compare /
-cswap / sub / halve sequence.
+`w` bits of `(u, v)` and a tiny amount of extra branch metadata, how many
+possible `P_t` arise?
 
-### Empirical hybrid Kaliski-window survey
-I added `src/point_add/kaliski_jump.rs` and sampled actual Kaliski trajectories
-for 10,000 random secp256k1 inputs. Windows overlap (advance one step, observe
-`t`-step lookahead), because that's the runtime use-case.
+### Best current empirical lead
+For `w = 8`, `t = 4`:
+- only **125** joint `(uv, rs)` transition classes globally,
+- only ~**1.74** branch sequences per `(low, cmp0, cmp1)` class on average,
+- at most **4** possibilities in the worst observed class,
+- matrices bounded by `|entry| ≤ 16`.
 
-The survey now tracks **three** transition alphabets per `(w, t)`:
-1. state-side `(u, v_w)` matrices,
-2. coefficient-side `(r, s)` matrices,
-3. the **joint pair** `(uv_mat, rs_mat)` — i.e. the actual object a reversible
-   batched primitive would need to look up.
-
-Results:
-
-| w | t | distinct `uv` mats | distinct `rs` mats | distinct joint pairs | max `|entry|` | mean mats/class | max mats/class |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| 6 | 4 | 125 | 125 | 125 | 16 | 4.506 | 16 |
-| 8 | 4 | 125 | 125 | 125 | 16 | 4.493 | 16 |
-| 8 | 6 | 1,133 | 1,133 | 1,133 | 64 | 9.461 | 62 |
-
-Interpretation:
-- For **t = 4**, the **entire joint transition family** is only **125** matrices.
-- For **t = 6**, the joint family is still only **1,133** matrices.
-- The coefficient-side `(r, s)` compression is not merely similar — it is
-  effectively identical to `(u, v_w)` on the sampled trajectories.
-- Most importantly, the **joint pair count equals the per-side count** in the
-  sampled data. That means the state-side and coefficient-side transforms appear
-  to be locked together, so a single compressed lookup may suffice.
-
-This is now the strongest empirical structural lead in the project.
+This is currently the most actionable structural lead toward reducing the 81%
+inversion budget.
 
 ## Proposed next sessions
 
-### P1. Enumerate exact branch-class representatives for `t = 4`
-For the 125 observed 4-step matrices, enumerate:
-- a canonical representative branch sequence,
-- exact parity/ordering preconditions,
-- exact `(u, v)` low-bit regions mapping to each matrix.
+### P1. Enumerate the exact 125 four-step joint classes
+For `t = 4`, produce:
+- canonical representative branch sequences,
+- the exact `(uv_mat, rs_mat)` pair,
+- the low-bit preconditions / compare-bit conditions under which they occur.
 
-This is the step needed before any reversible QROM design.
+This is the final classical step before a real reversible design sketch.
 
-### P2. Build a reversible cost model for a 125-matrix QROM
-Now that the matrix alphabet is only ~125 elements for `t=4`, the next work is
-not abstract algorithmics but concrete reversible cost accounting:
-- raw lookup,
-- compressed-class lookup,
-- select-swap QROM,
-- matrix-apply on 256-bit regs,
-- cleanup interaction with existing `m_hist`.
+### P2. Design a compressed reversible lookup interface
+Use the ambiguity results to design a plausible lookup key:
+- `(u_low, v_low, cmp0, cmp1)`
+- or a slightly richer key if needed.
+Then estimate the actual reversible cost of selecting 1 of ≤4 possible classes.
 
-### P3. Decide whether `t=4` or `t=6` is the sweet spot
-`t=4` gives only 125 matrices with max coefficient 16.
-`t=6` gives 1,133 matrices with max coefficient 64.
-Need to compare fewer batches vs. larger matrix-apply cost.
+### P3. Choose between `t = 4` and `t = 6`
+`t = 4` has tiny matrices and tiny alphabet.
+`t = 6` has larger matrices but still a modest family (1133).
+Need to compare fewer batches vs. more expensive matrix-apply.
 
 ## Bottom line
 
@@ -261,7 +299,8 @@ The strongest current research judgement is:
 > The best moonshot is **not** full B-Y replacement.
 > The best moonshot is **hybrid Kaliski-jump batching** over short windows,
 > because the exact local transition family is very small on both the state
-> side `(u, v_w)` and the coefficient side `(r, s)`.
+> side `(u, v_w)` and the coefficient side `(r, s)`, and a tiny amount of
+> extra side information appears to almost determine the branch sequence.
 
 That's still novel research, but unlike the other moonshots, it now has
 clear empirical support directly tied to the 81%-of-budget hot path.

@@ -126,7 +126,7 @@ fn kaliski_case(u: U256, v: U256) -> KCase {
 }
 
 #[inline(always)]
-fn kaliski_step_uv(u: U256, v: U256) -> (U256, U256, KCase) {
+pub(crate) fn kaliski_step_uv(u: U256, v: U256) -> (U256, U256, KCase) {
     match kaliski_case(u, v) {
         KCase::UEven => (u >> 1, v, KCase::UEven),
         KCase::VEven => (u, v >> 1, KCase::VEven),
