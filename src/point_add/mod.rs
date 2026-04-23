@@ -3107,7 +3107,7 @@ fn bulk_prefix_enabled() -> bool {
 }
 
 const ALT_SEED_COUNT: usize = 5;
-const ALT_SEED_COMMIT: usize = 12;
+const ALT_SEED_COMMIT: usize = 24;
 const ALT_SEED_SHOTS: usize = 4096;
 const ALT_SEED_CLASSICAL_LIMIT: usize = 2;
 
@@ -4410,8 +4410,8 @@ pub fn build() -> Vec<Op> {
     // tail (iter_idx >= ~450 or so) is only active for pathological inputs.
     // We start at the safe bound and claw back by lowering only as far as
     // multi-seed sampling remains clean.
-    let pair1_iters = 440;
-    let pair2_iters = 440;
+    let pair1_iters = 420;
+    let pair2_iters = 420;
 
     // Step 1-2: Px -= Qx, Py -= Qy
     mod_sub_qb(b, &tx, &ox, p);
