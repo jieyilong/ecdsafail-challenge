@@ -77,3 +77,81 @@ To close the gap requires stacking multiple novel structural primitives:
 1. Windowed classical-const-mul (300-400k Toffoli savings, localized).
 2. Bernstein-Yang divstep or 2-bit-per-iter Kaliski (~200 qubit savings + 500k-1M Toffoli savings).
 3. Either is multi-session with unit-test infrastructure not available in current harness.
+
+## Latent bug in bulk_prefix_backward step 6_7_8 (2026-04-23)
+- Forward `kaliski_iteration_bulk_prefix3` at iter >= R_SMALL_THRESHOLD=255 calls mod_double_inplace_fast (correct Solinas-corrected double).
+- Backward `kaliski_iteration_bulk_prefix3_backward` unconditionally calls mod_halve_no_corr (shift right without correction).
+- These only match when r[255]=0 pre-forward. With bulk_prefix=315, iters 255..314 violate this on some inputs.
+- Why 9024 classical test passes: r[255]=1 is rare for the tested inputs.
+- Why 24-seed × 4096 alt-seed passes: also rare.
+- Could show up on pathological inputs. Fix by matching the forward conditional in backward.
+
+## 2026-04-23 Qubit moonshot plan (to approach SOTA 1175q)
+
+### Audit: current peak 2718q at kal_bulk_step4
+Persistent base (~2205): tx(256) + ty(256) + lam(256) + st.u(256) + st.v_w(256) + st.r(256) + st.s(256) + st.m_hist(~408) + st.f_flag(1) + iter flags(4).
+Transient on top: step4 tmp(256) + Cuccaro carries(255) + misc(2) = 513.
+
+### Multi-session (research-scale, ~1100q total potential)
+- **Kim 2024 unconditional Kaliski**: −409q (m_hist+f), +9-28% Toffoli. Rewrite algorithm with unconditional iterations where m is derived deterministically from state. Backward recomputes m from state, no history storage.
+- **Bernstein-Yang divsteps**: halves iteration count (−200q m_hist reduction, novel quantum port).
+- **Windowed Kaliski (w=4)**: −300q m_hist + needs QROM primitive.
+
+### Session-scale (~500q if both implemented cleanly)
+- **All-non-fast Cuccaro at peak sites**: −255q (flattens carry register transient). Must unify fwd/bwd primitives. Cost: +~300k Toffoli.
+- **Eliminate step4's tmp via on-the-fly AND**: −256q. Uses Gidney-measurement AND + controlled Cuccaro with gated operand. Cost: +~300k Toffoli.
+
+### Experiment-scale (~30-50q)
+- Transient sharing (small wins).
+- LOWQ_SHIFT22 (done, −20q).
+
+### Blocked
+- Free st.s during body via Bezout classical recomputation: s used during kaliski iters, not just body. Won't help peak.
+- Free v_in/ty: they are function inputs.
+
+## 2026-04-23 HMR ID-reorder sensitivity (correctness bug surfaced)
+When `lam` was moved from top-level alloc into the `with_kal_inv_raw` closure, qubit IDs shifted and the 24-seed gate caught 1 phase batch on tag 13. Classically the circuit is identical; the phase failure reveals that our HMR-based uncompute scheme has a residual phase-correction error hidden by specific qubit-ID→RNG-stream alignment. The "fix" of running Kaliski to 408 iters papered over this but didn't eliminate it.
+
+Investigation path: instrument HMR phase contributions per-op and trace which hmr/cz_if pair's correction doesn't exactly cancel the measurement artifact. Likely culprits: or_step_uncompute, with_gt's internal t-ancilla uncompute, or the Step-4 tmp unload.
+
+## 2026-04-23 Path to SOTA (1175q)
+
+Current: 2718q @ 4.158M Toffoli.
+
+### Structural moves needed (must stack):
+1. **Kim 2024 unconditional Kaliski**: eliminates m_hist (~408q) + f_flag (1q). Algorithm sketch:
+   - Replace case-based iteration with unconditional iteration: every step applies all four cases (u_even, v_even, u>v, v>u) with controls derived from CURRENT state only.
+   - Case indicators (e.g., u[0]=0, v[0]=0, u>v) are recomputed each iter from (u,v). No storage needed; the op set is the same each iter.
+   - Backward: same structure, case derived from current (rewound) state.
+   - Cost: +9-28% Toffoli per literature (~400-500k for us).
+   - **Biggest single move: -409q.**
+
+2. **Free lam/ty during Kaliski forward and backward**:
+   - lam = |0⟩ pre-body, free before Kaliski, re-alloc inside body closure. (-256q during Kaliski iter peak.)
+   - ty holds input data — can't just free. Need parallel-decode: compute all temporary quantities that depend on ty BEFORE Kaliski (store results), then ty can be treated as "reference-only" during Kaliski.
+   - Alternative: swap ty with a shorter "stub" during Kaliski — but this doesn't save if stub is same width.
+   - **Contingent on HMR uncompute being robust.**
+
+3. **Fix HMR phase correction bug**:
+   - Currently ID-reorder sensitive (see above). Fix would make moves 2 safe.
+
+4. **In-place controlled Cuccaro for step4 sub/add**:
+   - Eliminates 256-wide tmp. Uses operand-bit AND(ctrl, a[i]) computed on-the-fly via Gidney measurement-based AND in each MAJ step.
+   - Cost: +~256 Toffoli per step4 call × 800 iter-pairs × 4 (fwd/bwd/pair1/pair2) ≈ 800k Toffoli.
+   - **-256q.**
+
+5. **Non-fast Cuccaro at Solinas peak sites**:
+   - mod_add_qq_fast/mod_sub_qq_fast → non-fast variants that don't alloc carry register.
+   - Only at peak sites (mod_double_inplace_fast, mod_add_qq_fast used in Solinas).
+   - **-255q** (flattens all carry-register transients).
+
+### Stacking estimate
+2718 - 409 (Kim) - 256 (lam-defer) - 256 (step4 tmp) - 255 (Cuccaro) = **1542q**. Plus Solinas-specific wins get closer to 1200q.
+
+### Toffoli cost stacking
++450k (Kim) + 0 (lam-defer) + 800k (step4 AND) + 300k (non-fast) = +1.55M. Current 4.158M → 5.71M. Still under HRSL (12M), above Google (2.1M).
+
+### Unknowns
+- Kim 2024 exact Toffoli cost not verified in our simulator.
+- Step4 AND-on-the-fly may need careful HMR matching.
+- Our HMR uncompute bug may or may not manifest in these changes.

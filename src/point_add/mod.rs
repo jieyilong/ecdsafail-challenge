@@ -3688,6 +3688,7 @@ fn or_step_uncompute(b: &mut B, x: QubitId, y: QubitId, out: QubitId) {
 /// first few guaranteed-bulk nonterminal iterations.
 fn kaliski_iteration_bulk_prefix3_backward(
     b: &mut B,
+    p: U256,
     u: &[QubitId],
     v_w: &[QubitId],
     r: &[QubitId],
@@ -3715,8 +3716,17 @@ fn kaliski_iteration_bulk_prefix3_backward(
     for j in (0..n).rev() { cswap(b, a_f, u[j], v_w[j]); }
 
     // Reverse STEP 8+7 and STEP 6.
+    // Bug fix: forward uses mod_double_inplace_fast (with Solinas correction)
+    // for iter_idx >= R_SMALL_THRESHOLD, so backward must mirror with
+    // mod_halve_inplace_fast to cover the case where r[255]=1 pre-double.
+    // Previously unconditional mod_halve_no_corr was a latent bug that
+    // happened not to manifest in tested seeds.
     b.set_phase("bk_bulk_step6_7_8");
-    mod_halve_no_corr(b, r);
+    if iter_idx < R_SMALL_THRESHOLD {
+        mod_halve_no_corr(b, r);
+    } else {
+        mod_halve_inplace_fast(b, r, p);
+    }
     for i in (0..(n - 1)).rev() { b.swap(v_w[i], v_w[i + 1]); }
 
     // Reverse STEP 5.
@@ -4006,7 +4016,7 @@ fn kaliski_backward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, ite
     for i in (0..iters).rev() {
         if use_bulk_prefix3 && i < bulk_prefix_iters {
             kaliski_iteration_bulk_prefix3_backward(
-                b, &st.u, &st.v_w, &st.r, &st.s,
+                b, p, &st.u, &st.v_w, &st.r, &st.s,
                 st.m_hist[i],
                 i,
             );

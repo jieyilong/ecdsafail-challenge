@@ -214,7 +214,7 @@ fn build_special_prefix_fb(k: usize) -> PrefixCircuit {
         kaliski_iteration_bulk_prefix3(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], i);
     }
     for i in (0..k).rev() {
-        kaliski_iteration_bulk_prefix3_backward(&mut b, &u, &v, &r, &s, m_hist[i], i);
+        kaliski_iteration_bulk_prefix3_backward(&mut b, super::SECP256K1_P, &u, &v, &r, &s, m_hist[i], i);
     }
     PrefixCircuit {
         ops: b.ops,
@@ -511,7 +511,7 @@ mod tests {
             kaliski_iteration_bulk_prefix3(&mut bs, SECP256K1_P, &us, &vs, &rs, &ss, mhs[i], i);
         }
         for i in (0..3).rev() {
-            super::super::kaliski_iteration_bulk_prefix3_backward(&mut bs, &us, &vs, &rs, &ss, mhs[i], i);
+            super::super::kaliski_iteration_bulk_prefix3_backward(&mut bs, super::super::SECP256K1_P, &us, &vs, &rs, &ss, mhs[i], i);
         }
         let special_fb = StepCircuit {
             ops: bs.ops,
