@@ -1,11 +1,9 @@
 /// This file contains code for working with kickmix circuit files.
-
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum OperationType {
     Neg = 0,
     Register = 1,
@@ -53,29 +51,57 @@ impl OperationType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct QubitId(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct BitId(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct RegisterId(pub u32);
 
 pub const NO_QUBIT: QubitId = QubitId(u32::MAX);
 pub const NO_BIT: BitId = BitId(u32::MAX);
 pub const NO_REG: RegisterId = RegisterId(u32::MAX);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum QubitOrBit {
     Qubit(QubitId),
     Bit(BitId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Op {
     pub kind: OperationType,
     pub q_control2: QubitId,
@@ -157,8 +183,6 @@ impl Op {
     }
 }
 
-
-
 pub fn analyze_ops(ops: impl Iterator<Item = Op>) -> (u32, u32, u32, Vec<Vec<QubitOrBit>>) {
     let mut registers: Vec<Vec<QubitOrBit>> = Vec::new();
     let mut num_qubits = 0;
@@ -189,14 +213,15 @@ pub fn analyze_ops(ops: impl Iterator<Item = Op>) -> (u32, u32, u32, Vec<Vec<Qub
         }
         if native_op.kind == OperationType::AppendToRegister {
             if native_op.q_target != NO_QUBIT {
-                registers[native_op.r_target.0 as usize].push(QubitOrBit::Qubit(native_op.q_target));
+                registers[native_op.r_target.0 as usize]
+                    .push(QubitOrBit::Qubit(native_op.q_target));
             }
             if native_op.c_target != NO_BIT {
                 registers[native_op.r_target.0 as usize].push(QubitOrBit::Bit(native_op.c_target));
             }
         }
     }
-    
+
     (num_qubits, num_bits, num_registers, registers)
 }
 

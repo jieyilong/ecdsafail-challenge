@@ -61,7 +61,10 @@ pub struct SInt {
 
 impl SInt {
     pub fn zero() -> Self {
-        Self { neg: false, mag: U256::ZERO }
+        Self {
+            neg: false,
+            mag: U256::ZERO,
+        }
     }
 
     pub fn from_u(x: U256) -> Self {
@@ -72,7 +75,10 @@ impl SInt {
         if self.mag.is_zero() {
             self
         } else {
-            Self { neg: !self.neg, mag: self.mag }
+            Self {
+                neg: !self.neg,
+                mag: self.mag,
+            }
         }
     }
 
@@ -95,8 +101,14 @@ impl SInt {
 
     pub fn add(a: Self, b: Self) -> Self {
         match (a.neg, b.neg) {
-            (false, false) => Self { neg: false, mag: a.mag.wrapping_add(b.mag) },
-            (true, true) => Self { neg: true, mag: a.mag.wrapping_add(b.mag) },
+            (false, false) => Self {
+                neg: false,
+                mag: a.mag.wrapping_add(b.mag),
+            },
+            (true, true) => Self {
+                neg: true,
+                mag: a.mag.wrapping_add(b.mag),
+            },
             (false, true) => sub_mag(a.mag, b.mag),
             (true, false) => sub_mag(b.mag, a.mag),
         }
@@ -108,15 +120,24 @@ impl SInt {
 
     pub fn shr1_even(self) -> Self {
         debug_assert!(!self.bit0(), "shr1_even on odd integer");
-        Self { neg: self.neg, mag: self.mag >> 1 }
+        Self {
+            neg: self.neg,
+            mag: self.mag >> 1,
+        }
     }
 }
 
 fn sub_mag(a: U256, b: U256) -> SInt {
     if a >= b {
-        SInt { neg: false, mag: a.wrapping_sub(b) }
+        SInt {
+            neg: false,
+            mag: a.wrapping_sub(b),
+        }
     } else {
-        SInt { neg: true, mag: b.wrapping_sub(a) }
+        SInt {
+            neg: true,
+            mag: b.wrapping_sub(a),
+        }
     }
 }
 
@@ -130,11 +151,19 @@ fn addm(a: U256, b: U256, p: U256) -> U256 {
 
 fn subm(a: U256, b: U256, p: U256) -> U256 {
     let (r, borrow) = a.overflowing_sub(b);
-    if borrow { r.wrapping_add(p) } else { r }
+    if borrow {
+        r.wrapping_add(p)
+    } else {
+        r
+    }
 }
 
 fn negm(a: U256, p: U256) -> U256 {
-    if a.is_zero() { a } else { p.wrapping_sub(a) }
+    if a.is_zero() {
+        a
+    } else {
+        p.wrapping_sub(a)
+    }
 }
 
 fn mulm(a: U256, b: U256, p: U256) -> U256 {
@@ -209,7 +238,12 @@ pub fn run_divsteps(g0: U256, p: U256, max_iters: usize) -> DivstepsRun {
             delta = 1 - delta;
             f = nf;
             g = ng;
-            coeffs = Coeffs { uu: nu, vv: nv, qq: nq, rr: nr };
+            coeffs = Coeffs {
+                uu: nu,
+                vv: nv,
+                qq: nq,
+                rr: nr,
+            };
         } else if g_odd {
             // Case B:
             //   (δ, f, g) ← (1 + δ, f, (g + f) / 2)
@@ -221,7 +255,12 @@ pub fn run_divsteps(g0: U256, p: U256, max_iters: usize) -> DivstepsRun {
             let nr = addm(coeffs.rr, coeffs.vv, p);
             delta = 1 + delta;
             g = ng;
-            coeffs = Coeffs { uu: nu, vv: nv, qq: nq, rr: nr };
+            coeffs = Coeffs {
+                uu: nu,
+                vv: nv,
+                qq: nq,
+                rr: nr,
+            };
         } else {
             // Case C:
             //   (δ, f, g) ← (1 + δ, f, g / 2)
@@ -231,7 +270,12 @@ pub fn run_divsteps(g0: U256, p: U256, max_iters: usize) -> DivstepsRun {
             let nv = addm(coeffs.vv, coeffs.vv, p);
             delta = 1 + delta;
             g = ng;
-            coeffs = Coeffs { uu: nu, vv: nv, qq: coeffs.qq, rr: coeffs.rr };
+            coeffs = Coeffs {
+                uu: nu,
+                vv: nv,
+                qq: coeffs.qq,
+                rr: coeffs.rr,
+            };
         }
 
         let abs_delta = delta.unsigned_abs() as i64;
@@ -257,7 +301,9 @@ pub fn run_divsteps(g0: U256, p: U256, max_iters: usize) -> DivstepsRun {
 ///
 ///     g0^{-1} ≡ sign(f_k) · V · 2^{-k}  (mod p)
 pub fn recover_modinv(run: &DivstepsRun, p: U256) -> Option<U256> {
-    if !run.converged { return None; }
+    if !run.converged {
+        return None;
+    }
     if !(run.final_f.is_one_pos() || run.final_f.is_one_neg()) {
         return None;
     }
@@ -312,7 +358,10 @@ impl Sampler {
     pub fn new(seed: &[u8], p: U256) -> Self {
         let mut hasher = sha3::Shake128::default();
         hasher.update(seed);
-        Self { reader: Box::new(hasher.finalize_xof()), p }
+        Self {
+            reader: Box::new(hasher.finalize_xof()),
+            p,
+        }
     }
 
     pub fn next(&mut self) -> U256 {
@@ -341,16 +390,15 @@ pub struct SurveyStats {
 
 impl SurveyStats {
     pub fn mean_iters(&self) -> f64 {
-        if self.samples == 0 { 0.0 } else { self.sum_iters as f64 / self.samples as f64 }
+        if self.samples == 0 {
+            0.0
+        } else {
+            self.sum_iters as f64 / self.samples as f64
+        }
     }
 }
 
-pub fn survey(
-    sampler: &mut Sampler,
-    n_samples: usize,
-    p: U256,
-    max_iters: usize,
-) -> SurveyStats {
+pub fn survey(sampler: &mut Sampler, n_samples: usize, p: U256, max_iters: usize) -> SurveyStats {
     let mut stats = SurveyStats {
         samples: 0,
         all_converged: true,
@@ -364,7 +412,9 @@ pub fn survey(
 
     let deadline = two_min_deadline();
     for i in 0..n_samples {
-        if (i & 127) == 0 { check_deadline(deadline, "by::survey"); }
+        if (i & 127) == 0 {
+            check_deadline(deadline, "by::survey");
+        }
         let x = sampler.next();
         let run = run_divsteps(x, p, max_iters);
         if !run.converged {
@@ -372,8 +422,12 @@ pub fn survey(
         }
         let k = run.iters_done;
         stats.samples += 1;
-        if k < stats.min_iters { stats.min_iters = k; }
-        if k > stats.max_iters { stats.max_iters = k; }
+        if k < stats.min_iters {
+            stats.min_iters = k;
+        }
+        if k > stats.max_iters {
+            stats.max_iters = k;
+        }
         stats.sum_iters += k as u128;
         if run.max_abs_delta > stats.max_abs_delta {
             stats.max_abs_delta = run.max_abs_delta;
@@ -419,7 +473,9 @@ pub struct TransitionMatrix {
 ///
 /// Here we operate on ordinary signed i128 for the low-word survey only.
 pub fn truncate_i128(f: i128, t: usize) -> i128 {
-    if t == 0 { return 0; }
+    if t == 0 {
+        return 0;
+    }
     let two_t_minus_1: i128 = 1i128 << (t - 1);
     ((f + two_t_minus_1) & ((two_t_minus_1 << 1) - 1)) - two_t_minus_1
 }
@@ -462,7 +518,13 @@ pub fn divsteps2_lowword(
         delta,
         f,
         g,
-        TransitionMatrix { m00: u, m01: v, m10: q, m11: r, delta_final: delta },
+        TransitionMatrix {
+            m00: u,
+            m01: v,
+            m10: q,
+            m11: r,
+            delta_final: delta,
+        },
     )
 }
 
@@ -504,15 +566,18 @@ pub fn jump_matrix_direct_lowword(
             let (np00, np01, np10, np11) = (
                 0 * p00 + 2 * p10,
                 0 * p01 + 2 * p11,
-               -1 * p00 + 1 * p10,
-               -1 * p01 + 1 * p11,
+                -1 * p00 + 1 * p10,
+                -1 * p01 + 1 * p11,
             );
             let new_f = g;
             let new_g = (g - f) / 2;
             delta = 1 - delta;
             f = new_f;
             g = new_g;
-            p00 = np00; p01 = np01; p10 = np10; p11 = np11;
+            p00 = np00;
+            p01 = np01;
+            p10 = np10;
+            p11 = np11;
         } else if (g & 1) != 0 {
             // Case B
             let (np00, np01, np10, np11) = (
@@ -524,33 +589,39 @@ pub fn jump_matrix_direct_lowword(
             let new_g = (g + f) / 2;
             delta = 1 + delta;
             g = new_g;
-            p00 = np00; p01 = np01; p10 = np10; p11 = np11;
+            p00 = np00;
+            p01 = np01;
+            p10 = np10;
+            p11 = np11;
         } else {
             // Case C
-            let (np00, np01, np10, np11) = (
-                2 * p00,
-                2 * p01,
-                p10,
-                p11,
-            );
+            let (np00, np01, np10, np11) = (2 * p00, 2 * p01, p10, p11);
             let new_g = g / 2;
             delta = 1 + delta;
             g = new_g;
-            p00 = np00; p01 = np01; p10 = np10; p11 = np11;
+            p00 = np00;
+            p01 = np01;
+            p10 = np10;
+            p11 = np11;
         }
         n -= 1;
         t -= 1;
         g = truncate_i128(g, t);
     }
     let f_out = truncate_i128(f, t + 1); // after n=w steps, f known to t-w+1 bits
-    let g_out = truncate_i128(g, t);     // and g to t-w bits. Here `t` already decremented.
-    (delta, f_out, g_out, TransitionMatrix {
-        m00: p00,
-        m01: p01,
-        m10: p10,
-        m11: p11,
-        delta_final: delta,
-    })
+    let g_out = truncate_i128(g, t); // and g to t-w bits. Here `t` already decremented.
+    (
+        delta,
+        f_out,
+        g_out,
+        TransitionMatrix {
+            m00: p00,
+            m01: p01,
+            m10: p10,
+            m11: p11,
+            delta_final: delta,
+        },
+    )
 }
 
 #[derive(Clone, Debug, Default)]
@@ -576,7 +647,9 @@ pub fn jump_matrix_entry_survey(seed: &[u8], n_samples: usize, w: usize) -> Jump
     let deadline = two_min_deadline();
     let mut buf = [0u8; 24];
     for i in 0..n_samples {
-        if (i & 1023) == 0 { check_deadline(deadline, "by::jump_matrix_entry_survey"); }
+        if (i & 1023) == 0 {
+            check_deadline(deadline, "by::jump_matrix_entry_survey");
+        }
         reader.read(&mut buf);
         let mut f_low = u64::from_le_bytes(buf[0..8].try_into().unwrap()) as i128;
         let g_low = u64::from_le_bytes(buf[8..16].try_into().unwrap()) as i128;
@@ -585,7 +658,9 @@ pub fn jump_matrix_entry_survey(seed: &[u8], n_samples: usize, w: usize) -> Jump
         let (_, _, _, m) = jump_matrix_direct_lowword(w, w, delta, f_low, g_low);
         for &e in &[m.m00, m.m01, m.m10, m.m11] {
             let abs = e.wrapping_abs();
-            if abs > stats.max_entry_abs { stats.max_entry_abs = abs; }
+            if abs > stats.max_entry_abs {
+                stats.max_entry_abs = abs;
+            }
             if abs > 0 {
                 stats.sum_log2_entry_abs += (abs as f64).log2();
                 stats.nonzero_entries += 1;
@@ -686,7 +761,10 @@ pub fn run_classical_test() {
         eprintln!("=== jumpdivstep matrix-entry survey (w={}) ===", w);
         eprintln!("samples                 : {}", js.samples);
         eprintln!("max |entry| observed    : {}", js.max_entry_abs);
-        eprintln!("max log2 |entry|        : {:.3}", (js.max_entry_abs as f64).log2());
+        eprintln!(
+            "max log2 |entry|        : {:.3}",
+            (js.max_entry_abs as f64).log2()
+        );
         eprintln!("mean log2 |entry|       : {:.3}", mean_log2);
         eprintln!("theoretical max log2    : {}", w);
         eprintln!("===========================================");
@@ -745,9 +823,12 @@ mod tests {
 
         assert!(stats.all_converged);
         assert_eq!(stats.modinv_mismatches, 0);
-        assert!(stats.max_iters <= theoretical_bound,
+        assert!(
+            stats.max_iters <= theoretical_bound,
             "observed max iters {} exceeds theoretical bound {}",
-            stats.max_iters, theoretical_bound);
+            stats.max_iters,
+            theoretical_bound
+        );
     }
 
     #[test]
@@ -763,12 +844,19 @@ mod tests {
             eprintln!("=== jumpdivstep matrix-entry survey (w={}) ===", w);
             eprintln!("samples                 : {}", stats.samples);
             eprintln!("max |entry| observed    : {}", stats.max_entry_abs);
-            eprintln!("max log2 |entry|        : {:.3}", (stats.max_entry_abs as f64).log2());
+            eprintln!(
+                "max log2 |entry|        : {:.3}",
+                (stats.max_entry_abs as f64).log2()
+            );
             eprintln!("mean log2 |entry|       : {:.3}", mean_log2);
             eprintln!("theoretical max log2    : {}", w);
             eprintln!("===========================================");
-            assert!(stats.max_entry_abs <= (1i128 << w),
-                "w={} entry {} exceeded 2^w", w, stats.max_entry_abs);
+            assert!(
+                stats.max_entry_abs <= (1i128 << w),
+                "w={} entry {} exceeded 2^w",
+                w,
+                stats.max_entry_abs
+            );
         }
     }
 
@@ -785,9 +873,15 @@ mod tests {
             eprintln!("most common count    : {}", hist.most_common_count);
             eprintln!("unique singleton mats: {}", hist.total_unique_rows);
             if let Some(m) = hist.most_common_matrix {
-                eprintln!("most common matrix   : [[{}, {}], [{}, {}]]", m.m00, m.m01, m.m10, m.m11);
+                eprintln!(
+                    "most common matrix   : [[{}, {}], [{}, {}]]",
+                    m.m00, m.m01, m.m10, m.m11
+                );
             }
-            eprintln!("compression factor   : {:.2}", hist.samples as f64 / hist.distinct_matrices as f64);
+            eprintln!(
+                "compression factor   : {:.2}",
+                hist.samples as f64 / hist.distinct_matrices as f64
+            );
             eprintln!("============================================");
             assert!(hist.distinct_matrices >= 1);
         }

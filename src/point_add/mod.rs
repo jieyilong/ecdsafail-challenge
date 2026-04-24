@@ -57,15 +57,18 @@
 //! reduces them.
 
 use alloy_primitives::U256;
-use sha3::{digest::{ExtendableOutput, Update, XofReader}, Shake256};
+use sha3::{
+    digest::{ExtendableOutput, Update, XofReader},
+    Shake256,
+};
 
 use crate::circuit::{analyze_ops, BitId, Op, OperationType, QubitId, QubitOrBit, RegisterId};
 use crate::sim::Simulator;
 use crate::weierstrass_elliptic_curve::WeierstrassEllipticCurve;
 
 pub mod by;
-pub mod kaliski_jump;
 pub mod kaliski_equiv;
+pub mod kaliski_jump;
 pub mod test_timeout;
 
 struct B {
@@ -86,7 +89,20 @@ struct B {
 
 impl B {
     fn new() -> Self {
-        Self { ops: Vec::new(), next_qubit: 0, next_bit: 0, next_register: 0, free_qubits: Vec::new(), active_qubits: 0, peak_qubits: 0, peak_ops_idx: 0, peak_phase: "", phase: "init", peak_log: Vec::new(), phase_transitions: Vec::new() }
+        Self {
+            ops: Vec::new(),
+            next_qubit: 0,
+            next_bit: 0,
+            next_register: 0,
+            free_qubits: Vec::new(),
+            active_qubits: 0,
+            peak_qubits: 0,
+            peak_ops_idx: 0,
+            peak_phase: "",
+            phase: "init",
+            peak_log: Vec::new(),
+            phase_transitions: Vec::new(),
+        }
     }
     fn set_phase(&mut self, p: &'static str) {
         self.phase = p;
@@ -100,56 +116,266 @@ impl B {
             self.peak_phase = self.phase;
         }
         if std::env::var("TRACE_PEAK").is_ok() && self.active_qubits + 10 >= self.peak_qubits {
-            self.peak_log.push((self.active_qubits, self.phase, self.ops.len()));
+            self.peak_log
+                .push((self.active_qubits, self.phase, self.ops.len()));
         }
-        if let Some(q) = self.free_qubits.pop() { QubitId(q) }
-        else { let q = self.next_qubit; self.next_qubit += 1; QubitId(q) }
+        if let Some(q) = self.free_qubits.pop() {
+            QubitId(q)
+        } else {
+            let q = self.next_qubit;
+            self.next_qubit += 1;
+            QubitId(q)
+        }
     }
-    fn alloc_qubits(&mut self, n: usize) -> Vec<QubitId> { (0..n).map(|_| self.alloc_qubit()).collect() }
-    fn alloc_bit(&mut self) -> BitId { let b = self.next_bit; self.next_bit += 1; BitId(b) }
-    fn alloc_bits(&mut self, n: usize) -> Vec<BitId> { (0..n).map(|_| self.alloc_bit()).collect() }
-    fn free(&mut self, q: QubitId) { self.r(q); self.free_qubits.push(q.0); if self.active_qubits > 0 { self.active_qubits -= 1; } }
-    fn free_vec(&mut self, qs: &[QubitId]) { for &q in qs { self.free(q); } }
+    fn alloc_qubits(&mut self, n: usize) -> Vec<QubitId> {
+        (0..n).map(|_| self.alloc_qubit()).collect()
+    }
+    fn alloc_bit(&mut self) -> BitId {
+        let b = self.next_bit;
+        self.next_bit += 1;
+        BitId(b)
+    }
+    fn alloc_bits(&mut self, n: usize) -> Vec<BitId> {
+        (0..n).map(|_| self.alloc_bit()).collect()
+    }
+    fn free(&mut self, q: QubitId) {
+        self.r(q);
+        self.free_qubits.push(q.0);
+        if self.active_qubits > 0 {
+            self.active_qubits -= 1;
+        }
+    }
+    fn free_vec(&mut self, qs: &[QubitId]) {
+        for &q in qs {
+            self.free(q);
+        }
+    }
     fn declare_qubit_register(&mut self, qs: &[QubitId]) {
-        let r = RegisterId(self.next_register); self.next_register += 1;
-        for &q in qs { let mut op = Op::empty(); op.kind = OperationType::AppendToRegister; op.q_target = q; op.r_target = r; self.ops.push(op); }
-        let mut op = Op::empty(); op.kind = OperationType::Register; op.r_target = r; self.ops.push(op);
+        let r = RegisterId(self.next_register);
+        self.next_register += 1;
+        for &q in qs {
+            let mut op = Op::empty();
+            op.kind = OperationType::AppendToRegister;
+            op.q_target = q;
+            op.r_target = r;
+            self.ops.push(op);
+        }
+        let mut op = Op::empty();
+        op.kind = OperationType::Register;
+        op.r_target = r;
+        self.ops.push(op);
     }
     fn declare_bit_register(&mut self, bs: &[BitId]) {
-        let r = RegisterId(self.next_register); self.next_register += 1;
-        for &b in bs { let mut op = Op::empty(); op.kind = OperationType::AppendToRegister; op.c_target = b; op.r_target = r; self.ops.push(op); }
-        let mut op = Op::empty(); op.kind = OperationType::Register; op.r_target = r; self.ops.push(op);
+        let r = RegisterId(self.next_register);
+        self.next_register += 1;
+        for &b in bs {
+            let mut op = Op::empty();
+            op.kind = OperationType::AppendToRegister;
+            op.c_target = b;
+            op.r_target = r;
+            self.ops.push(op);
+        }
+        let mut op = Op::empty();
+        op.kind = OperationType::Register;
+        op.r_target = r;
+        self.ops.push(op);
     }
-    fn x(&mut self, q: QubitId) { let mut op = Op::empty(); op.kind = OperationType::X; op.q_target = q; self.ops.push(op); }
-    fn z(&mut self, q: QubitId) { let mut op = Op::empty(); op.kind = OperationType::Z; op.q_target = q; self.ops.push(op); }
-    fn cx(&mut self, ctrl: QubitId, tgt: QubitId) { let mut op = Op::empty(); op.kind = OperationType::CX; op.q_control1 = ctrl; op.q_target = tgt; self.ops.push(op); }
-    fn cz(&mut self, a: QubitId, b: QubitId) { let mut op = Op::empty(); op.kind = OperationType::CZ; op.q_control1 = a; op.q_target = b; self.ops.push(op); }
-    fn ccx(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId) { let mut op = Op::empty(); op.kind = OperationType::CCX; op.q_control2 = c1; op.q_control1 = c2; op.q_target = tgt; self.ops.push(op); }
-    fn ccz(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId) { let mut op = Op::empty(); op.kind = OperationType::CCZ; op.q_control2 = c1; op.q_control1 = c2; op.q_target = tgt; self.ops.push(op); }
-    fn swap(&mut self, a: QubitId, b: QubitId) { let mut op = Op::empty(); op.kind = OperationType::Swap; op.q_control1 = a; op.q_target = b; self.ops.push(op); }
-    fn r(&mut self, q: QubitId) { let mut op = Op::empty(); op.kind = OperationType::R; op.q_target = q; self.ops.push(op); }
-    fn x_if(&mut self, q: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::X; op.q_target = q; op.c_condition = cond; self.ops.push(op); }
-    fn cx_if(&mut self, ctrl: QubitId, tgt: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::CX; op.q_control1 = ctrl; op.q_target = tgt; op.c_condition = cond; self.ops.push(op); }
-    fn ccx_if(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::CCX; op.q_control2 = c1; op.q_control1 = c2; op.q_target = tgt; op.c_condition = cond; self.ops.push(op); }
-    fn push_condition(&mut self, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::PushCondition; op.c_condition = cond; self.ops.push(op); }
-    fn pop_condition(&mut self) { let mut op = Op::empty(); op.kind = OperationType::PopCondition; self.ops.push(op); }
+    fn x(&mut self, q: QubitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::X;
+        op.q_target = q;
+        self.ops.push(op);
+    }
+    fn z(&mut self, q: QubitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::Z;
+        op.q_target = q;
+        self.ops.push(op);
+    }
+    fn cx(&mut self, ctrl: QubitId, tgt: QubitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::CX;
+        op.q_control1 = ctrl;
+        op.q_target = tgt;
+        self.ops.push(op);
+    }
+    fn cz(&mut self, a: QubitId, b: QubitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::CZ;
+        op.q_control1 = a;
+        op.q_target = b;
+        self.ops.push(op);
+    }
+    fn ccx(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::CCX;
+        op.q_control2 = c1;
+        op.q_control1 = c2;
+        op.q_target = tgt;
+        self.ops.push(op);
+    }
+    fn ccz(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::CCZ;
+        op.q_control2 = c1;
+        op.q_control1 = c2;
+        op.q_target = tgt;
+        self.ops.push(op);
+    }
+    fn swap(&mut self, a: QubitId, b: QubitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::Swap;
+        op.q_control1 = a;
+        op.q_target = b;
+        self.ops.push(op);
+    }
+    fn r(&mut self, q: QubitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::R;
+        op.q_target = q;
+        self.ops.push(op);
+    }
+    fn x_if(&mut self, q: QubitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::X;
+        op.q_target = q;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn cx_if(&mut self, ctrl: QubitId, tgt: QubitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::CX;
+        op.q_control1 = ctrl;
+        op.q_target = tgt;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn ccx_if(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::CCX;
+        op.q_control2 = c1;
+        op.q_control1 = c2;
+        op.q_target = tgt;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn push_condition(&mut self, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::PushCondition;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn pop_condition(&mut self) {
+        let mut op = Op::empty();
+        op.kind = OperationType::PopCondition;
+        self.ops.push(op);
+    }
     // ── Measurement / phase / classical bit ops ──
-    fn hmr(&mut self, q: QubitId, c: BitId) { let mut op = Op::empty(); op.kind = OperationType::Hmr; op.q_target = q; op.c_target = c; self.ops.push(op); }
-    fn neg(&mut self) { let mut op = Op::empty(); op.kind = OperationType::Neg; self.ops.push(op); }
-    fn bit_invert(&mut self, c: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitInvert; op.c_target = c; self.ops.push(op); }
-    fn bit_store0(&mut self, c: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitStore0; op.c_target = c; self.ops.push(op); }
-    fn bit_store1(&mut self, c: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitStore1; op.c_target = c; self.ops.push(op); }
+    fn hmr(&mut self, q: QubitId, c: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::Hmr;
+        op.q_target = q;
+        op.c_target = c;
+        self.ops.push(op);
+    }
+    fn neg(&mut self) {
+        let mut op = Op::empty();
+        op.kind = OperationType::Neg;
+        self.ops.push(op);
+    }
+    fn bit_invert(&mut self, c: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::BitInvert;
+        op.c_target = c;
+        self.ops.push(op);
+    }
+    fn bit_store0(&mut self, c: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::BitStore0;
+        op.c_target = c;
+        self.ops.push(op);
+    }
+    fn bit_store1(&mut self, c: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::BitStore1;
+        op.c_target = c;
+        self.ops.push(op);
+    }
     // ── Classically-conditioned variants for all remaining gates ──
-    fn z_if(&mut self, q: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::Z; op.q_target = q; op.c_condition = cond; self.ops.push(op); }
-    fn cz_if(&mut self, a: QubitId, b: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::CZ; op.q_control1 = a; op.q_target = b; op.c_condition = cond; self.ops.push(op); }
-    fn ccz_if(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::CCZ; op.q_control2 = c1; op.q_control1 = c2; op.q_target = tgt; op.c_condition = cond; self.ops.push(op); }
-    fn swap_if(&mut self, a: QubitId, b: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::Swap; op.q_control1 = a; op.q_target = b; op.c_condition = cond; self.ops.push(op); }
-    fn neg_if(&mut self, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::Neg; op.c_condition = cond; self.ops.push(op); }
-    fn hmr_if(&mut self, q: QubitId, c: BitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::Hmr; op.q_target = q; op.c_target = c; op.c_condition = cond; self.ops.push(op); }
-    fn bit_invert_if(&mut self, c: BitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitInvert; op.c_target = c; op.c_condition = cond; self.ops.push(op); }
-    fn bit_store0_if(&mut self, c: BitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitStore0; op.c_target = c; op.c_condition = cond; self.ops.push(op); }
-    fn bit_store1_if(&mut self, c: BitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::BitStore1; op.c_target = c; op.c_condition = cond; self.ops.push(op); }
-    fn r_if(&mut self, q: QubitId, cond: BitId) { let mut op = Op::empty(); op.kind = OperationType::R; op.q_target = q; op.c_condition = cond; self.ops.push(op); }
+    fn z_if(&mut self, q: QubitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::Z;
+        op.q_target = q;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn cz_if(&mut self, a: QubitId, b: QubitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::CZ;
+        op.q_control1 = a;
+        op.q_target = b;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn ccz_if(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::CCZ;
+        op.q_control2 = c1;
+        op.q_control1 = c2;
+        op.q_target = tgt;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn swap_if(&mut self, a: QubitId, b: QubitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::Swap;
+        op.q_control1 = a;
+        op.q_target = b;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn neg_if(&mut self, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::Neg;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn hmr_if(&mut self, q: QubitId, c: BitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::Hmr;
+        op.q_target = q;
+        op.c_target = c;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn bit_invert_if(&mut self, c: BitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::BitInvert;
+        op.c_target = c;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn bit_store0_if(&mut self, c: BitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::BitStore0;
+        op.c_target = c;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn bit_store1_if(&mut self, c: BitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::BitStore1;
+        op.c_target = c;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
+    fn r_if(&mut self, q: QubitId, cond: BitId) {
+        let mut op = Op::empty();
+        op.kind = OperationType::R;
+        op.q_target = q;
+        op.c_condition = cond;
+        self.ops.push(op);
+    }
     // ── Gidney measurement-based AND uncomputation (convenience) ──
     // Uncomputes `tgt = c1 AND c2` using HMR + phase feedback.
     // Cost: 0 Toffoli (1 HMR + 1 classically-conditioned CZ).
@@ -291,7 +517,9 @@ fn uma(b: &mut B, x: QubitId, y: QubitId, w: QubitId) {
 fn cuccaro_add_fast(b: &mut B, a: &[QubitId], acc: &[QubitId], c_in: QubitId) {
     let n = a.len();
     assert_eq!(n, acc.len());
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
     if n == 1 {
         b.cx(c_in, acc[0]);
         b.cx(a[0], acc[0]);
@@ -347,7 +575,9 @@ fn cuccaro_add_fast(b: &mut B, a: &[QubitId], acc: &[QubitId], c_in: QubitId) {
 fn cuccaro_add(b: &mut B, a: &[QubitId], acc: &[QubitId], c_in: QubitId) {
     let n = a.len();
     assert_eq!(n, acc.len());
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
     if n == 1 {
         // acc[0] += a[0] + c_in  mod 2 ; c_in → 0
         b.cx(c_in, acc[0]);
@@ -378,7 +608,9 @@ fn cuccaro_add(b: &mut B, a: &[QubitId], acc: &[QubitId], c_in: QubitId) {
 fn cuccaro_sub(b: &mut B, a: &[QubitId], acc: &[QubitId], c_in: QubitId) {
     let n = a.len();
     assert_eq!(n, acc.len());
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
     if n == 1 {
         // Inverse of (cx c_in acc; cx a acc) is the same two gates in reverse.
         b.cx(a[0], acc[0]);
@@ -581,7 +813,9 @@ fn mod_sub_qq_fast(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256) {
 
 /// Fast mod_neg using measurement-based Cuccaro for the addition.
 fn mod_neg_inplace_fast(b: &mut B, v: &[QubitId], p: U256) {
-    for &q in v { b.x(q); }
+    for &q in v {
+        b.x(q);
+    }
     let n = v.len();
     let ca = load_const(b, n, p.wrapping_add(U256::from(1)));
     add_nbit_qq_fast(b, &ca, v);
@@ -653,7 +887,9 @@ fn mod_neg_inplace(b: &mut B, v: &[QubitId], p: U256) {
 fn cuccaro_sub_fast(b: &mut B, a: &[QubitId], acc: &[QubitId], c_in: QubitId) {
     let n = a.len();
     assert_eq!(n, acc.len());
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
     if n == 1 {
         b.cx(a[0], acc[0]);
         b.cx(c_in, acc[0]);
@@ -835,7 +1071,6 @@ fn sub_nbit_const_fast(b: &mut B, acc: &[QubitId], c: U256) {
     unload_const(b, &a, c);
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════
 //  Modular multiplication
 // ═══════════════════════════════════════════════════════════════════════════
@@ -902,7 +1137,9 @@ fn mod_double_inplace_fast(b: &mut B, v: &[QubitId], p: U256) {
     let n = v.len();
     let ovf = b.alloc_qubit();
     b.swap(v[n - 1], ovf);
-    for i in (0..n - 1).rev() { b.swap(v[i], v[i + 1]); }
+    for i in (0..n - 1).rev() {
+        b.swap(v[i], v[i + 1]);
+    }
     debug_assert_eq!(n, 256);
     // For secp256k1, p = 2^n - c. After the shift, the old top bit is in
     // `ovf` and the low register holds T mod 2^n for T = 2*v. If ovf=1 then
@@ -918,14 +1155,18 @@ fn mod_double_inplace_fast(b: &mut B, v: &[QubitId], p: U256) {
 /// 0 Toffoli. Used in Kaliski STEP 7+8 for small iters where r[255]=0 guaranteed.
 fn mod_double_no_corr(b: &mut B, v: &[QubitId]) {
     let n = v.len();
-    for i in (0..n - 1).rev() { b.swap(v[i], v[i + 1]); }
+    for i in (0..n - 1).rev() {
+        b.swap(v[i], v[i + 1]);
+    }
 }
 
 /// `v := v/2` assuming v[0] = 0 (v was even after corresponding no-corr double).
 /// Exact inverse of `mod_double_no_corr`. 0 Toffoli.
 fn mod_halve_no_corr(b: &mut B, v: &[QubitId]) {
     let n = v.len();
-    for i in 0..n - 1 { b.swap(v[i], v[i + 1]); }
+    for i in 0..n - 1 {
+        b.swap(v[i], v[i + 1]);
+    }
 }
 
 /// Shift v left by k bits mod p. Returns (spill, flag_inv, ovf) which MUST
@@ -942,7 +1183,12 @@ fn lowq_shift22() -> bool {
     }
 }
 
-fn mod_shift_left_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize) -> (Vec<QubitId>, QubitId, QubitId) {
+fn mod_shift_left_by_k(
+    b: &mut B,
+    v: &[QubitId],
+    p: U256,
+    k: usize,
+) -> (Vec<QubitId>, QubitId, QubitId) {
     let n = v.len();
     debug_assert_eq!(n, 256);
     let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
@@ -953,8 +1199,10 @@ fn mod_shift_left_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize) -> (Vec<Qubi
 
     // Step 1: k rounds of shift-by-1, capturing top bits into spill.
     for shift_i in 0..k {
-        b.swap(v[n-1], spill[k-1-shift_i]);
-        for i in (0..n-1).rev() { b.swap(v[i], v[i+1]); }
+        b.swap(v[n - 1], spill[k - 1 - shift_i]);
+        for i in (0..n - 1).rev() {
+            b.swap(v[i], v[i + 1]);
+        }
     }
 
     // Step 2: add spill · c to v_ext (using ovf as bit n).
@@ -966,8 +1214,10 @@ fn mod_shift_left_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize) -> (Vec<Qubi
     let cuccaro_op = |b: &mut B, pos: usize, is_sub: bool| {
         let pad_width = n + 1 - pos;
         let padded = b.alloc_qubits(pad_width);
-        for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
-        let v_slice: Vec<QubitId> = v_ext[pos..n+1].to_vec();
+        for i in 0..k.min(pad_width) {
+            b.cx(spill[i], padded[i]);
+        }
+        let v_slice: Vec<QubitId> = v_ext[pos..n + 1].to_vec();
         let c_in = b.alloc_qubit();
         if lowq_shift22() {
             if is_sub {
@@ -984,7 +1234,9 @@ fn mod_shift_left_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize) -> (Vec<Qubi
             cuccaro_add_fast(b, &padded, &v_slice, c_in);
         }
         b.free(c_in);
-        for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
+        for i in 0..k.min(pad_width) {
+            b.cx(spill[i], padded[i]);
+        }
         b.free_vec(&padded);
     };
     b.set_phase("shift22_cuccaro_op_0");
@@ -1024,7 +1276,15 @@ fn mod_shift_left_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize) -> (Vec<Qubi
 }
 
 /// Gate-level inverse of mod_shift_left_by_k.
-fn mod_shift_right_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize, spill: Vec<QubitId>, flag_inv: QubitId, ovf: QubitId) {
+fn mod_shift_right_by_k(
+    b: &mut B,
+    v: &[QubitId],
+    p: U256,
+    k: usize,
+    spill: Vec<QubitId>,
+    flag_inv: QubitId,
+    ovf: QubitId,
+) {
     let n = v.len();
     debug_assert_eq!(n, 256);
     let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
@@ -1060,8 +1320,10 @@ fn mod_shift_right_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize, spill: Vec<
     let cuccaro_op = |b: &mut B, pos: usize, is_sub: bool| {
         let pad_width = n + 1 - pos;
         let padded = b.alloc_qubits(pad_width);
-        for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
-        let v_slice: Vec<QubitId> = v_ext[pos..n+1].to_vec();
+        for i in 0..k.min(pad_width) {
+            b.cx(spill[i], padded[i]);
+        }
+        let v_slice: Vec<QubitId> = v_ext[pos..n + 1].to_vec();
         let c_in = b.alloc_qubit();
         if lowq_shift22() {
             if is_sub {
@@ -1075,20 +1337,24 @@ fn mod_shift_right_by_k(b: &mut B, v: &[QubitId], p: U256, k: usize, spill: Vec<
             cuccaro_add_fast(b, &padded, &v_slice, c_in);
         }
         b.free(c_in);
-        for i in 0..k.min(pad_width) { b.cx(spill[i], padded[i]); }
+        for i in 0..k.min(pad_width) {
+            b.cx(spill[i], padded[i]);
+        }
         b.free_vec(&padded);
     };
     // Reverse: undo ADD at 32, 10; undo SUB at 6; undo ADD at 4, 0.
-    cuccaro_op(b, 32, true);   // undo +spill·2^32
-    cuccaro_op(b, 10, true);   // undo +spill·2^10
-    cuccaro_op(b, 6, false);   // undo -spill·2^6
-    cuccaro_op(b, 4, true);    // undo +spill·2^4
-    cuccaro_op(b, 0, true);    // undo +spill·2^0
+    cuccaro_op(b, 32, true); // undo +spill·2^32
+    cuccaro_op(b, 10, true); // undo +spill·2^10
+    cuccaro_op(b, 6, false); // undo -spill·2^6
+    cuccaro_op(b, 4, true); // undo +spill·2^4
+    cuccaro_op(b, 0, true); // undo +spill·2^0
 
     // Reverse step 1: reverse swap cascades.
     for shift_i in (0..k).rev() {
-        for i in 0..n-1 { b.swap(v[i], v[i+1]); }
-        b.swap(v[n-1], spill[k-1-shift_i]);
+        for i in 0..n - 1 {
+            b.swap(v[i], v[i + 1]);
+        }
+        b.swap(v[n - 1], spill[k - 1 - shift_i]);
     }
 
     b.free(ovf);
@@ -1107,7 +1373,9 @@ fn mod_halve_inplace_fast(b: &mut B, v: &[QubitId], p: U256) {
     let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
     b.cx(v[0], ovf);
     csub_nbit_const_fast(b, v, c, ovf);
-    for i in 0..n - 1 { b.swap(v[i], v[i + 1]); }
+    for i in 0..n - 1 {
+        b.swap(v[i], v[i + 1]);
+    }
     b.swap(v[n - 1], ovf);
     b.free(ovf);
 }
@@ -1133,7 +1401,9 @@ fn cmp_lt_into_fast(b: &mut B, u: &[QubitId], v: &[QubitId], flag: QubitId) {
     assert_eq!(n, v.len());
     let c_in = b.alloc_qubit();
     let carries = b.alloc_qubits(n);
-    for i in 0..n { b.x(u[i]); }
+    for i in 0..n {
+        b.x(u[i]);
+    }
 
     // Forward MAJ sweep with carry ancillae
     b.cx(u[0], v[0]);
@@ -1165,7 +1435,9 @@ fn cmp_lt_into_fast(b: &mut B, u: &[QubitId], v: &[QubitId], flag: QubitId) {
     b.cx(u[0], c_in);
     b.cx(u[0], v[0]);
 
-    for i in 0..n { b.x(u[i]); }
+    for i in 0..n {
+        b.x(u[i]);
+    }
     b.free_vec(&carries);
     b.free(c_in);
 }
@@ -1197,9 +1469,17 @@ fn mod_add_qq_fast(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256) {
     {
         let n1 = acc_ext.len();
         let ca = b.alloc_qubits(n1);
-        for i in 0..n1 { if bit(c, i) { b.cx(flag, ca[i]); } }
+        for i in 0..n1 {
+            if bit(c, i) {
+                b.cx(flag, ca[i]);
+            }
+        }
         sub_nbit_qq_fast(b, &ca, &acc_ext);
-        for i in 0..n1 { if bit(c, i) { b.cx(flag, ca[i]); } }
+        for i in 0..n1 {
+            if bit(c, i) {
+                b.cx(flag, ca[i]);
+            }
+        }
         b.free_vec(&ca);
     }
     b.x(flag);
@@ -1224,7 +1504,9 @@ fn mod_add_qq_fast_from_zero(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256)
     let (a_ext, a_ovf) = ext_reg(b, a);
 
     // acc is 0 on entry. CX-copy a into acc (0 CCX). Top bits both 0.
-    for i in 0..n { b.cx(a[i], acc[i]); }
+    for i in 0..n {
+        b.cx(a[i], acc[i]);
+    }
     // acc_ovf and a_ovf are both 0 (both freshly allocated as 0 by ext_reg).
 
     let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
@@ -1240,9 +1522,17 @@ fn mod_add_qq_fast_from_zero(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256)
     {
         let n1 = acc_ext.len();
         let ca = b.alloc_qubits(n1);
-        for i in 0..n1 { if bit(c, i) { b.cx(flag, ca[i]); } }
+        for i in 0..n1 {
+            if bit(c, i) {
+                b.cx(flag, ca[i]);
+            }
+        }
         sub_nbit_qq_fast(b, &ca, &acc_ext);
-        for i in 0..n1 { if bit(c, i) { b.cx(flag, ca[i]); } }
+        for i in 0..n1 {
+            if bit(c, i) {
+                b.cx(flag, ca[i]);
+            }
+        }
         b.free_vec(&ca);
     }
     b.x(flag);
@@ -1273,17 +1563,23 @@ fn mod_mul_write_into_zero_acc_schoolbook(
     schoolbook_mul_into_addsub(b, x, y, &tmp_ext);
 
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
-    let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
+    let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
     // First add: acc is known to be 0, so use the fast-from-zero variant.
     mod_add_qq_fast_from_zero(b, acc, &lo, p);
     let _ = c;
     // 977 = 2^10 - 2^6 + 2^4 + 2^0 consolidation. 5 ops instead of 7.
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..2 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..2 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_sub_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
     mod_add_qq(b, acc, &hi, p);
@@ -1378,23 +1674,19 @@ fn cmod_sub_qq_bit(b: &mut B, acc: &[QubitId], a: &[QubitId], ctrl: BitId, p: U2
 // Per multiplication savings: ~1200 CCX
 //
 // Precomputed constant: c^{-1} with set bit positions
-const MONT_CINV_POS: [usize; 19] = [0, 4, 6, 7, 8, 11, 12, 14, 15, 16, 17, 18, 21, 22, 24, 25, 26, 27, 28];
+const MONT_CINV_POS: [usize; 19] = [
+    0, 4, 6, 7, 8, 11, 12, 14, 15, 16, 17, 18, 21, 22, 24, 25, 26, 27, 28,
+];
 
 /// Montgomery multiply using sparse REDC reduction.
 /// Computes: acc := (acc * x) * R^{-1} mod p
-fn mont_mul(
-    b: &mut B,
-    acc: &[QubitId],
-    x: &[QubitId],
-    _p: U256,
-) {
+fn mont_mul(b: &mut B, acc: &[QubitId], x: &[QubitId], _p: U256) {
     let n = acc.len();
     debug_assert_eq!(n, 256);
     let tmp = b.alloc_qubits(2 * n);
 
     // Phase 1: raw product t = acc * x
     schoolbook_mul_into_addsub(b, acc, x, &tmp);
-
 
     // Phase 2: compute m = t_low * c^{-1} mod 2^32
     // c^{-1} = 0x9D84D9F1, sparse with 19 set bits
@@ -1406,7 +1698,8 @@ fn mont_mul(
         b.cx(tmp[i], m[i]);
     }
     // Add shifted copies for each set bit position
-    for pos in &MONT_CINV_POS[1..] {  // Skip 0, already copied
+    for pos in &MONT_CINV_POS[1..] {
+        // Skip 0, already copied
         let shift = *pos;
         for i in 0..(32 - shift) {
             b.cx(tmp[i], m[i + shift]);
@@ -1437,11 +1730,7 @@ fn mont_mul(
 }
 
 /// Montgomery square: acc := acc^2 * R^{-1} mod p
-fn mont_square(
-    b: &mut B,
-    acc: &[QubitId],
-    _p: U256,
-) {
+fn mont_square(b: &mut B, acc: &[QubitId], _p: U256) {
     let n = acc.len();
     debug_assert_eq!(n, 256);
     let tmp = b.alloc_qubits(2 * n);
@@ -1451,7 +1740,9 @@ fn mont_square(
 
     // Phase 2: m = t_low * c^{-1} mod 2^32
     let m = b.alloc_qubits(32);
-    for i in 0..32 { b.cx(tmp[i], m[i]); }
+    for i in 0..32 {
+        b.cx(tmp[i], m[i]);
+    }
     for pos in &MONT_CINV_POS[1..] {
         let shift = *pos;
         for i in 0..(32 - shift) {
@@ -1460,8 +1751,12 @@ fn mont_square(
     }
 
     // Phase 3: result = t_high + m
-    for i in 0..n { b.cx(tmp[n + i], acc[i]); }
-    for i in 0..32 { b.cx(m[i], acc[i]); }
+    for i in 0..n {
+        b.cx(tmp[n + i], acc[i]);
+    }
+    for i in 0..32 {
+        b.cx(m[i], acc[i]);
+    }
 
     // Cleanup
     for pos in MONT_CINV_POS[1..].iter().rev() {
@@ -1470,19 +1765,15 @@ fn mont_square(
             b.cx(tmp[i], m[i + shift]);
         }
     }
-    for i in 0..32 { b.cx(tmp[i], m[i]); }
+    for i in 0..32 {
+        b.cx(tmp[i], m[i]);
+    }
     schoolbook_square_symmetric_inverse(b, acc, &tmp);
     b.free_vec(&m);
     b.free_vec(&tmp);
 }
 
-fn mod_mul_add_qq(
-    b: &mut B,
-    acc: &[QubitId],
-    x: &[QubitId],
-    y: &[QubitId],
-    p: U256,
-) {
+fn mod_mul_add_qq(b: &mut B, acc: &[QubitId], x: &[QubitId], y: &[QubitId], p: U256) {
     // acc += x * y mod p. Walk the multiplicand in place to avoid the
     // doubled tmp register and its qubit cost. For squaring, snapshot the
     // original control bits once before the in-place doubling walk.
@@ -1490,36 +1781,44 @@ fn mod_mul_add_qq(
     let is_squaring = x[0] == y[0];
     if is_squaring {
         let ctrl_copy = b.alloc_qubits(n);
-        for i in 0..n { b.cx(x[i], ctrl_copy[i]); }
+        for i in 0..n {
+            b.cx(x[i], ctrl_copy[i]);
+        }
         for i in 0..n {
             cmod_add_qq(b, acc, x, ctrl_copy[i], p);
-            if i < n - 1 { mod_double_inplace_fast(b, x, p); }
+            if i < n - 1 {
+                mod_double_inplace_fast(b, x, p);
+            }
         }
-        for _ in 0..(n - 1) { mod_halve_inplace_fast(b, x, p); }
-        for i in 0..n { b.cx(x[i], ctrl_copy[i]); }
+        for _ in 0..(n - 1) {
+            mod_halve_inplace_fast(b, x, p);
+        }
+        for i in 0..n {
+            b.cx(x[i], ctrl_copy[i]);
+        }
         b.free_vec(&ctrl_copy);
     } else {
         for i in 0..n {
             cmod_add_qq(b, acc, x, y[i], p);
-            if i < n - 1 { mod_double_inplace_fast(b, x, p); }
+            if i < n - 1 {
+                mod_double_inplace_fast(b, x, p);
+            }
         }
-        for _ in 0..(n - 1) { mod_halve_inplace_fast(b, x, p); }
+        for _ in 0..(n - 1) {
+            mod_halve_inplace_fast(b, x, p);
+        }
     }
 }
 
 /// Horner-method multiplication: acc += x * y mod p.
 /// REQUIRES acc = 0 on entry. Doubles the accumulator (MSB-first),
 /// avoiding the tmp register and 255 halvings entirely.
-fn mod_mul_horner_add_qq(
-    b: &mut B,
-    acc: &[QubitId],
-    x: &[QubitId],
-    y: &[QubitId],
-    p: U256,
-) {
+fn mod_mul_horner_add_qq(b: &mut B, acc: &[QubitId], x: &[QubitId], y: &[QubitId], p: U256) {
     let n = acc.len();
     for i in (0..n).rev() {
-        if i < n - 1 { mod_double_inplace_fast(b, acc, p); }
+        if i < n - 1 {
+            mod_double_inplace_fast(b, acc, p);
+        }
         cmod_add_qq(b, acc, x, y[i], p);
     }
 }
@@ -1527,25 +1826,23 @@ fn mod_mul_horner_add_qq(
 /// Exact inverse of `mod_mul_horner_add_qq` on the accumulator:
 /// if `acc` currently holds `x * y mod p`, this maps it back to 0 while
 /// leaving `x` and `y` unchanged.
-fn mod_mul_horner_unadd_qq(
-    b: &mut B,
-    acc: &[QubitId],
-    x: &[QubitId],
-    y: &[QubitId],
-    p: U256,
-) {
+fn mod_mul_horner_unadd_qq(b: &mut B, acc: &[QubitId], x: &[QubitId], y: &[QubitId], p: U256) {
     let n = acc.len();
     let is_squaring = x[0] == y[0];
     if is_squaring {
         for i in 0..n {
             cmod_sub_qq(b, acc, x, y[i], p);
-            if i < n - 1 { mod_halve_inplace_fast(b, acc, p); }
+            if i < n - 1 {
+                mod_halve_inplace_fast(b, acc, p);
+            }
         }
     } else {
         mod_neg_inplace_fast(b, x, p);
         for i in 0..n {
             cmod_add_qq(b, acc, x, y[i], p);
-            if i < n - 1 { mod_halve_inplace_fast(b, acc, p); }
+            if i < n - 1 {
+                mod_halve_inplace_fast(b, acc, p);
+            }
         }
         mod_neg_inplace_fast(b, x, p);
     }
@@ -1553,13 +1850,7 @@ fn mod_mul_horner_unadd_qq(
 
 /// Horner-method multiplication: acc -= x * y mod p (= acc += (p-x)*y).
 /// REQUIRES acc = 0 on entry.
-fn mod_mul_horner_sub_qq(
-    b: &mut B,
-    acc: &[QubitId],
-    x: &[QubitId],
-    y: &[QubitId],
-    p: U256,
-) {
+fn mod_mul_horner_sub_qq(b: &mut B, acc: &[QubitId], x: &[QubitId], y: &[QubitId], p: U256) {
     let n = acc.len();
     let is_squaring = x[0] == y[0];
     // Negate x, then Horner-add. For squaring: x=y, negating x also
@@ -1568,14 +1859,18 @@ fn mod_mul_horner_sub_qq(
     if is_squaring {
         mod_neg_inplace_fast(b, x, p);
         for i in (0..n).rev() {
-            if i < n - 1 { mod_double_inplace_fast(b, acc, p); }
+            if i < n - 1 {
+                mod_double_inplace_fast(b, acc, p);
+            }
             cmod_add_qq(b, acc, x, y[i], p);
         }
         mod_neg_inplace_fast(b, x, p);
     } else {
         mod_neg_inplace_fast(b, x, p);
         for i in (0..n).rev() {
-            if i < n - 1 { mod_double_inplace_fast(b, acc, p); }
+            if i < n - 1 {
+                mod_double_inplace_fast(b, acc, p);
+            }
             cmod_add_qq(b, acc, x, y[i], p);
         }
         mod_neg_inplace_fast(b, x, p);
@@ -1595,7 +1890,7 @@ fn schoolbook_mul_into(b: &mut B, x: &[QubitId], y: &[QubitId], tmp_ext: &[Qubit
         let pad = b.alloc_qubit();
         let mut row_padded = row.clone();
         row_padded.push(pad);
-        let slice: Vec<QubitId> = tmp_ext[i..i+n+1].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[i..i + n + 1].to_vec();
         let c_in = b.alloc_qubit();
         cuccaro_add_fast(b, &row_padded, &slice, c_in);
         b.free(c_in);
@@ -1619,7 +1914,7 @@ fn schoolbook_mul_into_inverse(b: &mut B, x: &[QubitId], y: &[QubitId], tmp_ext:
         let pad = b.alloc_qubit();
         let mut row_padded = row.clone();
         row_padded.push(pad);
-        let slice: Vec<QubitId> = tmp_ext[i..i+n+1].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[i..i + n + 1].to_vec();
         let c_in = b.alloc_qubit();
         cuccaro_sub_fast(b, &row_padded, &slice, c_in);
         b.free(c_in);
@@ -1657,13 +1952,17 @@ fn controlled_add_subtract_fast(b: &mut B, x: &[QubitId], acc: &[QubitId], ctrl:
 
     // If ctrl=0, we want x_ext[0..n] = ~x and c_in = 1. Encode via x(ctrl) + cx.
     b.x(ctrl);
-    for i in 0..n { b.cx(ctrl, x_ext[i]); }
+    for i in 0..n {
+        b.cx(ctrl, x_ext[i]);
+    }
     b.cx(ctrl, c_in);
 
     cuccaro_add_fast(b, &x_ext, acc, c_in);
 
     b.cx(ctrl, c_in);
-    for i in 0..n { b.cx(ctrl, x_ext[i]); }
+    for i in 0..n {
+        b.cx(ctrl, x_ext[i]);
+    }
     b.x(ctrl);
 
     b.free(c_in);
@@ -1684,13 +1983,17 @@ fn controlled_add_subtract_fast_inverse(b: &mut B, x: &[QubitId], acc: &[QubitId
     let c_in = b.alloc_qubit();
 
     b.x(ctrl);
-    for i in 0..n { b.cx(ctrl, x_ext[i]); }
+    for i in 0..n {
+        b.cx(ctrl, x_ext[i]);
+    }
     b.cx(ctrl, c_in);
 
     cuccaro_sub_fast(b, &x_ext, acc, c_in);
 
     b.cx(ctrl, c_in);
-    for i in 0..n { b.cx(ctrl, x_ext[i]); }
+    for i in 0..n {
+        b.cx(ctrl, x_ext[i]);
+    }
     b.x(ctrl);
 
     b.free(c_in);
@@ -1785,7 +2088,12 @@ fn schoolbook_mul_into_addsub(b: &mut B, x: &[QubitId], y: &[QubitId], tmp_ext: 
 }
 
 /// Exact gate-level inverse of `schoolbook_mul_into_addsub`.
-fn schoolbook_mul_into_addsub_inverse(b: &mut B, x: &[QubitId], y: &[QubitId], tmp_ext: &[QubitId]) {
+fn schoolbook_mul_into_addsub_inverse(
+    b: &mut B,
+    x: &[QubitId],
+    y: &[QubitId],
+    tmp_ext: &[QubitId],
+) {
     let n = x.len();
     debug_assert_eq!(y.len(), n);
     debug_assert_eq!(tmp_ext.len(), 2 * n);
@@ -1845,7 +2153,6 @@ fn schoolbook_mul_into_addsub_inverse(b: &mut B, x: &[QubitId], y: &[QubitId], t
     b.free(low);
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════
 //  1-level Karatsuba multiplication
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1854,7 +2161,9 @@ fn karatsuba_half_sum_compute(b: &mut B, lo: &[QubitId], hi: &[QubitId], acc: &[
     let h = lo.len();
     debug_assert_eq!(h, hi.len());
     debug_assert_eq!(acc.len(), h + 1);
-    for i in 0..h { b.cx(lo[i], acc[i]); }
+    for i in 0..h {
+        b.cx(lo[i], acc[i]);
+    }
     let hi_pad = b.alloc_qubit();
     let mut hi_ext = hi.to_vec();
     hi_ext.push(hi_pad);
@@ -1869,7 +2178,9 @@ fn karatsuba_half_sum_uncompute(b: &mut B, lo: &[QubitId], hi: &[QubitId], acc: 
     hi_ext.push(hi_pad);
     sub_nbit_qq_fast(b, &hi_ext, acc);
     b.free(hi_pad);
-    for i in 0..h { b.cx(lo[i], acc[i]); }
+    for i in 0..h {
+        b.cx(lo[i], acc[i]);
+    }
 }
 
 fn karatsuba_forward(
@@ -1887,11 +2198,11 @@ fn karatsuba_forward(
     let y_hi: Vec<QubitId> = y[h..n].to_vec();
 
     {
-        let slice: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[0..2 * h].to_vec();
         schoolbook_mul_into_addsub(b, &x_lo, &y_lo, &slice);
     }
     {
-        let slice: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[2 * h..4 * h].to_vec();
         schoolbook_mul_into_addsub(b, &x_hi, &y_hi, &slice);
     }
 
@@ -1908,14 +2219,14 @@ fn karatsuba_forward(
 
     {
         let pad = b.alloc_qubits(2);
-        let mut z0_ext: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        let mut z0_ext: Vec<QubitId> = tmp_ext[0..2 * h].to_vec();
         z0_ext.extend_from_slice(&pad);
         sub_nbit_qq_fast(b, &z0_ext, z1_reg);
         b.free_vec(&pad);
     }
     {
         let pad = b.alloc_qubits(2);
-        let mut z2_ext: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        let mut z2_ext: Vec<QubitId> = tmp_ext[2 * h..4 * h].to_vec();
         z2_ext.extend_from_slice(&pad);
         sub_nbit_qq_fast(b, &z2_ext, z1_reg);
         b.free_vec(&pad);
@@ -1924,7 +2235,7 @@ fn karatsuba_forward(
         let pad = b.alloc_qubits(3 * h - 2 * (h + 1));
         let mut z1_ext: Vec<QubitId> = z1_reg.to_vec();
         z1_ext.extend_from_slice(&pad);
-        let acc_slice: Vec<QubitId> = tmp_ext[h..4*h].to_vec();
+        let acc_slice: Vec<QubitId> = tmp_ext[h..4 * h].to_vec();
         b.set_phase("kara_z1_add");
         add_nbit_qq_fast(b, &z1_ext, &acc_slice);
         b.free_vec(&pad);
@@ -1949,20 +2260,20 @@ fn karatsuba_inverse(
         let pad = b.alloc_qubits(3 * h - 2 * (h + 1));
         let mut z1_ext: Vec<QubitId> = z1_reg.to_vec();
         z1_ext.extend_from_slice(&pad);
-        let acc_slice: Vec<QubitId> = tmp_ext[h..4*h].to_vec();
+        let acc_slice: Vec<QubitId> = tmp_ext[h..4 * h].to_vec();
         sub_nbit_qq_fast(b, &z1_ext, &acc_slice);
         b.free_vec(&pad);
     }
     {
         let pad = b.alloc_qubits(2);
-        let mut z2_ext: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        let mut z2_ext: Vec<QubitId> = tmp_ext[2 * h..4 * h].to_vec();
         z2_ext.extend_from_slice(&pad);
         add_nbit_qq_fast(b, &z2_ext, z1_reg);
         b.free_vec(&pad);
     }
     {
         let pad = b.alloc_qubits(2);
-        let mut z0_ext: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        let mut z0_ext: Vec<QubitId> = tmp_ext[0..2 * h].to_vec();
         z0_ext.extend_from_slice(&pad);
         add_nbit_qq_fast(b, &z0_ext, z1_reg);
         b.free_vec(&pad);
@@ -1979,11 +2290,11 @@ fn karatsuba_inverse(
     b.free_vec(&x_sum);
 
     {
-        let slice: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[2 * h..4 * h].to_vec();
         schoolbook_mul_into_addsub_inverse(b, &x_hi, &y_hi, &slice);
     }
     {
-        let slice: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[0..2 * h].to_vec();
         schoolbook_mul_into_addsub_inverse(b, &x_lo, &y_lo, &slice);
     }
 }
@@ -2004,19 +2315,27 @@ fn mod_mul_add_into_acc_karatsuba_with_tmp_ext(
     karatsuba_forward(b, x, y, tmp_ext, &z1_reg);
 
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
-    let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
+    let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
     mod_add_qq_fast(b, acc, &lo, p);
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..2 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..2 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_sub_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
     mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
-    for _ in 0..10 { mod_halve_inplace_fast(b, &hi, p); }
+    for _ in 0..10 {
+        mod_halve_inplace_fast(b, &hi, p);
+    }
 
     karatsuba_inverse(b, x, y, tmp_ext, &z1_reg);
     b.free_vec(&z1_reg);
@@ -2052,18 +2371,24 @@ fn mod_mul_write_into_zero_acc_karatsuba_with_tmp_ext(
     b.set_phase("kara_solinas");
 
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
-    let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
+    let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
     b.set_phase("sol_addlo");
     mod_add_qq_fast_from_zero(b, acc, &lo, p);
     b.set_phase("sol_add0");
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     b.set_phase("sol_add4");
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..2 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..2 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     b.set_phase("sol_sub6");
     mod_sub_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     b.set_phase("sol_add10");
     mod_add_qq_fast(b, acc, &hi, p);
     b.set_phase("kara_solinas_shift22L");
@@ -2075,7 +2400,9 @@ fn mod_mul_write_into_zero_acc_karatsuba_with_tmp_ext(
     b.set_phase("kara_solinas_shift22R");
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     b.set_phase("kara_solinas_post_halve");
-    for _ in 0..10 { mod_halve_inplace_fast(b, &hi, p); }
+    for _ in 0..10 {
+        mod_halve_inplace_fast(b, &hi, p);
+    }
 
     b.set_phase("kara_inv");
     karatsuba_inverse(b, x, y, tmp_ext, &z1_reg);
@@ -2115,11 +2442,11 @@ fn karatsuba_forward_2level(
     let y_hi: Vec<QubitId> = y[h..n].to_vec();
 
     {
-        let slice: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[0..2 * h].to_vec();
         karatsuba_forward(b, &x_lo, &y_lo, &slice, z1_inner_a);
     }
     {
-        let slice: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[2 * h..4 * h].to_vec();
         karatsuba_forward(b, &x_hi, &y_hi, &slice, z1_inner_b);
     }
 
@@ -2135,14 +2462,14 @@ fn karatsuba_forward_2level(
 
     {
         let pad = b.alloc_qubits(2);
-        let mut z0_ext: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        let mut z0_ext: Vec<QubitId> = tmp_ext[0..2 * h].to_vec();
         z0_ext.extend_from_slice(&pad);
         sub_nbit_qq_fast(b, &z0_ext, z1_reg);
         b.free_vec(&pad);
     }
     {
         let pad = b.alloc_qubits(2);
-        let mut z2_ext: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        let mut z2_ext: Vec<QubitId> = tmp_ext[2 * h..4 * h].to_vec();
         z2_ext.extend_from_slice(&pad);
         sub_nbit_qq_fast(b, &z2_ext, z1_reg);
         b.free_vec(&pad);
@@ -2151,7 +2478,7 @@ fn karatsuba_forward_2level(
         let pad = b.alloc_qubits(3 * h - 2 * (h + 1));
         let mut z1_ext: Vec<QubitId> = z1_reg.to_vec();
         z1_ext.extend_from_slice(&pad);
-        let acc_slice: Vec<QubitId> = tmp_ext[h..4*h].to_vec();
+        let acc_slice: Vec<QubitId> = tmp_ext[h..4 * h].to_vec();
         add_nbit_qq_fast(b, &z1_ext, &acc_slice);
         b.free_vec(&pad);
     }
@@ -2177,20 +2504,20 @@ fn karatsuba_inverse_2level(
         let pad = b.alloc_qubits(3 * h - 2 * (h + 1));
         let mut z1_ext: Vec<QubitId> = z1_reg.to_vec();
         z1_ext.extend_from_slice(&pad);
-        let acc_slice: Vec<QubitId> = tmp_ext[h..4*h].to_vec();
+        let acc_slice: Vec<QubitId> = tmp_ext[h..4 * h].to_vec();
         sub_nbit_qq_fast(b, &z1_ext, &acc_slice);
         b.free_vec(&pad);
     }
     {
         let pad = b.alloc_qubits(2);
-        let mut z2_ext: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        let mut z2_ext: Vec<QubitId> = tmp_ext[2 * h..4 * h].to_vec();
         z2_ext.extend_from_slice(&pad);
         add_nbit_qq_fast(b, &z2_ext, z1_reg);
         b.free_vec(&pad);
     }
     {
         let pad = b.alloc_qubits(2);
-        let mut z0_ext: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        let mut z0_ext: Vec<QubitId> = tmp_ext[0..2 * h].to_vec();
         z0_ext.extend_from_slice(&pad);
         add_nbit_qq_fast(b, &z0_ext, z1_reg);
         b.free_vec(&pad);
@@ -2207,11 +2534,11 @@ fn karatsuba_inverse_2level(
     b.free_vec(&x_sum);
 
     {
-        let slice: Vec<QubitId> = tmp_ext[2*h..4*h].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[2 * h..4 * h].to_vec();
         karatsuba_inverse(b, &x_hi, &y_hi, &slice, z1_inner_b);
     }
     {
-        let slice: Vec<QubitId> = tmp_ext[0..2*h].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[0..2 * h].to_vec();
         karatsuba_inverse(b, &x_lo, &y_lo, &slice, z1_inner_a);
     }
 }
@@ -2234,20 +2561,28 @@ fn mod_mul_add_into_acc_karatsuba2(
     karatsuba_forward_2level(b, x, y, &tmp_ext, &z1_reg, &z1_inner_a, &z1_inner_b);
 
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
-    let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
+    let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
     mod_add_qq_fast(b, acc, &lo, p);
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..2 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..2 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_sub_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
     mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     b.set_phase("kara2_add_halve_tail");
-    for _ in 0..10 { mod_halve_inplace_fast(b, &hi, p); }
+    for _ in 0..10 {
+        mod_halve_inplace_fast(b, &hi, p);
+    }
 
     b.set_phase("karatsuba2_add_inv");
     karatsuba_inverse_2level(b, x, y, &tmp_ext, &z1_reg, &z1_inner_a, &z1_inner_b);
@@ -2275,19 +2610,27 @@ fn mod_mul_write_into_zero_acc_karatsuba2(
     karatsuba_forward_2level(b, x, y, &tmp_ext, &z1_reg, &z1_inner_a, &z1_inner_b);
 
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
-    let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
+    let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
     mod_add_qq_fast_from_zero(b, acc, &lo, p);
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..2 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..2 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_sub_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
     mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
-    for _ in 0..10 { mod_halve_inplace_fast(b, &hi, p); }
+    for _ in 0..10 {
+        mod_halve_inplace_fast(b, &hi, p);
+    }
 
     karatsuba_inverse_2level(b, x, y, &tmp_ext, &z1_reg, &z1_inner_a, &z1_inner_b);
     b.free_vec(&z1_inner_b);
@@ -2313,20 +2656,26 @@ fn mod_mul_add_into_acc_schoolbook(
     schoolbook_mul_into_addsub(b, x, y, &tmp_ext);
 
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
-    let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
+    let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
     let _ = c;
     mod_add_qq_fast(b, acc, &lo, p);
     // Solinas with 977 = 2^10 - 2^6 + 2^4 + 2^0. c = 2^32 + 977 = {+2^0, +2^4, -2^6, +2^10, +2^32}.
     // 5 ops instead of 7 (saves 2 per call). Use shift_left_by_22 for the 10→32 gap.
-    mod_add_qq_fast(b, acc, &hi, p);  // position 0
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
-    mod_add_qq_fast(b, acc, &hi, p);  // position 4
-    for _ in 0..2 { mod_double_inplace_fast(b, &hi, p); }
-    mod_sub_qq_fast(b, acc, &hi, p);  // position 6 (SUB because of 977 consolidation)
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
-    mod_add_qq_fast(b, acc, &hi, p);  // position 10
+    mod_add_qq_fast(b, acc, &hi, p); // position 0
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
+    mod_add_qq_fast(b, acc, &hi, p); // position 4
+    for _ in 0..2 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
+    mod_sub_qq_fast(b, acc, &hi, p); // position 6 (SUB because of 977 consolidation)
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
+    mod_add_qq_fast(b, acc, &hi, p); // position 10
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    mod_add_qq(b, acc, &hi, p);  // position 32
+    mod_add_qq(b, acc, &hi, p); // position 32
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     b.set_phase("sol_halve_tail");
     for _ in 0..10 {
@@ -2357,12 +2706,12 @@ fn schoolbook_square_symmetric(b: &mut B, x: &[QubitId], tmp_ext: &[QubitId]) {
         let row = b.alloc_qubits(width);
         b.cx(x[i], row[0]);
         for k in 0..num_cross {
-            b.ccx(x[i], x[i+1+k], row[k+2]);
+            b.ccx(x[i], x[i + 1 + k], row[k + 2]);
         }
         let pad = b.alloc_qubit();
         let mut row_padded = row.clone();
         row_padded.push(pad);
-        let slice: Vec<QubitId> = tmp_ext[2*i..2*i+width+1].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[2 * i..2 * i + width + 1].to_vec();
         let c_in = b.alloc_qubit();
         cuccaro_add_fast(b, &row_padded, &slice, c_in);
         b.free(c_in);
@@ -2370,8 +2719,8 @@ fn schoolbook_square_symmetric(b: &mut B, x: &[QubitId], tmp_ext: &[QubitId]) {
         b.cx(x[i], row[0]);
         for k in 0..num_cross {
             let m = b.alloc_bit();
-            b.hmr(row[k+2], m);
-            b.cz_if(x[i], x[i+1+k], m);
+            b.hmr(row[k + 2], m);
+            b.cz_if(x[i], x[i + 1 + k], m);
         }
         b.free_vec(&row);
     }
@@ -2385,12 +2734,12 @@ fn schoolbook_square_symmetric_inverse(b: &mut B, x: &[QubitId], tmp_ext: &[Qubi
         let row = b.alloc_qubits(width);
         b.cx(x[i], row[0]);
         for k in 0..num_cross {
-            b.ccx(x[i], x[i+1+k], row[k+2]);
+            b.ccx(x[i], x[i + 1 + k], row[k + 2]);
         }
         let pad = b.alloc_qubit();
         let mut row_padded = row.clone();
         row_padded.push(pad);
-        let slice: Vec<QubitId> = tmp_ext[2*i..2*i+width+1].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[2 * i..2 * i + width + 1].to_vec();
         let c_in = b.alloc_qubit();
         cuccaro_sub_fast(b, &row_padded, &slice, c_in);
         b.free(c_in);
@@ -2398,8 +2747,8 @@ fn schoolbook_square_symmetric_inverse(b: &mut B, x: &[QubitId], tmp_ext: &[Qubi
         b.cx(x[i], row[0]);
         for k in 0..num_cross {
             let m = b.alloc_bit();
-            b.hmr(row[k+2], m);
-            b.cz_if(x[i], x[i+1+k], m);
+            b.hmr(row[k + 2], m);
+            b.cz_if(x[i], x[i + 1 + k], m);
         }
         b.free_vec(&row);
     }
@@ -2408,12 +2757,7 @@ fn schoolbook_square_symmetric_inverse(b: &mut B, x: &[QubitId], tmp_ext: &[Qubi
 /// Schoolbook squarer with Bennett uncompute. For squaring `tmp_ext = x*x`
 /// (2n bits, no mod reduction), then ADD with Solinas reduction to acc,
 /// then uncompute tmp_ext via gate-level inverse.
-fn squaring_add_to_acc_schoolbook(
-    b: &mut B,
-    acc: &[QubitId],
-    x: &[QubitId],
-    p: U256,
-) {
+fn squaring_add_to_acc_schoolbook(b: &mut B, acc: &[QubitId], x: &[QubitId], p: U256) {
     let n = acc.len();
     debug_assert_eq!(n, 256);
     debug_assert_eq!(x.len(), n);
@@ -2422,14 +2766,20 @@ fn squaring_add_to_acc_schoolbook(
     schoolbook_square_symmetric(b, x, &tmp_ext);
 
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
-    let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
+    let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
     mod_add_qq_fast(b, acc, &lo, p);
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_add_qq_fast(b, acc, &hi, p);
-    for _ in 0..2 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..2 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_sub_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
     mod_add_qq(b, acc, &hi, p);
@@ -2461,12 +2811,7 @@ fn mod_mul_sub_into_acc_karatsuba(
 /// reduction, then uncompute tmp_ext via gate-level inverse. Saves ~170k
 /// CCX vs walk-x squaring (459k → 289k) by avoiding 256 expensive
 /// cmod_add_qq calls (each 5n) in favor of 2n²=131k of cheap AND+Cuccaro.
-fn squaring_sub_from_acc_schoolbook(
-    b: &mut B,
-    acc: &[QubitId],
-    x: &[QubitId],
-    p: U256,
-) {
+fn squaring_sub_from_acc_schoolbook(b: &mut B, acc: &[QubitId], x: &[QubitId], p: U256) {
     let n = acc.len();
     debug_assert_eq!(n, 256);
     debug_assert_eq!(x.len(), n);
@@ -2482,17 +2827,23 @@ fn squaring_sub_from_acc_schoolbook(
     // For each set bit k of c, sub (hi shifted by k mod p) from acc, by
     // walking hi via mod_double in place. Sub lo first.
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
-    let hi: Vec<QubitId> = tmp_ext[n..2*n].to_vec();
+    let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
     mod_sub_qq_fast(b, acc, &lo, p);
     let _ = c;
     // 977 consolidation: c = {+2^0, +2^4, -2^6, +2^10, +2^32}. For acc-=hi·c, signs flip:
     // acc -= hi·2^0, acc -= hi·2^4, acc += hi·2^6, acc -= hi·2^10, acc -= hi·2^32.
     mod_sub_qq_fast(b, acc, &hi, p);
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_sub_qq_fast(b, acc, &hi, p);
-    for _ in 0..2 { mod_double_inplace_fast(b, &hi, p); }
-    mod_add_qq_fast(b, acc, &hi, p);  // sign flipped
-    for _ in 0..4 { mod_double_inplace_fast(b, &hi, p); }
+    for _ in 0..2 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
+    mod_add_qq_fast(b, acc, &hi, p); // sign flipped
+    for _ in 0..4 {
+        mod_double_inplace_fast(b, &hi, p);
+    }
     mod_sub_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
     mod_sub_qq(b, acc, &hi, p);
@@ -2520,7 +2871,7 @@ fn schoolbook_square_into(b: &mut B, x: &[QubitId], tmp_ext: &[QubitId]) {
         let pad = b.alloc_qubit();
         let mut row_padded = row.clone();
         row_padded.push(pad);
-        let slice: Vec<QubitId> = tmp_ext[i..i+n+1].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[i..i + n + 1].to_vec();
         let c_in = b.alloc_qubit();
         cuccaro_add_fast(b, &row_padded, &slice, c_in);
         b.free(c_in);
@@ -2547,7 +2898,7 @@ fn schoolbook_square_into_inverse(b: &mut B, x: &[QubitId], tmp_ext: &[QubitId])
         let pad = b.alloc_qubit();
         let mut row_padded = row.clone();
         row_padded.push(pad);
-        let slice: Vec<QubitId> = tmp_ext[i..i+n+1].to_vec();
+        let slice: Vec<QubitId> = tmp_ext[i..i + n + 1].to_vec();
         let c_in = b.alloc_qubit();
         cuccaro_sub_fast(b, &row_padded, &slice, c_in);
         b.free(c_in);
@@ -2561,13 +2912,7 @@ fn schoolbook_square_into_inverse(b: &mut B, x: &[QubitId], tmp_ext: &[QubitId])
     }
 }
 
-fn mod_mul_sub_qq(
-    b: &mut B,
-    acc: &[QubitId],
-    x: &[QubitId],
-    y: &[QubitId],
-    p: U256,
-) {
+fn mod_mul_sub_qq(b: &mut B, acc: &[QubitId], x: &[QubitId], y: &[QubitId], p: U256) {
     // acc -= x * y mod p. Negate x, run schoolbook ADD (cheaper than sub),
     // then restore x. For x≠y we can walk the negated multiplicand in place
     // and halve it back afterwards, avoiding the doubled tmp register. For
@@ -2584,69 +2929,85 @@ fn mod_mul_sub_qq(
         // Hold the original x bits fixed for control while x itself walks
         // through (-x)*2^i mod p.
         let ctrl_copy = b.alloc_qubits(n);
-        for i in 0..n { b.cx(x[i], ctrl_copy[i]); }
+        for i in 0..n {
+            b.cx(x[i], ctrl_copy[i]);
+        }
         mod_neg_inplace_fast(b, x, p);
         for i in 0..n {
             cmod_add_qq(b, acc, x, ctrl_copy[i], p);
-            if i < n - 1 { mod_double_inplace_fast(b, x, p); }
+            if i < n - 1 {
+                mod_double_inplace_fast(b, x, p);
+            }
         }
-        for _ in 0..(n - 1) { mod_halve_inplace_fast(b, x, p); }
+        for _ in 0..(n - 1) {
+            mod_halve_inplace_fast(b, x, p);
+        }
         mod_neg_inplace_fast(b, x, p);
-        for i in 0..n { b.cx(x[i], ctrl_copy[i]); }
+        for i in 0..n {
+            b.cx(x[i], ctrl_copy[i]);
+        }
         b.free_vec(&ctrl_copy);
     } else {
         // Keep x negated during the loop and walk it in place.
         mod_neg_inplace_fast(b, x, p);
         for i in 0..n {
             cmod_add_qq(b, acc, x, y[i], p);
-            if i < n - 1 { mod_double_inplace_fast(b, x, p); }
+            if i < n - 1 {
+                mod_double_inplace_fast(b, x, p);
+            }
         }
-        for _ in 0..(n - 1) { mod_halve_inplace_fast(b, x, p); }
+        for _ in 0..(n - 1) {
+            mod_halve_inplace_fast(b, x, p);
+        }
         mod_neg_inplace_fast(b, x, p);
     }
 }
 
-fn mod_mul_add_qb(
-    b: &mut B,
-    acc: &[QubitId],
-    x: &[QubitId],
-    y: &[BitId],
-    p: U256,
-) {
+fn mod_mul_add_qb(b: &mut B, acc: &[QubitId], x: &[QubitId], y: &[BitId], p: U256) {
     let n = acc.len();
     let tmp = b.alloc_qubits(n);
-    for i in 0..n { b.cx(x[i], tmp[i]); }
+    for i in 0..n {
+        b.cx(x[i], tmp[i]);
+    }
     for i in 0..n {
         // Mask the whole conditional-add body by y[i]: on shots where
         // y[i]=0 nothing needs to happen AND nothing should be counted.
         b.push_condition(y[i]);
         cmod_add_qq_bit(b, acc, &tmp, y[i], p);
         b.pop_condition();
-        if i < n - 1 { mod_double_inplace_fast(b, &tmp, p); }
+        if i < n - 1 {
+            mod_double_inplace_fast(b, &tmp, p);
+        }
     }
-    for _ in 0..(n - 1) { mod_halve_inplace_fast(b, &tmp, p); }
-    for i in 0..n { b.cx(x[i], tmp[i]); }
+    for _ in 0..(n - 1) {
+        mod_halve_inplace_fast(b, &tmp, p);
+    }
+    for i in 0..n {
+        b.cx(x[i], tmp[i]);
+    }
     b.free_vec(&tmp);
 }
 
-fn mod_mul_sub_qb(
-    b: &mut B,
-    acc: &[QubitId],
-    x: &[QubitId],
-    y: &[BitId],
-    p: U256,
-) {
+fn mod_mul_sub_qb(b: &mut B, acc: &[QubitId], x: &[QubitId], y: &[BitId], p: U256) {
     let n = acc.len();
     let tmp = b.alloc_qubits(n);
-    for i in 0..n { b.cx(x[i], tmp[i]); }
+    for i in 0..n {
+        b.cx(x[i], tmp[i]);
+    }
     for i in 0..n {
         b.push_condition(y[i]);
         cmod_sub_qq_bit(b, acc, &tmp, y[i], p);
         b.pop_condition();
-        if i < n - 1 { mod_double_inplace_fast(b, &tmp, p); }
+        if i < n - 1 {
+            mod_double_inplace_fast(b, &tmp, p);
+        }
     }
-    for _ in 0..(n - 1) { mod_halve_inplace_fast(b, &tmp, p); }
-    for i in 0..n { b.cx(x[i], tmp[i]); }
+    for _ in 0..(n - 1) {
+        mod_halve_inplace_fast(b, &tmp, p);
+    }
+    for i in 0..n {
+        b.cx(x[i], tmp[i]);
+    }
     b.free_vec(&tmp);
 }
 
@@ -2703,18 +3064,14 @@ fn cmod_halve_inplace(b: &mut B, v: &[QubitId], p: U256, ctrl: QubitId) {
 /// restore u, v. Uses carry-ancilla + measurement-based uncomputation
 /// for the inv_MAJ sweep (0 Toffoli instead of n CCX).
 /// Cost ≈ n CCX (forward MAJ) + body + 0 CCX (measurement inv_MAJ).
-fn with_lt<F: FnOnce(&mut B)>(
-    b: &mut B,
-    u: &[QubitId],
-    v: &[QubitId],
-    flag: QubitId,
-    body: F,
-) {
+fn with_lt<F: FnOnce(&mut B)>(b: &mut B, u: &[QubitId], v: &[QubitId], flag: QubitId, body: F) {
     let n = u.len();
     assert_eq!(n, v.len());
     let c_in = b.alloc_qubit();
     let carries = b.alloc_qubits(n);
-    for i in 0..n { b.x(u[i]); }
+    for i in 0..n {
+        b.x(u[i]);
+    }
 
     // Forward MAJ sweep with separate carry ancillae.
     // maj_with_carry: CX(w,y); CX(w,x); CCX(x_new,y_new,carry); CX(carry,w)
@@ -2738,12 +3095,12 @@ fn with_lt<F: FnOnce(&mut B)>(
     // Backward inv_MAJ sweep with measurement-based carry uncompute (0 Toffoli).
     // inv_maj_with_carry: CX(carry,w); HMR+CZ(carry,x,y); CX(w,x); CX(w,y)
     for i in (1..n).rev() {
-        b.cx(carries[i], u[i]);             // restore w = u[i]
+        b.cx(carries[i], u[i]); // restore w = u[i]
         let m = b.alloc_bit();
-        b.hmr(carries[i], m);               // measure carry
-        b.cz_if(u[i - 1], v[i], m);         // phase correction
-        b.cx(u[i], u[i - 1]);               // restore x = u[i-1]
-        b.cx(u[i], v[i]);                   // restore y = v[i]
+        b.hmr(carries[i], m); // measure carry
+        b.cz_if(u[i - 1], v[i], m); // phase correction
+        b.cx(u[i], u[i - 1]); // restore x = u[i-1]
+        b.cx(u[i], v[i]); // restore y = v[i]
     }
     // Step 0: (x=c_in, y=v[0], w=u[0])
     b.cx(carries[0], u[0]);
@@ -2753,31 +3110,22 @@ fn with_lt<F: FnOnce(&mut B)>(
     b.cx(u[0], c_in);
     b.cx(u[0], v[0]);
 
-    for i in 0..n { b.x(u[i]); }
+    for i in 0..n {
+        b.x(u[i]);
+    }
     b.free_vec(&carries);
     b.free(c_in);
 }
 
 /// Symmetric helper: runs `body` with `flag` holding (u > v).
-fn with_gt<F: FnOnce(&mut B)>(
-    b: &mut B,
-    u: &[QubitId],
-    v: &[QubitId],
-    flag: QubitId,
-    body: F,
-) {
+fn with_gt<F: FnOnce(&mut B)>(b: &mut B, u: &[QubitId], v: &[QubitId], flag: QubitId, body: F) {
     with_lt(b, v, u, flag, body)
 }
 
 /// Run `body` with `flag` holding (v == 0), then uncompute. Single forward
 /// OR chain + body + single inverse OR chain — half the cost of two
 /// `cmp_eq_zero_into` calls.
-fn with_eq_zero<F: FnOnce(&mut B)>(
-    b: &mut B,
-    v: &[QubitId],
-    flag: QubitId,
-    body: F,
-) {
+fn with_eq_zero<F: FnOnce(&mut B)>(b: &mut B, v: &[QubitId], flag: QubitId, body: F) {
     let n = v.len();
     assert!(n > 0);
     if n == 1 {
@@ -2825,7 +3173,9 @@ fn cmp_lt_into(b: &mut B, u: &[QubitId], v: &[QubitId], flag: QubitId) {
     let c_in = b.alloc_qubit();
 
     // ~u in place (X is free in the metric).
-    for i in 0..n { b.x(u[i]); }
+    for i in 0..n {
+        b.x(u[i]);
+    }
 
     // Forward MAJ sweep — n MAJs (one more than cuccaro_add, which omits
     // the top one because it doesn't need the carry-out).
@@ -2843,7 +3193,9 @@ fn cmp_lt_into(b: &mut B, u: &[QubitId], v: &[QubitId], flag: QubitId) {
     inv_maj(b, c_in, v[0], u[0]);
 
     // Un-negate u.
-    for i in 0..n { b.x(u[i]); }
+    for i in 0..n {
+        b.x(u[i]);
+    }
 
     b.free(c_in);
 }
@@ -2905,38 +3257,56 @@ fn or_step(b: &mut B, x: QubitId, y: QubitId, out: QubitId) {
 
 /// 2-controlled X with per-control polarity. `polarity=true` means positive
 /// control; `false` means anti-control (ctrl=0 triggers).
-fn mcx2_polar(
-    b: &mut B,
-    c1: QubitId, p1: bool,
-    c2: QubitId, p2: bool,
-    target: QubitId,
-) {
-    if !p1 { b.x(c1); }
-    if !p2 { b.x(c2); }
+fn mcx2_polar(b: &mut B, c1: QubitId, p1: bool, c2: QubitId, p2: bool, target: QubitId) {
+    if !p1 {
+        b.x(c1);
+    }
+    if !p2 {
+        b.x(c2);
+    }
     b.ccx(c1, c2, target);
-    if !p2 { b.x(c2); }
-    if !p1 { b.x(c1); }
+    if !p2 {
+        b.x(c2);
+    }
+    if !p1 {
+        b.x(c1);
+    }
 }
 
 /// 3-controlled X with per-control polarity. Uses a borrowed scratch qubit
 /// (must be supplied clean, returns clean).
 fn mcx3_polar(
     b: &mut B,
-    c1: QubitId, p1: bool,
-    c2: QubitId, p2: bool,
-    c3: QubitId, p3: bool,
+    c1: QubitId,
+    p1: bool,
+    c2: QubitId,
+    p2: bool,
+    c3: QubitId,
+    p3: bool,
     target: QubitId,
     scratch: QubitId,
 ) {
-    if !p1 { b.x(c1); }
-    if !p2 { b.x(c2); }
-    if !p3 { b.x(c3); }
+    if !p1 {
+        b.x(c1);
+    }
+    if !p2 {
+        b.x(c2);
+    }
+    if !p3 {
+        b.x(c3);
+    }
     b.ccx(c1, c2, scratch);
     b.ccx(scratch, c3, target);
     b.ccx(c1, c2, scratch);
-    if !p3 { b.x(c3); }
-    if !p2 { b.x(c2); }
-    if !p1 { b.x(c1); }
+    if !p3 {
+        b.x(c3);
+    }
+    if !p2 {
+        b.x(c2);
+    }
+    if !p1 {
+        b.x(c1);
+    }
 }
 
 /// flag ^= (v == 0).  Uses cmp_neq_zero_into internally.
@@ -2955,9 +3325,13 @@ fn cmp_gt_into(b: &mut B, u: &[QubitId], v: &[QubitId], flag: QubitId) {
 fn cucc_sub_ctrl(b: &mut B, a: &[QubitId], acc: &[QubitId], ctrl: QubitId) {
     let n = a.len();
     let tmp = b.alloc_qubits(n);
-    for i in 0..n { b.ccx(ctrl, a[i], tmp[i]); }
+    for i in 0..n {
+        b.ccx(ctrl, a[i], tmp[i]);
+    }
     sub_nbit_qq(b, &tmp, acc);
-    for i in 0..n { b.ccx(ctrl, a[i], tmp[i]); }
+    for i in 0..n {
+        b.ccx(ctrl, a[i], tmp[i]);
+    }
     b.free_vec(&tmp);
 }
 
@@ -2965,9 +3339,13 @@ fn cucc_sub_ctrl(b: &mut B, a: &[QubitId], acc: &[QubitId], ctrl: QubitId) {
 fn cucc_add_ctrl(b: &mut B, a: &[QubitId], acc: &[QubitId], ctrl: QubitId) {
     let n = a.len();
     let tmp = b.alloc_qubits(n);
-    for i in 0..n { b.ccx(ctrl, a[i], tmp[i]); }
+    for i in 0..n {
+        b.ccx(ctrl, a[i], tmp[i]);
+    }
     add_nbit_qq(b, &tmp, acc);
-    for i in 0..n { b.ccx(ctrl, a[i], tmp[i]); }
+    for i in 0..n {
+        b.ccx(ctrl, a[i], tmp[i]);
+    }
     b.free_vec(&tmp);
 }
 
@@ -2984,8 +3362,8 @@ fn c_shift_right_1(b: &mut B, v: &[QubitId], ctrl: QubitId) {
 /// Unconditional shift-left by 1 of an (n+1)-bit register. ASSUMES r[n]=0
 /// before the shift. After the shift: r[0]=0, r[i] = old r[i-1] for i ∈ [1, n].
 fn shift_left_1(b: &mut B, r: &[QubitId]) {
-    let n1 = r.len();  // n+1
-    // Swap r[n] ↔ r[0] first: r[0] gets the known-0 top bit.
+    let n1 = r.len(); // n+1
+                      // Swap r[n] ↔ r[0] first: r[0] gets the known-0 top bit.
     b.swap(r[n1 - 1], r[0]);
     // Then propagate: swap r[n] ↔ r[n-1], r[n-1] ↔ r[n-2], ..., r[2] ↔ r[1].
     for i in (2..n1).rev() {
@@ -3106,7 +3484,6 @@ const ALT_SEED_COMMIT: usize = 24;
 const ALT_SEED_SHOTS: usize = 4096;
 const ALT_SEED_CLASSICAL_LIMIT: usize = 2;
 
-
 /// Specialized real forward primitive for the first few guaranteed-bulk
 /// Kaliski iterations where `f = 1` and `v_w != 0` are known a priori.
 ///
@@ -3172,9 +3549,17 @@ fn kaliski_iteration_bulk_prefix3(
     b.free(l_gt);
 
     b.set_phase("kal_bulk_step3_cswap");
-    for j in 0..u.len() { cswap(b, a_f, u[j], v_w[j]); }
-    let rs_width_step3 = if iter_idx + 1 < u.len() { iter_idx + 1 } else { u.len() };
-    for j in 0..rs_width_step3 { cswap(b, a_f, r[j], s[j]); }
+    for j in 0..u.len() {
+        cswap(b, a_f, u[j], v_w[j]);
+    }
+    let rs_width_step3 = if iter_idx + 1 < u.len() {
+        iter_idx + 1
+    } else {
+        u.len()
+    };
+    for j in 0..rs_width_step3 {
+        cswap(b, a_f, r[j], s[j]);
+    }
 
     b.set_phase("kal_bulk_step4");
     // Specialized STEP 4 with add_f = !b_f.
@@ -3183,12 +3568,20 @@ fn kaliski_iteration_bulk_prefix3(
     {
         let n = u.len();
         let tmp = b.alloc_qubits(n);
-        for i in 0..n { b.ccx(add_f, u[i], tmp[i]); }
+        for i in 0..n {
+            b.ccx(add_f, u[i], tmp[i]);
+        }
         sub_nbit_qq_fast(b, &tmp, v_w);
         let transform_width = if iter_idx + 1 < n { iter_idx + 1 } else { n };
-        for i in 0..transform_width { b.cx(r[i], u[i]); }
-        for i in 0..transform_width { b.ccx(add_f, u[i], tmp[i]); }
-        for i in 0..transform_width { b.cx(r[i], u[i]); }
+        for i in 0..transform_width {
+            b.cx(r[i], u[i]);
+        }
+        for i in 0..transform_width {
+            b.ccx(add_f, u[i], tmp[i]);
+        }
+        for i in 0..transform_width {
+            b.cx(r[i], u[i]);
+        }
         let add_width = if iter_idx + 2 < n { iter_idx + 2 } else { n };
         let mut tmp_slice: Vec<QubitId> = tmp[0..transform_width].to_vec();
         let tmp_pad = if add_width > transform_width {
@@ -3200,7 +3593,9 @@ fn kaliski_iteration_bulk_prefix3(
         };
         let s_slice: Vec<QubitId> = s[0..add_width].to_vec();
         add_nbit_qq_fast(b, &tmp_slice, &s_slice);
-        if let Some(q) = tmp_pad { b.free(q); }
+        if let Some(q) = tmp_pad {
+            b.free(q);
+        }
         for i in 0..n {
             let m = b.alloc_bit();
             b.hmr(tmp[i], m);
@@ -3225,7 +3620,9 @@ fn kaliski_iteration_bulk_prefix3(
     b.cx(a_f, b_f);
 
     b.set_phase("kal_bulk_step6_7_8");
-    for i in 0..(u.len() - 1) { b.swap(v_w[i], v_w[i + 1]); }
+    for i in 0..(u.len() - 1) {
+        b.swap(v_w[i], v_w[i + 1]);
+    }
     if iter_idx < R_SMALL_THRESHOLD {
         mod_double_no_corr(b, r);
     } else {
@@ -3233,9 +3630,17 @@ fn kaliski_iteration_bulk_prefix3(
     }
 
     b.set_phase("kal_bulk_step9_cswap");
-    for j in 0..u.len() { cswap(b, a_f, u[j], v_w[j]); }
-    let rs_width_step9 = if iter_idx + 2 < u.len() { iter_idx + 2 } else { u.len() };
-    for j in 0..rs_width_step9 { cswap(b, a_f, r[j], s[j]); }
+    for j in 0..u.len() {
+        cswap(b, a_f, u[j], v_w[j]);
+    }
+    let rs_width_step9 = if iter_idx + 2 < u.len() {
+        iter_idx + 2
+    } else {
+        u.len()
+    };
+    for j in 0..rs_width_step9 {
+        cswap(b, a_f, r[j], s[j]);
+    }
 
     b.x(s[0]);
     b.cx(s[0], a_f);
@@ -3288,11 +3693,11 @@ fn kaliski_iteration(
     // (known 0 here), then derive a_f = f XOR z = f AND NOT u[0] via CX,
     // and update m_i via ccx(z, NOT v_w[0], m_i). Uncompute z, then set
     // b_f to a_f XOR m_i as before. Saves 1 CCX per iter vs mcx2+mcx3.
-    b.ccx(f, u[0], b_f);                  // b_f = f AND u[0] (z)
+    b.ccx(f, u[0], b_f); // b_f = f AND u[0] (z)
     b.cx(f, a_f);
-    b.cx(b_f, a_f);                       // a_f = f XOR z = f AND NOT u[0]
+    b.cx(b_f, a_f); // a_f = f XOR z = f AND NOT u[0]
     b.x(v_w[0]);
-    b.ccx(b_f, v_w[0], m_i);              // m_i ^= z AND NOT v_w[0]
+    b.ccx(b_f, v_w[0], m_i); // m_i ^= z AND NOT v_w[0]
     b.x(v_w[0]);
     // Measurement-uncompute z (= f AND u[0]) from b_f: 0 CCX.
     {
@@ -3301,21 +3706,21 @@ fn kaliski_iteration(
         b.cz_if(f, u[0], zm);
     }
     b.cx(a_f, b_f);
-    b.cx(m_i, b_f);                       // b_f = a_f XOR m_i
+    b.cx(m_i, b_f); // b_f = a_f XOR m_i
 
     // ─── STEP 2: with l = u > v_w: a ^= (f AND l AND ¬b); m_i ^= same.
     // Late-iter: u and v_w have bitlen ≤ 2n-iter, so only compare low 2n-iter bits.
     let cmp_width = if iter_idx < n { n } else { 2 * n - iter_idx };
     let l_gt = b.alloc_qubit();
     with_gt(b, &u[0..cmp_width], &v_w[0..cmp_width], l_gt, |b| {
-        b.x(b_f);                          // negate polarity of b_f
-        b.ccx(f, l_gt, add_f);             // add_f = f AND l_gt
-        // Fuse two CCX with same (add_f, b_f) controls: compute once into
-        // a fresh ancilla, fan out via CX, measurement-uncompute. Saves 1 CCX.
+        b.x(b_f); // negate polarity of b_f
+        b.ccx(f, l_gt, add_f); // add_f = f AND l_gt
+                               // Fuse two CCX with same (add_f, b_f) controls: compute once into
+                               // a fresh ancilla, fan out via CX, measurement-uncompute. Saves 1 CCX.
         let t = b.alloc_qubit();
-        b.ccx(add_f, b_f, t);              // t = add_f AND ¬b_f_orig
-        b.cx(t, a_f);                      // a_f ^= t
-        b.cx(t, m_i);                      // m_i ^= t
+        b.ccx(add_f, b_f, t); // t = add_f AND ¬b_f_orig
+        b.cx(t, a_f); // a_f ^= t
+        b.cx(t, m_i); // m_i ^= t
         {
             let tm = b.alloc_bit();
             b.hmr(t, tm);
@@ -3338,9 +3743,13 @@ fn kaliski_iteration(
     // so u[j]=v_w[j]=0 for j >= 2n-iter_idx. Truncate (u,v_w) cswap.
     // Small-iter truncation: max(r,s) ≤ 2^iter_idx, so r[j]=s[j]=0 for j >= iter_idx+1.
     let uv_width = if iter_idx < n { n } else { 2 * n - iter_idx };
-    for j in 0..uv_width { cswap(b, a_f, u[j], v_w[j]); }
+    for j in 0..uv_width {
+        cswap(b, a_f, u[j], v_w[j]);
+    }
     let rs_width_step3 = if iter_idx + 1 < n { iter_idx + 1 } else { n };
-    for j in 0..rs_width_step3 { cswap(b, a_f, r[j], s[j]); }
+    for j in 0..rs_width_step3 {
+        cswap(b, a_f, r[j], s[j]);
+    }
 
     b.set_phase("kal_step4");
     // ─── STEP 4 ───
@@ -3357,7 +3766,9 @@ fn kaliski_iteration(
         let tmp = b.alloc_qubits(n);
         // Load tmp = add_f AND u. Late-iter bound: u[i]=0 for i >= 2n-iter.
         let load_width = if iter_idx < n { n } else { 2 * n - iter_idx };
-        for i in 0..load_width { b.ccx(add_f, u[i], tmp[i]); }
+        for i in 0..load_width {
+            b.ccx(add_f, u[i], tmp[i]);
+        }
         // Sub v_w -= tmp. Late-iter: both high bits 0, truncate to load_width.
         let tmp_sub_slice: Vec<QubitId> = tmp[0..load_width].to_vec();
         let v_w_sub_slice: Vec<QubitId> = v_w[0..load_width].to_vec();
@@ -3369,9 +3780,15 @@ fn kaliski_iteration(
         // Late-iter: full transform (r unbounded but u high bits 0 so CCX at
         // high bits effectively produces add_f AND r from tmp=0).
         let transform_width = if iter_idx + 1 < n { iter_idx + 1 } else { n };
-        for i in 0..transform_width { b.cx(r[i], u[i]); }
-        for i in 0..transform_width { b.ccx(add_f, u[i], tmp[i]); }
-        for i in 0..transform_width { b.cx(r[i], u[i]); }
+        for i in 0..transform_width {
+            b.cx(r[i], u[i]);
+        }
+        for i in 0..transform_width {
+            b.ccx(add_f, u[i], tmp[i]);
+        }
+        for i in 0..transform_width {
+            b.cx(r[i], u[i]);
+        }
         // Add s += tmp. Small-iter still needs one extra carry slot above the
         // live r bits, but that top input bit is known 0.
         let add_width = if iter_idx + 2 < n { iter_idx + 2 } else { n };
@@ -3423,7 +3840,9 @@ fn kaliski_iteration(
     // or f=0 (algorithm terminated with v_w=0). Unconditional shift of 0 is 0.
     // Saves 255 CCX per iter vs cswap-controlled version.
     let _ = f;
-    for i in 0..(n - 1) { b.swap(v_w[i], v_w[i + 1]); }
+    for i in 0..(n - 1) {
+        b.swap(v_w[i], v_w[i + 1]);
+    }
 
     // ─── STEP 7 + 8: r := 2*r mod p ───────────────────────────────────
     // For iter_idx < R_SMALL_THRESHOLD, r's top bit is guaranteed 0 (since
@@ -3440,9 +3859,13 @@ fn kaliski_iteration(
     // Late-iter (u,v_w) truncation per Kaliski invariant (same as STEP 3).
     // Small-iter (r,s) truncation: after STEP 4 s ≤ 2^{iter+1}, after STEP 7+8 r ≤ 2^{iter+1}.
     let uv_width = if iter_idx < n { n } else { 2 * n - iter_idx };
-    for j in 0..uv_width { cswap(b, a_f, u[j], v_w[j]); }
+    for j in 0..uv_width {
+        cswap(b, a_f, u[j], v_w[j]);
+    }
     let rs_width_step9 = if iter_idx + 2 < n { iter_idx + 2 } else { n };
-    for j in 0..rs_width_step9 { cswap(b, a_f, r[j], s[j]); }
+    for j in 0..rs_width_step9 {
+        cswap(b, a_f, r[j], s[j]);
+    }
 
     // ─── STEP 10: uncompute a via `a ^= NOT s[0]` ───
     // After STEP 9's swap, the invariant (from qrisp) is that
@@ -3470,30 +3893,29 @@ fn kaliski_iteration(
 fn in_place_mul_const(b: &mut B, v: &[QubitId], c: U256, p: U256) {
     let n = v.len();
     let tmp = b.alloc_qubits(n);
-    mul_by_const_acc(b, v, c, &tmp, p, false);       // tmp += v * c
+    mul_by_const_acc(b, v, c, &tmp, p, false); // tmp += v * c
     let c_inv = classical_modinv(c, p);
-    mul_by_const_acc(b, &tmp, c_inv, v, p, true);    // v -= tmp * c_inv
-    for i in 0..n { b.swap(v[i], tmp[i]); }
+    mul_by_const_acc(b, &tmp, c_inv, v, p, true); // v -= tmp * c_inv
+    for i in 0..n {
+        b.swap(v[i], tmp[i]);
+    }
     b.free_vec(&tmp);
 }
 
 /// `acc ±= x * c mod p`. `c` is a classical constant. Does NOT fold acc.
 /// Maintains a doubling copy of x in a temp register; adds it to acc at
 /// positions where c has a bit set.
-fn mul_by_const_acc(
-    b: &mut B,
-    x: &[QubitId],
-    c: U256,
-    acc: &[QubitId],
-    p: U256,
-    subtract: bool,
-) {
+fn mul_by_const_acc(b: &mut B, x: &[QubitId], c: U256, acc: &[QubitId], p: U256, subtract: bool) {
     let n = x.len();
-    if c == U256::ZERO { return; }
+    if c == U256::ZERO {
+        return;
+    }
 
     // tmp := x  (via CX copy)
     let tmp = b.alloc_qubits(n);
-    for i in 0..n { b.cx(x[i], tmp[i]); }
+    for i in 0..n {
+        b.cx(x[i], tmp[i]);
+    }
 
     // Iterate bits of c from LSB to MSB. At step i, tmp holds x * 2^i mod p.
     // Add tmp to acc if bit i of c is set. Then double tmp for the next step.
@@ -3502,7 +3924,9 @@ fn mul_by_const_acc(
     // bits (we must double enough times to make uncomputation clean).
     let mut top = 0usize;
     for i in 0..256 {
-        if bit(c, i) { top = i; }
+        if bit(c, i) {
+            top = i;
+        }
     }
 
     for i in 0..=top {
@@ -3523,7 +3947,9 @@ fn mul_by_const_acc(
     for _ in 0..top {
         mod_halve_inplace_fast(b, &tmp, p);
     }
-    for i in 0..n { b.cx(x[i], tmp[i]); }
+    for i in 0..n {
+        b.cx(x[i], tmp[i]);
+    }
     b.free_vec(&tmp);
 }
 
@@ -3532,11 +3958,11 @@ fn mul_by_const_acc(
 /// reverse them because it skips R ops (the free markers) in the reverse
 /// stream, and our forward guarantees each free lands on a |0⟩ qubit.
 struct KaliskiState {
-    u: Vec<QubitId>,       // n qubits
-    v_w: Vec<QubitId>,     // n qubits
-    r: Vec<QubitId>,       // n qubits
-    s: Vec<QubitId>,       // n qubits
-    m_hist: Vec<QubitId>,  // iters qubits
+    u: Vec<QubitId>,      // n qubits
+    v_w: Vec<QubitId>,    // n qubits
+    r: Vec<QubitId>,      // n qubits
+    s: Vec<QubitId>,      // n qubits
+    m_hist: Vec<QubitId>, // iters qubits
     f_flag: QubitId,
     // a_flag, b_flag, add_flag are iter-local: allocated fresh inside each
     // kaliski_iteration / _backward and zeroed/freed at iter end. This
@@ -3578,9 +4004,15 @@ fn kaliski_forward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, iter
 
     // ─── Init ───
     // u := p (classical load)
-    for i in 0..n { if bit(p, i) { b.x(st.u[i]); } }
+    for i in 0..n {
+        if bit(p, i) {
+            b.x(st.u[i]);
+        }
+    }
     // v_w := v_in  (CX-copy; v_in unchanged)
-    for i in 0..n { b.cx(v_in[i], st.v_w[i]); }
+    for i in 0..n {
+        b.cx(v_in[i], st.v_w[i]);
+    }
     // s := 1
     b.x(st.s[0]);
     // f := 1
@@ -3591,14 +4023,15 @@ fn kaliski_forward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, iter
     let bulk_prefix_iters = bulk_prefix_safe_iters();
     for i in 0..iters {
         if use_bulk_prefix3 && i < bulk_prefix_iters {
-            kaliski_iteration_bulk_prefix3(
-                b, p, &st.u, &st.v_w, &st.r, &st.s,
-                st.m_hist[i],
-                i,
-            );
+            kaliski_iteration_bulk_prefix3(b, p, &st.u, &st.v_w, &st.r, &st.s, st.m_hist[i], i);
         } else {
             kaliski_iteration(
-                b, p, &st.u, &st.v_w, &st.r, &st.s,
+                b,
+                p,
+                &st.u,
+                &st.v_w,
+                &st.r,
+                &st.s,
                 st.m_hist[i],
                 st.f_flag,
                 i,
@@ -3619,12 +4052,7 @@ fn kaliski_forward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, iter
 /// Like `with_eq_zero` but uses measurement-based uncomputation for the
 /// backward OR chain (0 Toffoli instead of n-1 CCX). NOT safe inside
 /// emit_inverse blocks (uses HMR ops).
-fn with_eq_zero_fast<F: FnOnce(&mut B)>(
-    b: &mut B,
-    v: &[QubitId],
-    flag: QubitId,
-    body: F,
-) {
+fn with_eq_zero_fast<F: FnOnce(&mut B)>(b: &mut B, v: &[QubitId], flag: QubitId, body: F) {
     let n = v.len();
     assert!(n > 0);
     if n == 1 {
@@ -3668,8 +4096,8 @@ fn or_step_uncompute(b: &mut B, x: QubitId, y: QubitId, out: QubitId) {
     b.x(x);
     b.x(y);
     let m = b.alloc_bit();
-    b.hmr(out, m);        // measure; out → 0
-    b.cz_if(x, y, m);    // phase correction with (NOT x_orig, NOT y_orig) controls
+    b.hmr(out, m); // measure; out → 0
+    b.cz_if(x, y, m); // phase correction with (NOT x_orig, NOT y_orig) controls
     b.x(y);
     b.x(x);
 }
@@ -3702,8 +4130,12 @@ fn kaliski_iteration_bulk_prefix3_backward(
     // Reverse STEP 9.
     b.set_phase("bk_bulk_step9_cswap");
     let rs_width_step9 = if iter_idx + 2 < n { iter_idx + 2 } else { n };
-    for j in (0..rs_width_step9).rev() { cswap(b, a_f, r[j], s[j]); }
-    for j in (0..n).rev() { cswap(b, a_f, u[j], v_w[j]); }
+    for j in (0..rs_width_step9).rev() {
+        cswap(b, a_f, r[j], s[j]);
+    }
+    for j in (0..n).rev() {
+        cswap(b, a_f, u[j], v_w[j]);
+    }
 
     // Reverse STEP 8+7 and STEP 6.
     // Bug fix: forward uses mod_double_inplace_fast (with Solinas correction)
@@ -3717,7 +4149,9 @@ fn kaliski_iteration_bulk_prefix3_backward(
     } else {
         mod_halve_inplace_fast(b, r, p);
     }
-    for i in (0..(n - 1)).rev() { b.swap(v_w[i], v_w[i + 1]); }
+    for i in (0..(n - 1)).rev() {
+        b.swap(v_w[i], v_w[i + 1]);
+    }
 
     // Reverse STEP 5.
     b.set_phase("bk_bulk_step5");
@@ -3731,15 +4165,23 @@ fn kaliski_iteration_bulk_prefix3_backward(
     {
         let tmp = b.alloc_qubits(n);
         let load_width = if iter_idx + 1 < n { iter_idx + 1 } else { n };
-        for i in 0..load_width { b.ccx(add_f, r[i], tmp[i]); }
+        for i in 0..load_width {
+            b.ccx(add_f, r[i], tmp[i]);
+        }
         let sub_width = if iter_idx + 2 < n { iter_idx + 2 } else { n };
         let tmp_sub_slice: Vec<QubitId> = tmp[0..sub_width].to_vec();
         let s_slice: Vec<QubitId> = s[0..sub_width].to_vec();
         sub_nbit_qq_fast(b, &tmp_sub_slice, &s_slice);
         let transform_width = n;
-        for i in 0..transform_width { b.cx(r[i], u[i]); }
-        for i in 0..transform_width { b.ccx(add_f, u[i], tmp[i]); }
-        for i in 0..transform_width { b.cx(r[i], u[i]); }
+        for i in 0..transform_width {
+            b.cx(r[i], u[i]);
+        }
+        for i in 0..transform_width {
+            b.ccx(add_f, u[i], tmp[i]);
+        }
+        for i in 0..transform_width {
+            b.cx(r[i], u[i]);
+        }
         let tmp_add_slice: Vec<QubitId> = tmp[0..n].to_vec();
         let v_w_slice: Vec<QubitId> = v_w[0..n].to_vec();
         add_nbit_qq_fast(b, &tmp_add_slice, &v_w_slice);
@@ -3756,8 +4198,12 @@ fn kaliski_iteration_bulk_prefix3_backward(
     // Reverse STEP 3.
     b.set_phase("bk_bulk_step3_cswap");
     let rs_width_step3 = if iter_idx + 1 < n { iter_idx + 1 } else { n };
-    for j in (0..rs_width_step3).rev() { cswap(b, a_f, r[j], s[j]); }
-    for j in (0..n).rev() { cswap(b, a_f, u[j], v_w[j]); }
+    for j in (0..rs_width_step3).rev() {
+        cswap(b, a_f, r[j], s[j]);
+    }
+    for j in (0..n).rev() {
+        cswap(b, a_f, u[j], v_w[j]);
+    }
 
     // Reverse STEP 2.
     b.set_phase("bk_bulk_step2");
@@ -3823,8 +4269,12 @@ fn kaliski_iteration_backward(
     let rs_width_step9 = if iter_idx + 2 < n { iter_idx + 2 } else { n };
     let uv_width = if iter_idx < n { n } else { 2 * n - iter_idx };
     b.set_phase("bk_step9_cswap");
-    for j in (0..rs_width_step9).rev() { cswap(b, a_f, r[j], s[j]); }
-    for j in (0..uv_width).rev() { cswap(b, a_f, u[j], v_w[j]); }
+    for j in (0..rs_width_step9).rev() {
+        cswap(b, a_f, r[j], s[j]);
+    }
+    for j in (0..uv_width).rev() {
+        cswap(b, a_f, u[j], v_w[j]);
+    }
 
     b.set_phase("bk_step6_7_8");
     // Reverse STEP 8 + 7 ─────────────────────────────────────────────
@@ -3838,7 +4288,9 @@ fn kaliski_iteration_backward(
 
     // ── Reverse STEP 6 (unconditional shift-left) ───────────
     let _ = f;
-    for i in (0..(n - 1)).rev() { b.swap(v_w[i], v_w[i + 1]); }
+    for i in (0..(n - 1)).rev() {
+        b.swap(v_w[i], v_w[i + 1]);
+    }
 
     b.set_phase("bk_step5");
     // Reverse STEP 5 ─────────────────────────────────────────────────
@@ -3852,7 +4304,9 @@ fn kaliski_iteration_backward(
         let tmp = b.alloc_qubits(n);
         // Load tmp = AND(add_f, r). Small-iter: r[i]=0 for i >= iter+1.
         let load_width = if iter_idx + 1 < n { iter_idx + 1 } else { n };
-        for i in 0..load_width { b.ccx(add_f, r[i], tmp[i]); }
+        for i in 0..load_width {
+            b.ccx(add_f, r[i], tmp[i]);
+        }
         // Reversed (F): sub tmp from s. Small-iter width iter+2.
         let sub_width = if iter_idx + 2 < n { iter_idx + 2 } else { n };
         let tmp_sub_slice: Vec<QubitId> = tmp[0..sub_width].to_vec();
@@ -3863,9 +4317,15 @@ fn kaliski_iteration_backward(
         //   ccx(add_f, u=r, tmp) flips tmp. tmp goes 0 → add_f AND r. Not what we
         //   want (need add_f AND u=0). For late iter, truncate transform to uv_width.
         let transform_width = if iter_idx < n { n } else { 2 * n - iter_idx };
-        for i in 0..transform_width { b.cx(r[i], u[i]); }
-        for i in 0..transform_width { b.ccx(add_f, u[i], tmp[i]); }
-        for i in 0..transform_width { b.cx(r[i], u[i]); }
+        for i in 0..transform_width {
+            b.cx(r[i], u[i]);
+        }
+        for i in 0..transform_width {
+            b.ccx(add_f, u[i], tmp[i]);
+        }
+        for i in 0..transform_width {
+            b.cx(r[i], u[i]);
+        }
         // Reversed (D): add tmp to v_w. Truncated to uv_width (late iter bound).
         let add_width = transform_width;
         let tmp_add_slice: Vec<QubitId> = tmp[0..add_width].to_vec();
@@ -3901,8 +4361,12 @@ fn kaliski_iteration_backward(
     // Reverse STEP 3 ─────────────────────────────────────────────────
     let rs_width_step3 = if iter_idx + 1 < n { iter_idx + 1 } else { n };
     let uv_width = if iter_idx < n { n } else { 2 * n - iter_idx };
-    for j in (0..rs_width_step3).rev() { cswap(b, a_f, r[j], s[j]); }
-    for j in (0..uv_width).rev() { cswap(b, a_f, u[j], v_w[j]); }
+    for j in (0..rs_width_step3).rev() {
+        cswap(b, a_f, r[j], s[j]);
+    }
+    for j in (0..uv_width).rev() {
+        cswap(b, a_f, u[j], v_w[j]);
+    }
 
     b.set_phase("bk_step2");
     // Reverse STEP 2 (with_gt body is self-inverse) ──────────────────
@@ -4006,13 +4470,23 @@ fn kaliski_backward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, ite
     for i in (0..iters).rev() {
         if use_bulk_prefix3 && i < bulk_prefix_iters {
             kaliski_iteration_bulk_prefix3_backward(
-                b, p, &st.u, &st.v_w, &st.r, &st.s,
+                b,
+                p,
+                &st.u,
+                &st.v_w,
+                &st.r,
+                &st.s,
                 st.m_hist[i],
                 i,
             );
         } else {
             kaliski_iteration_backward(
-                b, p, &st.u, &st.v_w, &st.r, &st.s,
+                b,
+                p,
+                &st.u,
+                &st.v_w,
+                &st.r,
+                &st.s,
                 st.m_hist[i],
                 st.f_flag,
                 i,
@@ -4023,8 +4497,14 @@ fn kaliski_backward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, ite
     // ─── Reverse Init ───
     b.x(st.f_flag);
     b.x(st.s[0]);
-    for i in 0..n { b.cx(v_in[i], st.v_w[i]); }
-    for i in 0..n { if bit(p, i) { b.x(st.u[i]); } }
+    for i in 0..n {
+        b.cx(v_in[i], st.v_w[i]);
+    }
+    for i in 0..n {
+        if bit(p, i) {
+            b.x(st.u[i]);
+        }
+    }
 }
 
 /// Run `body` with `inv` holding `v_in^{-1} mod p`, leaving `v_in`
@@ -4072,29 +4552,39 @@ fn with_kal_inv_raw<F: FnOnce(&mut B, &[QubitId])>(
 ) {
     let n = v_in.len();
     let mut st = alloc_kaliski_state(b, n, iters);
+    let keep_full_state = std::env::var("KAL_KEEP_FULL_STATE").ok().as_deref() == Some("1");
+    let keep_u = keep_full_state || std::env::var("KAL_KEEP_U").ok().as_deref() == Some("1");
+    let keep_v = keep_full_state || std::env::var("KAL_KEEP_V").ok().as_deref() == Some("1");
+    let keep_f = keep_full_state || std::env::var("KAL_KEEP_F").ok().as_deref() == Some("1");
 
     // Forward kaliski. st.r[..n] holds raw = v_in^{-1} * 2^(2n) mod p.
     kaliski_forward(b, v_in, &st, p, iters);
 
-    // Kaliski invariant at end of forward (for nonzero v_in):
-    //   u = 1, v_w = 0, f = 0, s = some, r = raw inverse.
-    // Free registers whose post-forward state is classically known:
-    //   v_w = 0 (free directly)
-    //   f_flag = 0 (free directly)
-    //   u = 1: X bit 0 to zero, then free
-    b.free_vec(&st.v_w);
-    b.free(st.f_flag);
-    b.x(st.u[0]);
-    b.free_vec(&st.u);
+    if !keep_v {
+        b.free_vec(&st.v_w);
+    }
+    if !keep_f {
+        b.free(st.f_flag);
+    }
+    if !keep_u {
+        b.x(st.u[0]);
+        b.free_vec(&st.u);
+    }
 
     let r_low: Vec<QubitId> = st.r[..n].to_vec();
     body(b, &r_low);
 
-    // Re-alloc at |0> for the backward pass; restore u[0] = 1.
-    st.u = b.alloc_qubits(n);
-    b.x(st.u[0]);
-    st.f_flag = b.alloc_qubit();
-    st.v_w = b.alloc_qubits(n);
+    if !keep_u {
+        // Re-alloc at |0> for the backward pass; restore u[0] = 1.
+        st.u = b.alloc_qubits(n);
+        b.x(st.u[0]);
+    }
+    if !keep_f {
+        st.f_flag = b.alloc_qubit();
+    }
+    if !keep_v {
+        st.v_w = b.alloc_qubits(n);
+    }
 
     // Experimental mode: use the exact reversed forward block shape, but skip
     // HMR/R in the reverse replay. This is heavier than the explicit backward,
@@ -4121,9 +4611,13 @@ fn with_kal_inv<F: FnOnce(&mut B, &[QubitId])>(
     with_kal_inv_raw(b, v_in, p, iters, |b, inv_raw| {
         // Kaliski's raw output carries a 2^(2n-1) factor. Apply the
         // correction in place when callers need the exact inverse.
-        for _ in 0..iters { mod_halve_inplace_fast(b, inv_raw, p); }
+        for _ in 0..iters {
+            mod_halve_inplace_fast(b, inv_raw, p);
+        }
         body(b, inv_raw);
-        for _ in 0..iters { mod_double_inplace_fast(b, inv_raw, p); }
+        for _ in 0..iters {
+            mod_double_inplace_fast(b, inv_raw, p);
+        }
     });
 }
 
@@ -4145,7 +4639,9 @@ fn kaliski_inv_inplace(b: &mut B, v_in: &[QubitId], p: U256) {
     let k_const = classical_modinv(two_2n, p);
     in_place_mul_const(b, &st.r[..n], k_const, p);
     // Copy exact inverse into output.
-    for i in 0..n { b.cx(st.r[i], output[i]); }
+    for i in 0..n {
+        b.cx(st.r[i], output[i]);
+    }
     // Undo the correction: st.r[..n] *= K^{-1} mod p.
     in_place_mul_const(b, &st.r[..n], two_2n, p);
     // Now st is back to its post-kaliski_forward state. Reverse the forward.
@@ -4153,7 +4649,9 @@ fn kaliski_inv_inplace(b: &mut B, v_in: &[QubitId], p: U256) {
     // st is all 0 again. v_in unchanged. output = v_in^{-1}.
 
     // Swap v_in and output.
-    for i in 0..n { b.swap(v_in[i], output[i]); }
+    for i in 0..n {
+        b.swap(v_in[i], output[i]);
+    }
     // v_in = inverse, output = v_orig.
 
     // ─── Phase 2: zero output via a second Bennett pass ───
@@ -4162,7 +4660,9 @@ fn kaliski_inv_inplace(b: &mut B, v_in: &[QubitId], p: U256) {
     // zeroes output.
     kaliski_forward(b, v_in, &st, p, iters);
     in_place_mul_const(b, &st.r[..n], k_const, p);
-    for i in 0..n { b.cx(st.r[i], output[i]); }   // output ^= v_orig = 0
+    for i in 0..n {
+        b.cx(st.r[i], output[i]);
+    } // output ^= v_orig = 0
     in_place_mul_const(b, &st.r[..n], two_2n, p);
     emit_inverse(b, |b| kaliski_forward(b, v_in, &st, p, iters));
     // st all 0, output all 0 (hopefully), v_in = inverse.
@@ -4183,12 +4683,28 @@ fn pow_mod_2_k(p: U256, k: usize) -> U256 {
 
 fn secp256k1_curve() -> WeierstrassEllipticCurve {
     WeierstrassEllipticCurve {
-        modulus: U256::from_str_radix("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F", 16).unwrap(),
+        modulus: U256::from_str_radix(
+            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F",
+            16,
+        )
+        .unwrap(),
         a: U256::from(0),
         b: U256::from(7),
-        gx: U256::from_str_radix("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798", 16).unwrap(),
-        gy: U256::from_str_radix("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8", 16).unwrap(),
-        order: U256::from_str_radix("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141", 16).unwrap(),
+        gx: U256::from_str_radix(
+            "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798",
+            16,
+        )
+        .unwrap(),
+        gy: U256::from_str_radix(
+            "483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8",
+            16,
+        )
+        .unwrap(),
+        order: U256::from_str_radix(
+            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+            16,
+        )
+        .unwrap(),
     }
 }
 
@@ -4222,16 +4738,22 @@ fn run_alt_seed_checks(ops: &[Op]) {
     for (i, r) in regs.iter().enumerate() {
         assert_eq!(r.len(), 256, "register {i} should be 256 wide");
     }
-    for q in &regs[0] { assert!(matches!(q, QubitOrBit::Qubit(_))); }
-    for q in &regs[1] { assert!(matches!(q, QubitOrBit::Qubit(_))); }
-    for q in &regs[2] { assert!(matches!(q, QubitOrBit::Bit(_))); }
-    for q in &regs[3] { assert!(matches!(q, QubitOrBit::Bit(_))); }
+    for q in &regs[0] {
+        assert!(matches!(q, QubitOrBit::Qubit(_)));
+    }
+    for q in &regs[1] {
+        assert!(matches!(q, QubitOrBit::Qubit(_)));
+    }
+    for q in &regs[2] {
+        assert!(matches!(q, QubitOrBit::Bit(_)));
+    }
+    for q in &regs[3] {
+        assert!(matches!(q, QubitOrBit::Bit(_)));
+    }
 
     eprintln!(
         "=== alternate-seed diagnostic ({} seeds × {} shots, classical_limit={}, parallel) ===",
-        n_seeds,
-        ALT_SEED_SHOTS,
-        ALT_SEED_CLASSICAL_LIMIT,
+        n_seeds, ALT_SEED_SHOTS, ALT_SEED_CLASSICAL_LIMIT,
     );
 
     let results: Vec<(u64, usize, usize, usize)> = std::thread::scope(|scope| {
@@ -4254,9 +4776,15 @@ fn run_alt_seed_checks(ops: &[Op]) {
                     let k2 = U256::from_le_bytes(rb[1]);
                     let t = curve.mul(curve.gx, curve.gy, k1);
                     let o = curve.mul(curve.gx, curve.gy, k2);
-                    if t.0 == o.0 { continue; }
-                    if t.0.is_zero() && t.1.is_zero() { continue; }
-                    if o.0.is_zero() && o.1.is_zero() { continue; }
+                    if t.0 == o.0 {
+                        continue;
+                    }
+                    if t.0.is_zero() && t.1.is_zero() {
+                        continue;
+                    }
+                    if o.0.is_zero() && o.1.is_zero() {
+                        continue;
+                    }
                     let e = curve.add(t.0, t.1, o.0, o.1);
                     targets.push(t);
                     offsets.push(o);
@@ -4310,7 +4838,12 @@ fn run_alt_seed_checks(ops: &[Op]) {
                         ancilla_garbage_batches += 1;
                     }
                 }
-                (tag, classical_failures, phase_garbage_batches, ancilla_garbage_batches)
+                (
+                    tag,
+                    classical_failures,
+                    phase_garbage_batches,
+                    ancilla_garbage_batches,
+                )
             });
             handles.push(handle);
         }
@@ -4326,16 +4859,16 @@ fn run_alt_seed_checks(ops: &[Op]) {
         total_ancilla_batches += ancilla_garbage_batches;
         eprintln!(
             "ALT-SEED tag={} classical_mismatches={} phase_batches={} ancilla_batches={}",
-            tag,
-            classical_failures,
-            phase_garbage_batches,
-            ancilla_garbage_batches,
+            tag, classical_failures, phase_garbage_batches, ancilla_garbage_batches,
         );
     }
 
     println!("METRIC altseed_classical_total={}", total_classical);
     println!("METRIC altseed_phase_batches_total={}", total_phase_batches);
-    println!("METRIC altseed_ancilla_batches_total={}", total_ancilla_batches);
+    println!(
+        "METRIC altseed_ancilla_batches_total={}",
+        total_ancilla_batches
+    );
 
     assert!(
         total_phase_batches == 0,
@@ -4409,7 +4942,9 @@ pub fn build() -> Vec<Op> {
         b.set_phase("pair1_mul1");
         mod_mul_write_into_zero_acc_schoolbook(b, &lam_inner, &ty, inv_raw, p);
         b.set_phase("pair1_halve");
-        for _ in 0..pair1_iters { mod_halve_inplace_fast(b, &lam_inner, p); }
+        for _ in 0..pair1_iters {
+            mod_halve_inplace_fast(b, &lam_inner, p);
+        }
         b.set_phase("pair1_mul2");
         mod_mul_add_into_acc_schoolbook(b, &ty, &lam_inner, &tx, p);
         b.set_phase("pair1_kaliski_backward");
@@ -4424,22 +4959,24 @@ pub fn build() -> Vec<Op> {
     mod_add_double_qb(b, &tx, &ox, p);
     // Fold mod_neg + mod_sub_qb into mod_add_qb + mod_neg: mod_add_qb is
     // cheaper than mod_sub_qb by n CCX. Result equivalent: tx = Rx - Qx.
-    mod_add_qb(b, &tx, &ox, p);                          // tx = dx - λ² + 3Qx
-    mod_neg_inplace_fast(b, &tx, p);                     // tx = -(...)= Rx - Qx
-    // ty starts at 0 here (mul2 cleared it), use zero-acc fast path.
+    mod_add_qb(b, &tx, &ox, p); // tx = dx - λ² + 3Qx
+    mod_neg_inplace_fast(b, &tx, p); // tx = -(...)= Rx - Qx
+                                     // ty starts at 0 here (mul2 cleared it), use zero-acc fast path.
     b.set_phase("mul3_between_pair");
     mod_mul_write_into_zero_acc_karatsuba2(b, &ty, &lam, &tx, p);
     b.set_phase("pair2_kaliski_forward");
     with_kal_inv_raw(b, &tx, p, pair2_iters, |b, inv_raw| {
         b.set_phase("pair2_double");
-        for _ in 0..pair2_iters { mod_double_inplace_fast(b, &lam, p); }
+        for _ in 0..pair2_iters {
+            mod_double_inplace_fast(b, &lam, p);
+        }
         b.set_phase("pair2_mul");
         mod_mul_add_into_acc_schoolbook(b, &lam, inv_raw, &ty, p);
         b.set_phase("pair2_cleanup");
         mod_sub_qb(b, &ty, &oy, p);
         b.set_phase("pair2_kaliski_backward");
     });
-    mod_add_qb(b, &tx, &ox, p);                           // tx = Rx
+    mod_add_qb(b, &tx, &ox, p); // tx = Rx
 
     b.free_vec(&lam);
 
@@ -4450,13 +4987,22 @@ pub fn build() -> Vec<Op> {
     run_alt_seed_checks(&b.ops);
 
     if std::env::var("TRACE_PEAK").is_ok() {
-        eprintln!("DEBUG peak_qubits={} at phase='{}' ops_idx={} total_ops={}", b.peak_qubits, b.peak_phase, b.peak_ops_idx, b.ops.len());
+        eprintln!(
+            "DEBUG peak_qubits={} at phase='{}' ops_idx={} total_ops={}",
+            b.peak_qubits,
+            b.peak_phase,
+            b.peak_ops_idx,
+            b.ops.len()
+        );
         let pk = b.peak_qubits;
-        let mut uniq: std::collections::BTreeMap<&'static str, (u32, usize)> = std::collections::BTreeMap::new();
+        let mut uniq: std::collections::BTreeMap<&'static str, (u32, usize)> =
+            std::collections::BTreeMap::new();
         for (a, ph, op) in &b.peak_log {
             if *a + 5 >= pk {
                 let entry = uniq.entry(ph).or_insert((*a, *op));
-                if *a > entry.0 { *entry = (*a, *op); }
+                if *a > entry.0 {
+                    *entry = (*a, *op);
+                }
             }
         }
         for (ph, (a, op)) in uniq.iter() {
@@ -4477,7 +5023,11 @@ pub fn build() -> Vec<Op> {
         let mut regions: Vec<(&'static str, usize, u64, u64, u64)> = Vec::new();
         for i in 0..trans.len() {
             let start = trans[i].0;
-            let end = if i + 1 < trans.len() { trans[i + 1].0 } else { n_ops };
+            let end = if i + 1 < trans.len() {
+                trans[i + 1].0
+            } else {
+                n_ops
+            };
             let phase = trans[i].1;
             let mut tof: u64 = 0;
             let mut cli: u64 = 0;
@@ -4501,18 +5051,27 @@ pub fn build() -> Vec<Op> {
         }
         let total_tof: u64 = agg.values().map(|v| v.0).sum();
         eprintln!("=== per-phase emitted Toffoli (classical view; executed-shot stats are in harness) ===");
-        eprintln!("{:<40} {:>12} {:>12} {:>6}", "phase", "ccx", "cliff", "%tof");
+        eprintln!(
+            "{:<40} {:>12} {:>12} {:>6}",
+            "phase", "ccx", "cliff", "%tof"
+        );
         let mut v: Vec<_> = agg.iter().collect();
         v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
         for (ph, (t, c, _o)) in v {
-            let pct = if total_tof > 0 { (*t as f64) * 100.0 / (total_tof as f64) } else { 0.0 };
+            let pct = if total_tof > 0 {
+                (*t as f64) * 100.0 / (total_tof as f64)
+            } else {
+                0.0
+            };
             eprintln!("{:<40} {:>12} {:>12} {:>5.1}%", ph, t, c, pct);
         }
         eprintln!("total_ccx_emitted={} total_ops={}", total_tof, n_ops);
         if std::env::var("TRACE_PHASES_VERBOSE").is_ok() {
             eprintln!("--- per-region (ordered) ---");
             for (ph, start, tof, cli, _o) in &regions {
-                if *tof == 0 && *cli == 0 { continue; }
+                if *tof == 0 && *cli == 0 {
+                    continue;
+                }
                 eprintln!("@{:<10} {:<40} ccx={} cli={}", start, ph, tof, cli);
             }
         }

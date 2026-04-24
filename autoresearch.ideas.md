@@ -28,6 +28,13 @@ Technique: "venting" = measure Z-redundant carry qubits in X basis, leaving phas
 
 **Risk**: phase-bug-prone. The critical circuit diagrams (Figures 2-6) are not in PDF-extracted text; must port from Python code. Without that reference, don't re-derive from paper text alone.
 
+**2026-04-23 port result**: full Zenodo-guided port of the 3-clean venting adder + carry-xor, wired in as a wholesale replacement for `add_nbit_const_fast` / `sub_nbit_const_fast` / `cadd_nbit_const_fast` / `csub_nbit_const_fast`, was **correct and phase-clean** but **net negative** for this benchmark:
+- `avg_toffoli`: 4.236M → **5.369M** (**+1.13M** worse)
+- qubits: **unchanged at 2717**
+- emitted ops: 34.86M → **34.03M** (slightly lower op count, but Toffoli much higher)
+
+**Conclusion**: the current loaded-constant + fast q-q adders are far cheaper in Toffoli than the `4n` venting adder, and the benchmark peak is not currently dominated by these const-add call sites. So the venting adder is **not** a drop-in replacement. If revisited, use it only for a **peak-critical localized path** where wide Cuccaro carry scratch is the bottleneck, not globally.
+
 ## Priority-2 moonshot: windowed Montgomery inversion (Gidney-Ekera style)
 Targets 1100q. Core primitives:
 1. Montgomery form throughout: `x̃ = x·2^n mod p`, `mul_mont(a,b) = a·b·2^{-n} mod p`.
@@ -38,6 +45,121 @@ Targets 1100q. Core primitives:
 **Estimated budget**: 512 (inputs doubling as Kaliski state) + 256 (aux) + 64 (window) = ~830q. Matches SOTA.
 
 **Implementation complexity**: ~1000 LOC. Multi-week.
+
+## 2026-04-23 literature update: what Google's public paper actually reveals
+Source: `arXiv:2603.28846` TeX source + refs, plus latest public Gidney/Litinski papers.
+
+Key public clues from Google/Babbush/Zalcman/Gidney:
+- Their **undisclosed improvement is still a point-add circuit**. The ZK proof attests directly to a `secp256k1` point-add circuit, not some different full-ECDLP trick.
+- They explicitly say the point-add is a **pure classical reversible boolean function** executed in superposition, with **MBUC** and **windowed arithmetic**. So the win is in the logical circuit itself, not some non-boolean quantum trick.
+- Their full ECDLP uses **in-place windowed elliptic-curve point additions**, each with **3 table lookups**, and optimal `w=16` at the published point-add cost.
+- Their point-add resource target is approximately **4.5n space**, i.e. **1175 qubits (low-qubit)** or **1425 qubits (low-gate)** at `n=256`.
+- They describe windowed arithmetic + MBUC as **common ingredients already present in prior work**. Therefore those are almost certainly **not** the hidden breakthrough by themselves.
+- They still cite affine/windowed literature and do **not** signal projective coordinates as the answer. This aligns with `2502.12441`, which explicitly finds projective coordinates worse for Shor/ECDLP.
+
+Implication for this repo:
+- We should stop thinking in terms of shaving the current 2-Kaliski affine design.
+- The correct target is a **new point-add architecture in the 1175-1425q regime**.
+- Any path that cannot plausibly get below ~1500 qubits at point-add level is probably the wrong architecture.
+
+## New Priority-0 direction: unpublished-style compact point-add reconstruction
+Working hypothesis from the public clues:
+- Google likely did **not** win by a better schoolbook/Karatsuba tweak.
+- They likely combined:
+  1. a **windowed / lookup-centric point-add skeleton**,
+  2. a **much more compact inversion/division core** than our current Kaliski state layout,
+  3. aggressive **register folding / history compression**, and
+  4. MBUC everywhere phase-clean.
+
+Most plausible public reconstruction bets:
+- **Bet A: compact windowed-Montgomery inverse / divstep family**
+  - Replace 408-bit `m_hist` with ~64-ish window history.
+  - Reuse input/output registers as inverse state.
+  - This is the only public-ish line that plausibly lands near 1175q.
+- **Bet B: lookup-structured point-add, not generic affine arithmetic**
+  - Recast the add around signed-window / table-selected classical points and their shared structure.
+  - Optimize for the actual `Q <- P[k] + Q` workload instead of a generic classical-point add primitive.
+- **Bet C: approximate / test-set exactness where Shor permits it**
+  - Google only proves 9024 Fiat-Shamir-derived test vectors plus the usual Shor tolerance argument.
+  - Harness still needs exact correctness on its tests, but this suggests carefully targeted approximations may be acceptable if they stay inside the harness acceptance set.
+
+Near-term implementation consequence:
+- The next serious moonshot is **not** another local adder swap.
+- It is a **new low-qubit point-add scaffold** whose first milestone is: bring peak qubits under ~1800 even before beating Toffoli.
+
+## 2026-04-24 deep research update: exact reversible point-add only (`src/main.rs` target)
+Scope reminder: `src/main.rs` tests an **exact reversible map**
+`(Px, Py; Qx, Qy_classical) -> (Rx, Ry)`
+on random secp256k1 points, with all ancillas returned to zero. This rules out several low-qubit ECDLP tricks that only compute compressed predicates or only work inside a larger period-finding scaffold.
+
+### Most relevant public results
+- **Google/Babbush/Gidney 2026 (`2603.28846`)**
+  - Publicly reveals only that their hidden circuit is still a **kickmix / classical reversible point-add** with **MBUC** and **windowed arithmetic**.
+  - ZK statements certify exact point-add resource bounds of:
+    - **low-qubit:** `2.7M` non-Clifford, `1175` qubits, `17M` ops
+    - **low-gate:** `2.1M` non-Clifford, `1425` qubits, `17M` ops
+  - Strong clue: any plausible reconstruction must live in the **1175-1425q** regime, i.e. only **~660-910 ancilla qubits beyond the 512 data qubits**.
+- **Chevignard–Fouque–Schrottenloher 2026**
+  - Uses **RNS + projective coordinates + Legendre-symbol compression** to hit **1098 qubits**.
+  - But it does **not** output exact affine point addition; it compresses the output to one bit and pays `~2^38.1` Toffolis. So it is **not applicable** to the `main.rs` exact point-add benchmark.
+- **Kim et al. 2026**
+  - Best public recent work directly on ECC point-add structure.
+  - Uses **Montgomery multiplication**, **binary EEA inversion**, **unconditional execution**, **borrowed ancilla from following multiplication**, and **windowed point addition with 3 signed lookups**.
+  - Main emphasis is **depth**, not low Toffoli or low qubits. Useful as a source of structural ideas, not as a target architecture.
+- **Häner et al. 2020 (HRSL)**
+  - Still the key public affine baseline for exact reversible point addition.
+  - Important ideas: **windowed Montgomery multiplication**, **swap-based Kaliski formulation**, **adaptive uncompute placement**.
+  - But published resource point is far from Google SOTA.
+- **Litinski 2024 schoolbook add-subtract multiplier**
+  - Already exploited here. Valuable for q×q multipliers, but not enough alone.
+- **Gidney 2025 venting adder**
+  - Great for q+c additions under tight workspace.
+  - Proven here to be **wrong as a global drop-in** for this benchmark.
+- **Luongo–Narasimhachar–Sireesh 2025 / Gidney 2019 windowed arithmetic**
+  - Best public techniques for **lookup-heavy q+c arithmetic**.
+  - Relevant only if the point-add is redesigned around more lookup / q+c structure and less generic q×q arithmetic.
+
+### Hard conclusion from the literature
+For the exact `main.rs` benchmark, the public field points to this:
+- **Projective-coordinate / Legendre / RNS compression is a red herring** for us, because it does not produce exact `(Rx, Ry)`.
+- **Depth-first QCSA / Kim-style circuits are not the answer** unless we can also compress space dramatically.
+- **Generic affine 2-Kaliski with full history is architecturally doomed** for SOTA because the persistent state already exceeds the entire ancilla budget implied by Google's qubit count.
+
+### Best plausible exact-benchmark reconstruction path
+A new exact reversible point-add circuit that plausibly reaches SOTA should aim for:
+1. **At most 2-3 extra n-bit registers live at once**
+   - Since `main.rs` fixes 512 data qubits, the Google low-qubit target allows only ~663 extra qubits.
+   - That is consistent with **two extra 256-bit registers + ~150 bits**, or at most **three extra 256-bit registers** in the low-gate variant.
+2. **One compact inversion/division core, not today's 4-register Kaliski state**
+   - Need to replace `(u, v, r, s, m_hist)` with something like:
+     - input/output register reuse,
+     - 1-2 coefficient registers,
+     - short window history (`~64` bits), or
+     - an implicit / recomputed history strategy that does not blow Toffoli too badly.
+3. **Montgomery-form arithmetic throughout the point-add body**
+   - Not just swapping multiplier internals.
+   - The point-add scaffold itself must be arranged so conversions do not eat the gain.
+4. **Lookup-centric exact arithmetic where the classical point helps**
+   - Public windowed-arithmetic advances only help if we deliberately increase the fraction of q+c / lookup work.
+5. **Exact end-to-end cleanup compatible with `main.rs`**
+   - Any trick that only proves a compressed predicate or only works inside the final ECDLP scaffold is out of scope.
+
+### Concrete redesign candidates worth building
+- **Candidate A (highest priority): compact Montgomery-inverse scaffold for exact affine add**
+  - Goal: replace current Kaliski state with a **register-folded**, window-history inversion core.
+  - Success criterion: same exact interface, but peak qubits under ~1800 first, then attack Toffolis.
+- **Candidate B: HRSL/Kim-style swap-based inversion with aggressive register borrowing**
+  - Borrow ancilla from multiplication / later phases instead of owning it persistently.
+  - Likely lower depth than current code, but must be adapted for qubit minimization.
+- **Candidate C: exact benchmark-specific lookup-heavy add skeleton**
+  - Re-express the classical-point add around identities that maximize q+c work and minimize q×q work.
+  - This is the only route where Ragavan/Gidney/Luongo-style lookup optimizations become material.
+
+### Immediate next implementation principle
+Do **not** spend more time tuning the existing affine/Kaliski scaffold.
+The right first code milestone is a **fresh point-add scaffold file/branch** whose first target is:
+- **peak qubits < 1800**
+- while still satisfying `src/main.rs` exact reversible contract.
 
 ## Priority-3 moonshot: Kim 2026 unconditional Kaliski
 Eliminates m_hist (-409q). Case computed from state each iter, not stored.

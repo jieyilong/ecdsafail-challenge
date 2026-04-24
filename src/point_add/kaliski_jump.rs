@@ -44,8 +44,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use alloy_primitives::U256;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 
-use super::SECP256K1_P;
 use super::test_timeout::{check_deadline, two_min_deadline};
+use super::SECP256K1_P;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Mat2 {
@@ -56,7 +56,12 @@ pub struct Mat2 {
 }
 
 impl Mat2 {
-    pub const ID: Mat2 = Mat2 { a00: 1, a01: 0, a10: 0, a11: 1 };
+    pub const ID: Mat2 = Mat2 {
+        a00: 1,
+        a01: 0,
+        a10: 0,
+        a11: 1,
+    };
 
     pub fn mul(self, rhs: Mat2) -> Mat2 {
         Mat2 {
@@ -68,10 +73,15 @@ impl Mat2 {
     }
 
     pub fn max_abs(&self) -> i128 {
-        [self.a00.abs(), self.a01.abs(), self.a10.abs(), self.a11.abs()]
-            .into_iter()
-            .max()
-            .unwrap_or(0)
+        [
+            self.a00.abs(),
+            self.a01.abs(),
+            self.a10.abs(),
+            self.a11.abs(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0)
     }
 }
 
@@ -89,10 +99,30 @@ impl KCase {
     ///   (u', v')^T = (1/2) · M_uv · (u, v)^T
     pub fn uv_matrix(self) -> Mat2 {
         match self {
-            KCase::UEven => Mat2 { a00: 1, a01: 0, a10: 0, a11: 2 },
-            KCase::VEven => Mat2 { a00: 2, a01: 0, a10: 0, a11: 1 },
-            KCase::UGtV  => Mat2 { a00: 1, a01: -1, a10: 0, a11: 2 },
-            KCase::VGtU  => Mat2 { a00: 2, a01: 0, a10: -1, a11: 1 },
+            KCase::UEven => Mat2 {
+                a00: 1,
+                a01: 0,
+                a10: 0,
+                a11: 2,
+            },
+            KCase::VEven => Mat2 {
+                a00: 2,
+                a01: 0,
+                a10: 0,
+                a11: 1,
+            },
+            KCase::UGtV => Mat2 {
+                a00: 1,
+                a01: -1,
+                a10: 0,
+                a11: 2,
+            },
+            KCase::VGtU => Mat2 {
+                a00: 2,
+                a01: 0,
+                a10: -1,
+                a11: 1,
+            },
         }
     }
 
@@ -106,10 +136,30 @@ impl KCase {
     /// - VGtU:   s += r; double r                =>  (r, s) -> (2r, r+s)
     pub fn rs_matrix(self) -> Mat2 {
         match self {
-            KCase::UEven => Mat2 { a00: 1, a01: 0, a10: 0, a11: 2 },
-            KCase::VEven => Mat2 { a00: 2, a01: 0, a10: 0, a11: 1 },
-            KCase::UGtV  => Mat2 { a00: 1, a01: 1, a10: 0, a11: 2 },
-            KCase::VGtU  => Mat2 { a00: 2, a01: 0, a10: 1, a11: 1 },
+            KCase::UEven => Mat2 {
+                a00: 1,
+                a01: 0,
+                a10: 0,
+                a11: 2,
+            },
+            KCase::VEven => Mat2 {
+                a00: 2,
+                a01: 0,
+                a10: 0,
+                a11: 1,
+            },
+            KCase::UGtV => Mat2 {
+                a00: 1,
+                a01: 1,
+                a10: 0,
+                a11: 2,
+            },
+            KCase::VGtU => Mat2 {
+                a00: 2,
+                a01: 0,
+                a10: 1,
+                a11: 1,
+            },
         }
     }
 }
@@ -131,8 +181,8 @@ pub(crate) fn kaliski_step_uv(u: U256, v: U256) -> (U256, U256, KCase) {
     match kaliski_case(u, v) {
         KCase::UEven => (u >> 1, v, KCase::UEven),
         KCase::VEven => (u, v >> 1, KCase::VEven),
-        KCase::UGtV  => ((u.wrapping_sub(v)) >> 1, v, KCase::UGtV),
-        KCase::VGtU  => (u, (v.wrapping_sub(u)) >> 1, KCase::VGtU),
+        KCase::UGtV => ((u.wrapping_sub(v)) >> 1, v, KCase::UGtV),
+        KCase::VGtU => (u, (v.wrapping_sub(u)) >> 1, KCase::VGtU),
     }
 }
 
@@ -160,7 +210,9 @@ pub fn observe_window(mut u: U256, mut v: U256, w: usize, t: usize) -> (U256, U2
     let mut rs_mat = Mat2::ID;
     let mut cases = Vec::with_capacity(t);
     for _ in 0..t {
-        if v.is_zero() { break; }
+        if v.is_zero() {
+            break;
+        }
         let (nu, nv, kc) = kaliski_step_uv(u, v);
         uv_mat = kc.uv_matrix().mul(uv_mat);
         rs_mat = kc.rs_matrix().mul(rs_mat);
@@ -168,7 +220,17 @@ pub fn observe_window(mut u: U256, mut v: U256, w: usize, t: usize) -> (U256, U2
         u = nu;
         v = nv;
     }
-    (u, v, WindowObs { low_u, low_v, uv_mat, rs_mat, cases })
+    (
+        u,
+        v,
+        WindowObs {
+            low_u,
+            low_v,
+            uv_mat,
+            rs_mat,
+            cases,
+        },
+    )
 }
 
 pub struct Sampler {
@@ -180,7 +242,10 @@ impl Sampler {
     pub fn new(seed: &[u8], p: U256) -> Self {
         let mut hasher = sha3::Shake128::default();
         hasher.update(seed);
-        Self { reader: Box::new(hasher.finalize_xof()), p }
+        Self {
+            reader: Box::new(hasher.finalize_xof()),
+            p,
+        }
     }
 
     pub fn next(&mut self) -> U256 {
@@ -255,26 +320,43 @@ pub fn hybrid_kaliski_window_survey(
     let mut counted_rs_mats = 0usize;
 
     for input_idx in 0..n_inputs {
-        if (input_idx & 31) == 0 { check_deadline(deadline, "kaliski_jump::hybrid_kaliski_window_survey"); }
+        if (input_idx & 31) == 0 {
+            check_deadline(deadline, "kaliski_jump::hybrid_kaliski_window_survey");
+        }
         let mut u = SECP256K1_P;
         let mut v = sampler.next();
         for _ in 0..742 {
-            if v.is_zero() { break; }
+            if v.is_zero() {
+                break;
+            }
             let (nu, nv, obs) = observe_window(u, v, w, t);
             global_uv_mats.insert(obs.uv_mat);
             global_rs_mats.insert(obs.rs_mat);
             global_joint_pairs.insert((obs.uv_mat, obs.rs_mat));
-            by_class_uv.entry((obs.low_u, obs.low_v)).or_default().insert(obs.uv_mat);
-            by_class_rs.entry((obs.low_u, obs.low_v)).or_default().insert(obs.rs_mat);
-            by_class_joint.entry((obs.low_u, obs.low_v)).or_default().insert((obs.uv_mat, obs.rs_mat));
+            by_class_uv
+                .entry((obs.low_u, obs.low_v))
+                .or_default()
+                .insert(obs.uv_mat);
+            by_class_rs
+                .entry((obs.low_u, obs.low_v))
+                .or_default()
+                .insert(obs.rs_mat);
+            by_class_joint
+                .entry((obs.low_u, obs.low_v))
+                .or_default()
+                .insert((obs.uv_mat, obs.rs_mat));
             let uv_abs = obs.uv_mat.max_abs();
-            if uv_abs > max_uv_entry_abs { max_uv_entry_abs = uv_abs; }
+            if uv_abs > max_uv_entry_abs {
+                max_uv_entry_abs = uv_abs;
+            }
             if uv_abs > 0 {
                 sum_log2_uv_entry_abs += (uv_abs as f64).log2();
                 counted_uv_mats += 1;
             }
             let rs_abs = obs.rs_mat.max_abs();
-            if rs_abs > max_rs_entry_abs { max_rs_entry_abs = rs_abs; }
+            if rs_abs > max_rs_entry_abs {
+                max_rs_entry_abs = rs_abs;
+            }
             if rs_abs > 0 {
                 sum_log2_rs_entry_abs += (rs_abs as f64).log2();
                 counted_rs_mats += 1;
@@ -296,8 +378,12 @@ pub fn hybrid_kaliski_window_survey(
     for (cls, mats) in &by_class_uv {
         let c = mats.len();
         total_uv_mats_per_class += c;
-        if c > max_uv_mats_per_class { max_uv_mats_per_class = c; }
-        if c == 1 { singleton_uv_classes += 1; }
+        if c > max_uv_mats_per_class {
+            max_uv_mats_per_class = c;
+        }
+        if c == 1 {
+            singleton_uv_classes += 1;
+        }
         if c > most_common_uv_class_count {
             most_common_uv_class_count = c;
             most_common_uv_class = Some(*cls);
@@ -312,8 +398,12 @@ pub fn hybrid_kaliski_window_survey(
     for (cls, mats) in &by_class_rs {
         let c = mats.len();
         total_rs_mats_per_class += c;
-        if c > max_rs_mats_per_class { max_rs_mats_per_class = c; }
-        if c == 1 { singleton_rs_classes += 1; }
+        if c > max_rs_mats_per_class {
+            max_rs_mats_per_class = c;
+        }
+        if c == 1 {
+            singleton_rs_classes += 1;
+        }
         if c > most_common_rs_class_count {
             most_common_rs_class_count = c;
             most_common_rs_class = Some(*cls);
@@ -328,8 +418,12 @@ pub fn hybrid_kaliski_window_survey(
     for (cls, mats) in &by_class_joint {
         let c = mats.len();
         total_joint_pairs_per_class += c;
-        if c > max_joint_pairs_per_class { max_joint_pairs_per_class = c; }
-        if c == 1 { singleton_joint_classes += 1; }
+        if c > max_joint_pairs_per_class {
+            max_joint_pairs_per_class = c;
+        }
+        if c == 1 {
+            singleton_joint_classes += 1;
+        }
         if c > most_common_joint_class_count {
             most_common_joint_class_count = c;
             most_common_joint_class = Some(*cls);
@@ -342,22 +436,42 @@ pub fn hybrid_kaliski_window_survey(
         distinct_global_uv_mats: global_uv_mats.len(),
         distinct_global_rs_mats: global_rs_mats.len(),
         max_uv_entry_abs,
-        mean_log2_uv_entry_abs: if counted_uv_mats == 0 { 0.0 } else { sum_log2_uv_entry_abs / counted_uv_mats as f64 },
+        mean_log2_uv_entry_abs: if counted_uv_mats == 0 {
+            0.0
+        } else {
+            sum_log2_uv_entry_abs / counted_uv_mats as f64
+        },
         max_rs_entry_abs,
-        mean_log2_rs_entry_abs: if counted_rs_mats == 0 { 0.0 } else { sum_log2_rs_entry_abs / counted_rs_mats as f64 },
+        mean_log2_rs_entry_abs: if counted_rs_mats == 0 {
+            0.0
+        } else {
+            sum_log2_rs_entry_abs / counted_rs_mats as f64
+        },
         low_classes_seen,
-        mean_uv_mats_per_class: if low_classes_seen == 0 { 0.0 } else { total_uv_mats_per_class as f64 / low_classes_seen as f64 },
+        mean_uv_mats_per_class: if low_classes_seen == 0 {
+            0.0
+        } else {
+            total_uv_mats_per_class as f64 / low_classes_seen as f64
+        },
         max_uv_mats_per_class,
         singleton_uv_classes,
         most_common_uv_class_count,
         most_common_uv_class,
-        mean_rs_mats_per_class: if low_classes_seen == 0 { 0.0 } else { total_rs_mats_per_class as f64 / low_classes_seen as f64 },
+        mean_rs_mats_per_class: if low_classes_seen == 0 {
+            0.0
+        } else {
+            total_rs_mats_per_class as f64 / low_classes_seen as f64
+        },
         max_rs_mats_per_class,
         singleton_rs_classes,
         most_common_rs_class_count,
         most_common_rs_class,
         distinct_joint_pairs: global_joint_pairs.len(),
-        mean_joint_pairs_per_class: if low_classes_seen == 0 { 0.0 } else { total_joint_pairs_per_class as f64 / low_classes_seen as f64 },
+        mean_joint_pairs_per_class: if low_classes_seen == 0 {
+            0.0
+        } else {
+            total_joint_pairs_per_class as f64 / low_classes_seen as f64
+        },
         max_joint_pairs_per_class,
         singleton_joint_classes,
         most_common_joint_class_count,
@@ -408,10 +522,16 @@ mod tests {
                 eprintln!("most common rs class    : (u_low={}, v_low={})", ucls, vcls);
             }
             eprintln!("distinct joint pairs    : {}", s.distinct_joint_pairs);
-            eprintln!("mean joint/class        : {:.3}", s.mean_joint_pairs_per_class);
+            eprintln!(
+                "mean joint/class        : {:.3}",
+                s.mean_joint_pairs_per_class
+            );
             eprintln!("max joint/class         : {}", s.max_joint_pairs_per_class);
             eprintln!("singleton joint classes : {}", s.singleton_joint_classes);
-            eprintln!("most common joint ct    : {}", s.most_common_joint_class_count);
+            eprintln!(
+                "most common joint ct    : {}",
+                s.most_common_joint_class_count
+            );
             if let Some((ucls, vcls)) = s.most_common_joint_class {
                 eprintln!("most common joint class : (u_low={}, v_low={})", ucls, vcls);
             }

@@ -20,8 +20,7 @@ use super::kaliski_jump::Sampler;
 use super::test_timeout::{check_deadline, two_min_deadline};
 use super::{
     kaliski_iteration, kaliski_iteration_backward, kaliski_iteration_bulk_prefix3,
-    kaliski_iteration_bulk_prefix3_backward, with_kal_inv_raw, B, N, Op, QubitId,
-    SECP256K1_P,
+    kaliski_iteration_bulk_prefix3_backward, with_kal_inv_raw, Op, QubitId, B, N, SECP256K1_P,
 };
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -102,7 +101,12 @@ fn build_generic_step(iter_idx: usize) -> StepCircuit {
         ops: b.ops,
         num_qubits: b.next_qubit as usize,
         num_bits: b.next_bit as usize,
-        u, v, r, s, m, f,
+        u,
+        v,
+        r,
+        s,
+        m,
+        f,
     }
 }
 
@@ -119,7 +123,12 @@ fn build_special_step(iter_idx: usize) -> StepCircuit {
         ops: b.ops,
         num_qubits: b.next_qubit as usize,
         num_bits: b.next_bit as usize,
-        u, v, r, s, m, f,
+        u,
+        v,
+        r,
+        s,
+        m,
+        f,
     }
 }
 
@@ -138,7 +147,12 @@ fn build_special_three_steps() -> StepCircuit {
         ops: b.ops,
         num_qubits: b.next_qubit as usize,
         num_bits: b.next_bit as usize,
-        u, v, r, s, m: m_hist[2], f,
+        u,
+        v,
+        r,
+        s,
+        m: m_hist[2],
+        f,
     }
 }
 
@@ -157,7 +171,12 @@ fn build_generic_prefix(k: usize) -> PrefixCircuit {
         ops: b.ops,
         num_qubits: b.next_qubit as usize,
         num_bits: b.next_bit as usize,
-        u, v, r, s, m_hist, f,
+        u,
+        v,
+        r,
+        s,
+        m_hist,
+        f,
     }
 }
 
@@ -176,7 +195,12 @@ fn build_special_prefix(k: usize) -> PrefixCircuit {
         ops: b.ops,
         num_qubits: b.next_qubit as usize,
         num_bits: b.next_bit as usize,
-        u, v, r, s, m_hist, f,
+        u,
+        v,
+        r,
+        s,
+        m_hist,
+        f,
     }
 }
 
@@ -198,7 +222,12 @@ fn build_generic_prefix_fb(k: usize) -> PrefixCircuit {
         ops: b.ops,
         num_qubits: b.next_qubit as usize,
         num_bits: b.next_bit as usize,
-        u, v, r, s, m_hist, f,
+        u,
+        v,
+        r,
+        s,
+        m_hist,
+        f,
     }
 }
 
@@ -214,13 +243,27 @@ fn build_special_prefix_fb(k: usize) -> PrefixCircuit {
         kaliski_iteration_bulk_prefix3(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], i);
     }
     for i in (0..k).rev() {
-        kaliski_iteration_bulk_prefix3_backward(&mut b, super::SECP256K1_P, &u, &v, &r, &s, m_hist[i], i);
+        kaliski_iteration_bulk_prefix3_backward(
+            &mut b,
+            super::SECP256K1_P,
+            &u,
+            &v,
+            &r,
+            &s,
+            m_hist[i],
+            i,
+        );
     }
     PrefixCircuit {
         ops: b.ops,
         num_qubits: b.next_qubit as usize,
         num_bits: b.next_bit as usize,
-        u, v, r, s, m_hist, f,
+        u,
+        v,
+        r,
+        s,
+        m_hist,
+        f,
     }
 }
 
@@ -256,9 +299,15 @@ fn get_slice<R: sha3::digest::XofReader>(sim: &Simulator<R>, qs: &[QubitId]) -> 
     out
 }
 
-fn run_step_circuit(c: &StepCircuit, u0: U256, v0: U256, r0: U256, s0: U256, m0: bool, f0: bool)
-    -> (U256, U256, U256, U256, bool, bool, u64)
-{
+fn run_step_circuit(
+    c: &StepCircuit,
+    u0: U256,
+    v0: U256,
+    r0: U256,
+    s0: U256,
+    m0: bool,
+    f0: bool,
+) -> (U256, U256, U256, U256, bool, bool, u64) {
     let mut hasher = sha3::Shake128::default();
     hasher.update(b"kaliski-equivalence-seed-v1");
     let mut xof = hasher.finalize_xof();
@@ -267,8 +316,12 @@ fn run_step_circuit(c: &StepCircuit, u0: U256, v0: U256, r0: U256, s0: U256, m0:
     set_slice(&mut sim, &c.v, v0);
     set_slice(&mut sim, &c.r, r0);
     set_slice(&mut sim, &c.s, s0);
-    if m0 { *sim.qubit_mut(c.m) |= 1; }
-    if f0 { *sim.qubit_mut(c.f) |= 1; }
+    if m0 {
+        *sim.qubit_mut(c.m) |= 1;
+    }
+    if f0 {
+        *sim.qubit_mut(c.f) |= 1;
+    }
     sim.apply(&c.ops);
     (
         get_slice(&sim, &c.u),
@@ -281,9 +334,14 @@ fn run_step_circuit(c: &StepCircuit, u0: U256, v0: U256, r0: U256, s0: U256, m0:
     )
 }
 
-fn run_prefix_circuit(c: &PrefixCircuit, u0: U256, v0: U256, r0: U256, s0: U256, f0: bool)
-    -> (U256, U256, U256, U256, Vec<bool>, bool, u64)
-{
+fn run_prefix_circuit(
+    c: &PrefixCircuit,
+    u0: U256,
+    v0: U256,
+    r0: U256,
+    s0: U256,
+    f0: bool,
+) -> (U256, U256, U256, U256, Vec<bool>, bool, u64) {
     let mut hasher = sha3::Shake128::default();
     hasher.update(b"kaliski-equivalence-seed-v-prefix");
     let mut xof = hasher.finalize_xof();
@@ -292,7 +350,9 @@ fn run_prefix_circuit(c: &PrefixCircuit, u0: U256, v0: U256, r0: U256, s0: U256,
     set_slice(&mut sim, &c.v, v0);
     set_slice(&mut sim, &c.r, r0);
     set_slice(&mut sim, &c.s, s0);
-    if f0 { *sim.qubit_mut(c.f) |= 1; }
+    if f0 {
+        *sim.qubit_mut(c.f) |= 1;
+    }
     sim.apply(&c.ops);
     let mh: Vec<bool> = c.m_hist.iter().map(|&q| (sim.qubit(q) & 1) != 0).collect();
     (
@@ -313,7 +373,11 @@ fn run_identity_circuit(c: &IdentityCircuit, v0: U256) -> (U256, u64, Vec<u64>) 
     let mut sim = Simulator::new(c.num_qubits, c.num_bits, &mut xof);
     set_slice(&mut sim, &c.v, v0);
     sim.apply(&c.ops);
-    (get_slice(&sim, &c.v), sim.global_phase() & 1, sim.qubits.clone())
+    (
+        get_slice(&sim, &c.v),
+        sim.global_phase() & 1,
+        sim.qubits.clone(),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -367,7 +431,12 @@ fn classical_m_bit(u: U256, v: U256) -> bool {
 }
 
 fn reachable_state(v0: U256, n_steps: usize) -> ClassicalState {
-    let mut st = ClassicalState { u: SECP256K1_P, v: v0, r: U256::ZERO, s: U256::from(1) };
+    let mut st = ClassicalState {
+        u: SECP256K1_P,
+        v: v0,
+        r: U256::ZERO,
+        s: U256::from(1),
+    };
     for _ in 0..n_steps {
         let ok = classical_step(&mut st);
         assert!(ok);
@@ -382,12 +451,25 @@ mod tests {
     #[test]
     fn bulk_prefix3_step_matches_generic_on_reachable_states() {
         let deadline = two_min_deadline();
-        let generic = [build_generic_step(0), build_generic_step(1), build_generic_step(2)];
-        let special = [build_special_step(0), build_special_step(1), build_special_step(2)];
+        let generic = [
+            build_generic_step(0),
+            build_generic_step(1),
+            build_generic_step(2),
+        ];
+        let special = [
+            build_special_step(0),
+            build_special_step(1),
+            build_special_step(2),
+        ];
         let mut sampler = Sampler::new(b"kaliski-equiv-sampler-v1", SECP256K1_P);
 
         for sample_idx in 0..512usize {
-            if (sample_idx & 63) == 0 { check_deadline(deadline, "kaliski_equiv::bulk_prefix3_step_matches_generic_on_reachable_states"); }
+            if (sample_idx & 63) == 0 {
+                check_deadline(
+                    deadline,
+                    "kaliski_equiv::bulk_prefix3_step_matches_generic_on_reachable_states",
+                );
+            }
             let v0 = sampler.next();
             for iter_idx in 0..3 {
                 let st = reachable_state(v0, iter_idx);
@@ -407,7 +489,12 @@ mod tests {
         let mut sampler = Sampler::new(b"kaliski-equiv-sampler-v1b", SECP256K1_P);
 
         for sample_idx in 0..128usize {
-            if (sample_idx & 31) == 0 { check_deadline(deadline, "kaliski_equiv::bulk_prefix3_step_matches_generic_on_deep_reachable_states"); }
+            if (sample_idx & 31) == 0 {
+                check_deadline(
+                    deadline,
+                    "kaliski_equiv::bulk_prefix3_step_matches_generic_on_deep_reachable_states",
+                );
+            }
             let v0 = sampler.next();
             for (j, &iter_idx) in iter_points.iter().enumerate() {
                 let st = reachable_state(v0, iter_idx);
@@ -421,24 +508,63 @@ mod tests {
     #[test]
     fn bulk_prefix3_step_matches_classical_transition() {
         let deadline = two_min_deadline();
-        let generic = [build_generic_step(0), build_generic_step(1), build_generic_step(2)];
+        let generic = [
+            build_generic_step(0),
+            build_generic_step(1),
+            build_generic_step(2),
+        ];
         let mut sampler = Sampler::new(b"kaliski-equiv-sampler-v2", SECP256K1_P);
 
         for sample_idx in 0..512usize {
-            if (sample_idx & 63) == 0 { check_deadline(deadline, "kaliski_equiv::bulk_prefix3_step_matches_classical_transition"); }
+            if (sample_idx & 63) == 0 {
+                check_deadline(
+                    deadline,
+                    "kaliski_equiv::bulk_prefix3_step_matches_classical_transition",
+                );
+            }
             let v0 = sampler.next();
             for iter_idx in 0..3 {
                 let st = reachable_state(v0, iter_idx);
                 let mut exp = st.clone();
                 classical_step(&mut exp);
                 let out = run_step_circuit(&generic[iter_idx], st.u, st.v, st.r, st.s, false, true);
-                assert_eq!(out.0, exp.u, "u mismatch at sample {} iter {}", sample_idx, iter_idx);
-                assert_eq!(out.1, exp.v, "v mismatch at sample {} iter {}", sample_idx, iter_idx);
-                assert_eq!(out.2, exp.r, "r mismatch at sample {} iter {}", sample_idx, iter_idx);
-                assert_eq!(out.3, exp.s, "s mismatch at sample {} iter {}", sample_idx, iter_idx);
-                assert_eq!(out.4, classical_m_bit(st.u, st.v), "m mismatch at sample {} iter {}", sample_idx, iter_idx);
-                assert!(out.5, "f should remain 1 through first 3 iterations; sample {} iter {}", sample_idx, iter_idx);
-                assert_eq!(out.6, 0, "phase mismatch at sample {} iter {}", sample_idx, iter_idx);
+                assert_eq!(
+                    out.0, exp.u,
+                    "u mismatch at sample {} iter {}",
+                    sample_idx, iter_idx
+                );
+                assert_eq!(
+                    out.1, exp.v,
+                    "v mismatch at sample {} iter {}",
+                    sample_idx, iter_idx
+                );
+                assert_eq!(
+                    out.2, exp.r,
+                    "r mismatch at sample {} iter {}",
+                    sample_idx, iter_idx
+                );
+                assert_eq!(
+                    out.3, exp.s,
+                    "s mismatch at sample {} iter {}",
+                    sample_idx, iter_idx
+                );
+                assert_eq!(
+                    out.4,
+                    classical_m_bit(st.u, st.v),
+                    "m mismatch at sample {} iter {}",
+                    sample_idx,
+                    iter_idx
+                );
+                assert!(
+                    out.5,
+                    "f should remain 1 through first 3 iterations; sample {} iter {}",
+                    sample_idx, iter_idx
+                );
+                assert_eq!(
+                    out.6, 0,
+                    "phase mismatch at sample {} iter {}",
+                    sample_idx, iter_idx
+                );
             }
         }
     }
@@ -462,16 +588,46 @@ mod tests {
             ops: b.ops,
             num_qubits: b.next_qubit as usize,
             num_bits: b.next_bit as usize,
-            u, v, r, s, m: m_hist[2], f,
+            u,
+            v,
+            r,
+            s,
+            m: m_hist[2],
+            f,
         };
         let special3 = build_special_three_steps();
 
         for sample_idx in 0..512usize {
-            if (sample_idx & 63) == 0 { check_deadline(deadline, "kaliski_equiv::bulk_prefix3_three_step_sequence_matches_generic_forward_state"); }
+            if (sample_idx & 63) == 0 {
+                check_deadline(
+                    deadline,
+                    "kaliski_equiv::bulk_prefix3_three_step_sequence_matches_generic_forward_state",
+                );
+            }
             let v0 = sampler.next();
-            let g = run_step_circuit(&generic3, SECP256K1_P, v0, U256::ZERO, U256::from(1), false, true);
-            let s = run_step_circuit(&special3, SECP256K1_P, v0, U256::ZERO, U256::from(1), false, true);
-            assert_eq!(g, s, "three-step mismatch at sample {}\ngeneric={:?}\nspecial={:?}", sample_idx, g, s);
+            let g = run_step_circuit(
+                &generic3,
+                SECP256K1_P,
+                v0,
+                U256::ZERO,
+                U256::from(1),
+                false,
+                true,
+            );
+            let s = run_step_circuit(
+                &special3,
+                SECP256K1_P,
+                v0,
+                U256::ZERO,
+                U256::from(1),
+                false,
+                true,
+            );
+            assert_eq!(
+                g, s,
+                "three-step mismatch at sample {}\ngeneric={:?}\nspecial={:?}",
+                sample_idx, g, s
+            );
         }
     }
 
@@ -491,13 +647,28 @@ mod tests {
             kaliski_iteration(&mut bg, SECP256K1_P, &ug, &vg, &rg, &sg, mhg[i], fg, i);
         }
         for i in (0..3).rev() {
-            super::super::kaliski_iteration_backward(&mut bg, SECP256K1_P, &ug, &vg, &rg, &sg, mhg[i], fg, i);
+            super::super::kaliski_iteration_backward(
+                &mut bg,
+                SECP256K1_P,
+                &ug,
+                &vg,
+                &rg,
+                &sg,
+                mhg[i],
+                fg,
+                i,
+            );
         }
         let generic_fb = StepCircuit {
             ops: bg.ops,
             num_qubits: bg.next_qubit as usize,
             num_bits: bg.next_bit as usize,
-            u: ug, v: vg, r: rg, s: sg, m: mhg[2], f: fg,
+            u: ug,
+            v: vg,
+            r: rg,
+            s: sg,
+            m: mhg[2],
+            f: fg,
         };
 
         let mut bs = B::new();
@@ -511,21 +682,60 @@ mod tests {
             kaliski_iteration_bulk_prefix3(&mut bs, SECP256K1_P, &us, &vs, &rs, &ss, mhs[i], i);
         }
         for i in (0..3).rev() {
-            super::super::kaliski_iteration_bulk_prefix3_backward(&mut bs, super::super::SECP256K1_P, &us, &vs, &rs, &ss, mhs[i], i);
+            super::super::kaliski_iteration_bulk_prefix3_backward(
+                &mut bs,
+                super::super::SECP256K1_P,
+                &us,
+                &vs,
+                &rs,
+                &ss,
+                mhs[i],
+                i,
+            );
         }
         let special_fb = StepCircuit {
             ops: bs.ops,
             num_qubits: bs.next_qubit as usize,
             num_bits: bs.next_bit as usize,
-            u: us, v: vs, r: rs, s: ss, m: mhs[2], f: fs,
+            u: us,
+            v: vs,
+            r: rs,
+            s: ss,
+            m: mhs[2],
+            f: fs,
         };
 
         for sample_idx in 0..256usize {
-            if (sample_idx & 63) == 0 { check_deadline(deadline, "kaliski_equiv::bulk_prefix3_backward_matches_generic_three_step_inverse"); }
+            if (sample_idx & 63) == 0 {
+                check_deadline(
+                    deadline,
+                    "kaliski_equiv::bulk_prefix3_backward_matches_generic_three_step_inverse",
+                );
+            }
             let v0 = sampler.next();
-            let g = run_step_circuit(&generic_fb, SECP256K1_P, v0, U256::ZERO, U256::from(1), false, true);
-            let s = run_step_circuit(&special_fb, SECP256K1_P, v0, U256::ZERO, U256::from(1), false, true);
-            assert_eq!(g, s, "forward+backward mismatch at sample {}\ngeneric={:?}\nspecial={:?}", sample_idx, g, s);
+            let g = run_step_circuit(
+                &generic_fb,
+                SECP256K1_P,
+                v0,
+                U256::ZERO,
+                U256::from(1),
+                false,
+                true,
+            );
+            let s = run_step_circuit(
+                &special_fb,
+                SECP256K1_P,
+                v0,
+                U256::ZERO,
+                U256::from(1),
+                false,
+                true,
+            );
+            assert_eq!(
+                g, s,
+                "forward+backward mismatch at sample {}\ngeneric={:?}\nspecial={:?}",
+                sample_idx, g, s
+            );
         }
     }
 
@@ -538,11 +748,21 @@ mod tests {
         let mut sampler = Sampler::new(b"kaliski-equiv-sampler-v5", SECP256K1_P);
 
         for sample_idx in 0..128usize {
-            if (sample_idx & 31) == 0 { check_deadline(deadline, "kaliski_equiv::bulk_prefix3_step_matches_generic_on_late_safe_prefix_states"); }
+            if (sample_idx & 31) == 0 {
+                check_deadline(
+                    deadline,
+                    "kaliski_equiv::bulk_prefix3_step_matches_generic_on_late_safe_prefix_states",
+                );
+            }
             let v0 = sampler.next();
             for (j, &iter_idx) in iter_points.iter().enumerate() {
                 let st = reachable_state(v0, iter_idx);
-                assert!(!st.v.is_zero(), "unexpected termination before iter {} on sample {}", iter_idx, sample_idx);
+                assert!(
+                    !st.v.is_zero(),
+                    "unexpected termination before iter {} on sample {}",
+                    iter_idx,
+                    sample_idx
+                );
                 let g = run_step_circuit(&generic[j], st.u, st.v, st.r, st.s, false, true);
                 let s = run_step_circuit(&special[j], st.u, st.v, st.r, st.s, false, true);
                 assert_eq!(g, s, "late safe-prefix mismatch at sample {} iter {}\nstate_before={:?}\ngeneric={:?}\nspecial={:?}", sample_idx, iter_idx, st, g, s);
@@ -555,19 +775,43 @@ mod tests {
         let deadline = two_min_deadline();
         let ks = [4usize, 8, 16, 32];
         let generic = build_with_kal_inv_identity(false, 0);
-        let specials: Vec<_> = ks.iter().map(|&k| build_with_kal_inv_identity(true, k)).collect();
+        let specials: Vec<_> = ks
+            .iter()
+            .map(|&k| build_with_kal_inv_identity(true, k))
+            .collect();
         let mut sampler = Sampler::new(b"kaliski-equiv-sampler-v6", SECP256K1_P);
 
         for sample_idx in 0..64usize {
-            if (sample_idx & 15) == 0 { check_deadline(deadline, "kaliski_equiv::with_kal_inv_raw_phase_equivalence_small_prefix"); }
+            if (sample_idx & 15) == 0 {
+                check_deadline(
+                    deadline,
+                    "kaliski_equiv::with_kal_inv_raw_phase_equivalence_small_prefix",
+                );
+            }
             let v0 = sampler.next();
             let g = run_identity_circuit(&generic, v0);
-            assert_eq!(g.0, v0, "generic identity output mismatch sample {}", sample_idx);
+            assert_eq!(
+                g.0, v0,
+                "generic identity output mismatch sample {}",
+                sample_idx
+            );
             for (j, &k) in ks.iter().enumerate() {
                 let s = run_identity_circuit(&specials[j], v0);
-                assert_eq!(s.0, v0, "special identity output mismatch sample {} k={}", sample_idx, k);
-                assert_eq!(g.0, s.0, "identity output divergence sample {} k={}", sample_idx, k);
-                assert_eq!(g.1, s.1, "phase divergence sample {} k={} generic_phase={} special_phase={}", sample_idx, k, g.1, s.1);
+                assert_eq!(
+                    s.0, v0,
+                    "special identity output mismatch sample {} k={}",
+                    sample_idx, k
+                );
+                assert_eq!(
+                    g.0, s.0,
+                    "identity output divergence sample {} k={}",
+                    sample_idx, k
+                );
+                assert_eq!(
+                    g.1, s.1,
+                    "phase divergence sample {} k={} generic_phase={} special_phase={}",
+                    sample_idx, k, g.1, s.1
+                );
             }
         }
     }
@@ -583,16 +827,57 @@ mod tests {
         let mut sampler = Sampler::new(b"kaliski-equiv-sampler-v7", SECP256K1_P);
 
         for sample_idx in 0..48usize {
-            if (sample_idx & 15) == 0 { check_deadline(deadline, "kaliski_equiv::prefix_phase_and_mhist_equivalence_grid"); }
+            if (sample_idx & 15) == 0 {
+                check_deadline(
+                    deadline,
+                    "kaliski_equiv::prefix_phase_and_mhist_equivalence_grid",
+                );
+            }
             let v0 = sampler.next();
             for (j, &k) in ks.iter().enumerate() {
-                let gf = run_prefix_circuit(&generic_fwd[j], SECP256K1_P, v0, U256::ZERO, U256::from(1), true);
-                let sf = run_prefix_circuit(&special_fwd[j], SECP256K1_P, v0, U256::ZERO, U256::from(1), true);
-                assert_eq!(gf, sf, "forward prefix mismatch sample {} k={}\ngeneric={:?}\nspecial={:?}", sample_idx, k, gf, sf);
+                let gf = run_prefix_circuit(
+                    &generic_fwd[j],
+                    SECP256K1_P,
+                    v0,
+                    U256::ZERO,
+                    U256::from(1),
+                    true,
+                );
+                let sf = run_prefix_circuit(
+                    &special_fwd[j],
+                    SECP256K1_P,
+                    v0,
+                    U256::ZERO,
+                    U256::from(1),
+                    true,
+                );
+                assert_eq!(
+                    gf, sf,
+                    "forward prefix mismatch sample {} k={}\ngeneric={:?}\nspecial={:?}",
+                    sample_idx, k, gf, sf
+                );
 
-                let gb = run_prefix_circuit(&generic_fb[j], SECP256K1_P, v0, U256::ZERO, U256::from(1), true);
-                let sb = run_prefix_circuit(&special_fb[j], SECP256K1_P, v0, U256::ZERO, U256::from(1), true);
-                assert_eq!(gb, sb, "forward+backward prefix mismatch sample {} k={}\ngeneric={:?}\nspecial={:?}", sample_idx, k, gb, sb);
+                let gb = run_prefix_circuit(
+                    &generic_fb[j],
+                    SECP256K1_P,
+                    v0,
+                    U256::ZERO,
+                    U256::from(1),
+                    true,
+                );
+                let sb = run_prefix_circuit(
+                    &special_fb[j],
+                    SECP256K1_P,
+                    v0,
+                    U256::ZERO,
+                    U256::from(1),
+                    true,
+                );
+                assert_eq!(
+                    gb, sb,
+                    "forward+backward prefix mismatch sample {} k={}\ngeneric={:?}\nspecial={:?}",
+                    sample_idx, k, gb, sb
+                );
             }
         }
     }

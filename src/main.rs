@@ -12,15 +12,18 @@
 
 #[allow(dead_code)]
 mod circuit;
+mod point_add;
 #[allow(dead_code)]
 mod sim;
 #[allow(dead_code)]
 mod weierstrass_elliptic_curve;
-mod point_add;
 
 use alloy_primitives::U256;
-use circuit::{Op, QubitOrBit, analyze_ops};
-use sha3::{digest::{ExtendableOutput, Update, XofReader}, Shake256};
+use circuit::{analyze_ops, Op, QubitOrBit};
+use sha3::{
+    digest::{ExtendableOutput, Update, XofReader},
+    Shake256,
+};
 use sim::Simulator;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -32,12 +35,28 @@ use weierstrass_elliptic_curve::WeierstrassEllipticCurve;
 
 fn secp256k1() -> WeierstrassEllipticCurve {
     WeierstrassEllipticCurve {
-        modulus: U256::from_str_radix("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F", 16).unwrap(),
+        modulus: U256::from_str_radix(
+            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F",
+            16,
+        )
+        .unwrap(),
         a: U256::from(0),
         b: U256::from(7),
-        gx: U256::from_str_radix("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798", 16).unwrap(),
-        gy: U256::from_str_radix("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8", 16).unwrap(),
-        order: U256::from_str_radix("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141", 16).unwrap(),
+        gx: U256::from_str_radix(
+            "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798",
+            16,
+        )
+        .unwrap(),
+        gy: U256::from_str_radix(
+            "483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8",
+            16,
+        )
+        .unwrap(),
+        order: U256::from_str_radix(
+            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+            16,
+        )
+        .unwrap(),
     }
 }
 
@@ -69,9 +88,12 @@ fn fiat_shamir_seed(ops: &[Op]) -> sha3::Shake256Reader {
     hasher.finalize_xof()
 }
 
-fn run_tests(ops: &[Op], layout_regs: &[Vec<QubitOrBit>], total_qubits: u32, num_bits: u32)
-    -> (bool, f64, f64, u64, u64, usize, Option<String>)
-{
+fn run_tests(
+    ops: &[Op],
+    layout_regs: &[Vec<QubitOrBit>],
+    total_qubits: u32,
+    num_bits: u32,
+) -> (bool, f64, f64, u64, u64, usize, Option<String>) {
     let curve = secp256k1();
     // Fiat-Shamir: a single XOF seeded from the circuit op stream feeds
     // both test-input generation AND the simulator's RNG, exactly as
@@ -91,9 +113,15 @@ fn run_tests(ops: &[Op], layout_regs: &[Vec<QubitOrBit>], total_qubits: u32, num
         let t = curve.mul(curve.gx, curve.gy, k1);
         let o = curve.mul(curve.gx, curve.gy, k2);
         // Avoid the doubling / inverse-pair cases the baseline doesn't handle.
-        if t.0 == o.0 { continue; }
-        if t.0.is_zero() && t.1.is_zero() { continue; }
-        if o.0.is_zero() && o.1.is_zero() { continue; }
+        if t.0 == o.0 {
+            continue;
+        }
+        if t.0.is_zero() && t.1.is_zero() {
+            continue;
+        }
+        if o.0.is_zero() && o.1.is_zero() {
+            continue;
+        }
         let e = curve.add(t.0, t.1, o.0, o.1);
         targets.push(t);
         offsets.push(o);
@@ -206,7 +234,15 @@ fn run_tests(ops: &[Op], layout_regs: &[Vec<QubitOrBit>], total_qubits: u32, num
     let denom = n.max(1) as f64;
     let avg_cliff = sim.stats.clifford_gates as f64 / denom;
     let avg_tof = sim.stats.toffoli_gates as f64 / denom;
-    (ok, avg_cliff, avg_tof, sim.stats.toffoli_gates, sim.stats.clifford_gates, n, fail_reason)
+    (
+        ok,
+        avg_cliff,
+        avg_tof,
+        sim.stats.toffoli_gates,
+        sim.stats.clifford_gates,
+        n,
+        fail_reason,
+    )
 }
 
 fn parse_note() -> String {
@@ -214,7 +250,9 @@ fn parse_note() -> String {
     let mut note = String::new();
     while let Some(a) = args.next() {
         if a == "--note" {
-            if let Some(v) = args.next() { note = v; }
+            if let Some(v) = args.next() {
+                note = v;
+            }
         } else if let Some(rest) = a.strip_prefix("--note=") {
             note = rest.to_string();
         }
@@ -227,7 +265,13 @@ fn git_commit_short() -> String {
         .args(["rev-parse", "--short", "HEAD"])
         .output()
         .ok()
-        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| "nogit".to_string())
 }
 
@@ -271,21 +315,45 @@ fn main() {
     // Sanity-check layout matches zenodo's program interface.
     // The 4 registers and their widths/types are the only contract `build`
     // must satisfy with the harness.
-    assert!(regs.len() == 4, "expected 4 registers (target_x, target_y, offset_x, offset_y); got {}", regs.len());
+    assert!(
+        regs.len() == 4,
+        "expected 4 registers (target_x, target_y, offset_x, offset_y); got {}",
+        regs.len()
+    );
     for (i, r) in regs.iter().enumerate() {
-        assert_eq!(r.len(), 256, "register {i} should be 256 wide, got {}", r.len());
+        assert_eq!(
+            r.len(),
+            256,
+            "register {i} should be 256 wide, got {}",
+            r.len()
+        );
     }
-    for q in &regs[0] { assert!(matches!(q, QubitOrBit::Qubit(_)), "register 0 must be qubits"); }
-    for q in &regs[1] { assert!(matches!(q, QubitOrBit::Qubit(_)), "register 1 must be qubits"); }
-    for q in &regs[2] { assert!(matches!(q, QubitOrBit::Bit(_)),   "register 2 must be bits"); }
-    for q in &regs[3] { assert!(matches!(q, QubitOrBit::Bit(_)),   "register 3 must be bits"); }
+    for q in &regs[0] {
+        assert!(
+            matches!(q, QubitOrBit::Qubit(_)),
+            "register 0 must be qubits"
+        );
+    }
+    for q in &regs[1] {
+        assert!(
+            matches!(q, QubitOrBit::Qubit(_)),
+            "register 1 must be qubits"
+        );
+    }
+    for q in &regs[2] {
+        assert!(matches!(q, QubitOrBit::Bit(_)), "register 2 must be bits");
+    }
+    for q in &regs[3] {
+        assert!(matches!(q, QubitOrBit::Bit(_)), "register 3 must be bits");
+    }
 
     println!("  total ops : {}", ops.len());
     println!("  qubits    : {}", total_qubits);
     println!("  bits      : {}", num_bits);
 
     println!("\n-- running correctness tests --");
-    let (ok, avg_cliff, avg_tof, tot_tof, tot_cliff, n_shots, fail_reason) = run_tests(&ops, &regs, total_qubits, num_bits);
+    let (ok, avg_cliff, avg_tof, tot_tof, tot_cliff, n_shots, fail_reason) =
+        run_tests(&ops, &regs, total_qubits, num_bits);
     if !ok {
         println!("\n!! correctness FAILED");
         if let Some(r) = &fail_reason {
@@ -295,7 +363,14 @@ fn main() {
             Some(r) => format!("{note} | {r}"),
             None => note.clone(),
         };
-        append_results_row("FAIL", avg_tof, avg_cliff, total_qubits, ops.len(), &fail_note);
+        append_results_row(
+            "FAIL",
+            avg_tof,
+            avg_cliff,
+            total_qubits,
+            ops.len(),
+            &fail_note,
+        );
         std::process::exit(1);
     }
     println!("  all {} shots OK", n_shots);
@@ -303,7 +378,10 @@ fn main() {
     println!("\n=== circuit metrics (secp256k1, n=256) ===");
     println!("  avg executed Toffoli  : {:.3}", avg_tof);
     println!("  avg executed Clifford : {:.3}", avg_cliff);
-    println!("  total Toffoli (sum)   : {} over {} shots", tot_tof, n_shots);
+    println!(
+        "  total Toffoli (sum)   : {} over {} shots",
+        tot_tof, n_shots
+    );
     println!("  total Clifford (sum)  : {}", tot_cliff);
     println!("  emitted ops           : {}", ops.len());
     println!("  qubits                : {}", total_qubits);

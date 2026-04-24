@@ -1,6 +1,4 @@
 /// This file contains code for simulating kickmix circuits.
-
-
 use crate::circuit::{BitId, Op, OperationType, QubitId, NO_BIT};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -8,8 +6,6 @@ pub struct SimStats {
     pub clifford_gates: u64,
     pub toffoli_gates: u64,
 }
-
-
 
 pub struct Simulator<'a, R: sha3::digest::XofReader> {
     pub phase: u64,
@@ -47,7 +43,7 @@ impl<'a, R: sha3::digest::XofReader> Simulator<'a, R> {
         &mut self.phase
     }
 
-    // We use unsafe blocks to improve proof generation performance. 
+    // We use unsafe blocks to improve proof generation performance.
     #[inline(always)]
     pub fn qubit(&self, id: QubitId) -> u64 {
         unsafe { *self.qubits.get_unchecked(id.0 as usize) }
@@ -79,9 +75,10 @@ impl<'a, R: sha3::digest::XofReader> Simulator<'a, R> {
     }
 
     pub fn apply_archived(&mut self, ops: &[rkyv::Archived<Op>]) {
-        self.apply_iter(ops.iter().map(|op| {
-            rkyv::deserialize::<Op, rkyv::rancor::Infallible>(op).unwrap()
-        }));
+        self.apply_iter(
+            ops.iter()
+                .map(|op| rkyv::deserialize::<Op, rkyv::rancor::Infallible>(op).unwrap()),
+        );
     }
 
     pub fn apply(&mut self, ops: &[Op]) {
@@ -89,7 +86,6 @@ impl<'a, R: sha3::digest::XofReader> Simulator<'a, R> {
     }
 
     pub fn apply_iter(&mut self, ops: impl Iterator<Item = Op>) {
-
         let mut condition_stack = Vec::new();
         let mut current_base_condition = u64::MAX;
 
@@ -198,7 +194,6 @@ impl<'a, R: sha3::digest::XofReader> Simulator<'a, R> {
                 }
             }
         }
-
     }
 
     pub fn set_register(
