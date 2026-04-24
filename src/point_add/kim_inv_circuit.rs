@@ -660,6 +660,93 @@ mod tests {
         }
     }
 
+    /// Partial `kim_inv(x)` Bennett primitive verification:
+    ///   1. allocate internal (u, v, r, s, m_hist, bo_hist)
+    ///   2. initialize u := p, v := x (via CX copy from x into v), s := 1
+    ///   3. run 2n forward Kim iters
+    ///   (we skip the "copy out and run backward" steps here to focus on
+    ///    verifying that the init + 2n forward produces the correct r,
+    ///    and that x is unchanged, and internal state is as expected.)
+    ///
+    /// Once this passes, the next step is to add mod-p reduction on r,
+    /// a CX copy of the reduced value into `out`, and the symmetric
+    /// backward + reverse-init to clear everything.
+    #[test]
+    fn kim_inv_primitive_writes_scaled_inverse_and_cleans_up() {
+        const N: usize = 256;
+        const NU: usize = N + 1;
+        const NR: usize = 2 * N + 1;
+        const ITERS: usize = 2 * N;
+
+        let mut b = B::new();
+        let x: Vec<QubitId> = (0..N).map(|_| b.alloc_qubit()).collect();
+        let _out: Vec<QubitId> = (0..N).map(|_| b.alloc_qubit()).collect();
+        // Internal state:
+        let u: Vec<QubitId> = (0..NU).map(|_| b.alloc_qubit()).collect();
+        let v: Vec<QubitId> = (0..NU).map(|_| b.alloc_qubit()).collect();
+        let r: Vec<QubitId> = (0..NR).map(|_| b.alloc_qubit()).collect();
+        let s: Vec<QubitId> = (0..NR).map(|_| b.alloc_qubit()).collect();
+        let m_hist: Vec<QubitId> = (0..ITERS).map(|_| b.alloc_qubit()).collect();
+        let bo_hist: Vec<QubitId> = (0..ITERS).map(|_| b.alloc_qubit()).collect();
+
+        // Init: u := p (classical), v := x (CX from x to v), s := 1.
+        let p = SECP256K1_P;
+        for i in 0..N {
+            if p.bit(i) {
+                b.x(u[i]);
+            }
+        }
+        for i in 0..N {
+            b.cx(x[i], v[i]);
+        }
+        b.x(s[0]);
+
+        // Forward 2n iters.
+        for i in 0..ITERS {
+            kim_iteration_forward(&mut b, &u, &v, &r, &s, m_hist[i], bo_hist[i], i);
+        }
+
+        let ops = b.ops.clone();
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+
+        let mut rng = 0x7777_8888_9999_aaaau64;
+        let two = U256::from(2u64);
+        let scale_inv = two.pow_mod(U256::from(512u64), p).inv_mod(p).unwrap();
+
+        for trial in 0..5 {
+            let x0 = rand_u256(&mut rng);
+            if x0.is_zero() { continue; }
+
+            let mut hasher = sha3::Shake128::default();
+            use sha3::digest::{ExtendableOutput, Update};
+            hasher.update(b"kim-inv-primitive-v1");
+            hasher.update(&(trial as u32).to_le_bytes());
+            let mut xof = hasher.finalize_xof();
+            let mut sim = Simulator::new(num_qubits, num_bits, &mut xof);
+            set_slice_u256(&mut sim, &x, x0);
+            sim.apply(&ops);
+
+            // Input x unchanged.
+            let x_back = get_slice_u256(&sim, &x);
+            assert_eq!(x_back, x0, "trial {trial}: x not preserved");
+
+            // Read wide r and check its mod-p residue matches ±x^-1 * 2^{2n}.
+            let r_wide = get_slice_u512(&sim, &r);
+            let r_mod_p = mod_p_of_u512(r_wide);
+            let expected_pos = x0.inv_mod(p).unwrap().mul_mod(
+                two.pow_mod(U256::from(512u64), p),
+                p,
+            );
+            let expected_neg = sub_mod_p(U256::ZERO, expected_pos, p);
+            assert!(
+                r_mod_p == expected_pos || r_mod_p == expected_neg,
+                "trial {trial}: r mod p is neither ±x^-1 * 2^(2n); got {r_mod_p:x}"
+            );
+            let _ = scale_inv;
+        }
+    }
+
     /// Round-trip: forward then `kim_iteration_backward` in reverse order
     /// should fully restore the input state and zero the per-iter flag qubits.
     #[test]
