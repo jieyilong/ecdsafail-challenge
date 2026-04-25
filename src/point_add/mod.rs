@@ -67,6 +67,8 @@ use crate::sim::Simulator;
 use crate::weierstrass_elliptic_curve::WeierstrassEllipticCurve;
 
 pub mod by;
+pub mod fermat_inv;
+pub mod unconditional_kal;
 pub mod kaliski_equiv;
 pub mod kaliski_jump;
 pub mod microbench;
@@ -5518,43 +5520,17 @@ fn run_alt_seed_checks(ops: &[Op]) {
 //  Top-level point addition
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub fn build() -> Vec<Op> {
-    let b = &mut B::new();
-    // Register 0: target_x (quantum)
-    let tx = b.alloc_qubits(N);
-    b.declare_qubit_register(&tx);
-    // Register 1: target_y (quantum)
-    let ty = b.alloc_qubits(N);
-    b.declare_qubit_register(&ty);
-    // Register 2: offset_x (classical bits)
-    let ox = b.alloc_bits(N);
-    b.declare_bit_register(&ox);
-    // Register 3: offset_y (classical bits)
-    let oy = b.alloc_bits(N);
-    b.declare_bit_register(&oy);
-
-    // === Point add ===
-    //
-    // NOTE: the subroutines `mod_mul_*` and `kaliski_inv_inplace` are
-    // currently stubbed with `unimplemented!`. Calling `build` will
-    // panic at circuit-construction time until those are filled in.
-    // This scaffold compiles and exercises the Cuccaro adder layer +
-    // the register declarations so the harness interface is validated.
-
-    let p = SECP256K1_P;
-    // 2N-1 guarantees Kaliski convergence for all inputs. Empirically the
-    // tail (iter_idx >= ~450 or so) is only active for pathological inputs.
-    // We start at the safe bound and claw back by lowering only as far as
-    // multi-seed sampling remains clean.
-    // pair1 and pair2 use independent Kaliski inverts; probe lower on both.
+fn build_standard_point_add(
+    b: &mut B,
+    tx: &[QubitId],
+    ty: &[QubitId],
+    ox: &[BitId],
+    oy: &[BitId],
+    p: U256,
+) {
     let pair1_iters = 407;
     let pair2_iters = 404;
 
-    // Step 1-2: Px -= Qx, Py -= Qy
-    mod_sub_qb(b, &tx, &ox, p);
-    mod_sub_qb(b, &ty, &oy, p);
-
-    // lam deferred into closure to reduce Kaliski-iter peak.
     let lam_cell: std::cell::RefCell<Option<Vec<QubitId>>> = std::cell::RefCell::new(None);
     b.set_phase("pair1_kaliski_forward");
     with_kal_inv_raw(b, &tx, p, pair1_iters, |b, inv_raw| {
@@ -5572,16 +5548,10 @@ pub fn build() -> Vec<Op> {
     });
     let lam: Vec<QubitId> = lam_cell.into_inner().expect("lam set");
 
-    // Px := λ² - Px_orig - Qx. Rearranged: tx = dx - λ². Add 2Qx, then
-    // negate: -(dx - λ² + 2Qx) = λ² - dx - 2Qx = Rx. mod_add_qb is
-    // cheaper than mod_sub_qb (1024 vs 1280 per call, saves 512 total).
     mod_mul_sub_qq(b, &tx, &lam, &lam, p);
     mod_add_double_qb(b, &tx, &ox, p);
-    // Fold mod_neg + mod_sub_qb into mod_add_qb + mod_neg: mod_add_qb is
-    // cheaper than mod_sub_qb by n CCX. Result equivalent: tx = Rx - Qx.
-    mod_add_qb(b, &tx, &ox, p); // tx = dx - λ² + 3Qx
-    mod_neg_inplace_fast(b, &tx, p); // tx = -(...)= Rx - Qx
-                                     // ty starts at 0 here (mul2 cleared it), use zero-acc fast path.
+    mod_add_qb(b, &tx, &ox, p);
+    mod_neg_inplace_fast(b, &tx, p);
     b.set_phase("mul3_between_pair");
     mod_mul_write_into_zero_acc_karatsuba2(b, &ty, &lam, &tx, p);
     b.set_phase("pair2_kaliski_forward");
@@ -5596,9 +5566,136 @@ pub fn build() -> Vec<Op> {
         mod_sub_qb(b, &ty, &oy, p);
         b.set_phase("pair2_kaliski_backward");
     });
-    mod_add_qb(b, &tx, &ox, p); // tx = Rx
-
+    mod_add_qb(b, &tx, &ox, p);
     b.free_vec(&lam);
+}
+
+fn build_compact_point_add(
+    b: &mut B,
+    tx: &[QubitId],
+    ty: &[QubitId],
+    ox: &[BitId],
+    oy: &[BitId],
+    p: U256,
+) {
+    // At entry: tx = dx, ty = dy (after step 1-2 subtraction)
+    //
+    // Compact architecture using Fermat inversion:
+    // 1. inv_dx = dx^{p-2} (Fermat) → fresh register
+    // 2. lam = dy * inv_dx → fresh register
+    // 3. ty -= lam * tx → ty = 0
+    // 4. tx = dx - lam² → affine corrections → tx = Rx - Qx
+    // 5. ty = lam * tx → Ry calculation
+    // 6. Cleanup via second Fermat inversion
+
+    let n = tx.len();
+
+    // inv_dx = dx^{-1} mod p (Fermat)
+    let inv_dx = b.alloc_qubits(n);
+    b.set_phase("fermat_inv_dx");
+    fermat_inv::fermat_inv(b, tx, &inv_dx, p);
+
+    // lam = dy * inv_dx = λ (Horner write-into-zero)
+    let lam = b.alloc_qubits(n);
+    b.set_phase("compact_lam_mul");
+    fermat_inv::horner_mul_add(b, &lam, ty, &inv_dx, p);
+
+    // ty -= lam * tx → ty = dy - λ*dx = 0
+    b.set_phase("compact_ty_zero");
+    fermat_inv::horner_mul_sub(b, ty, &lam, tx, p);
+
+    // tx = dx - λ²
+    b.set_phase("compact_lam_sq");
+    fermat_inv::mod_mul_sub_inplace(b, tx, &lam, &lam, p);
+
+    // Affine corrections: tx = -(tx + 3*Qx) = Rx - Qx
+    mod_add_qb(b, tx, ox, p); // tx = dx - λ² + Qx
+    mod_add_double_qb(b, tx, ox, p); // tx = dx - λ² + 3Qx
+    mod_neg_inplace_fast(b, tx, p); // tx = λ² - dx - 3Qx = Rx - Qx
+
+    // ty = lam * tx = λ(Qx - Rx) = Ry + Qy
+    b.set_phase("compact_ty_mul");
+    fermat_inv::horner_mul_add(b, ty, &lam, tx, p);
+    // ty -= Qy → ty = Ry
+    mod_sub_qb(b, ty, oy, p);
+
+    // Cleanup: uncompute lam using second Fermat inversion
+    // inv_rxqx = (Rx - Qx)^{-1}
+    // lam = λ. λ = (Qy + Ry) / (Qx - Rx) = -(Qy + Ry) / (Rx - Qx)
+    // So lam = -(Qy + Ry) * inv(Rx-Qx)
+    // Currently ty = Ry, tx = Rx - Qx
+    // Qy + Ry: we can compute ty + Qy = Ry + Qy
+    //
+    // Actually: we need to zero lam. Currently:
+    //   lam = λ, tx = Rx - Qx, ty = Ry
+    //   inv_rxqx = (Rx-Qx)^{-1}
+    //   λ * (Rx-Qx) = -(Ry + Qy) [from the EC addition formula]
+    //   Wait: λ = (Qy + Ry) / (Qx - Rx) = -(Qy + Ry) / (Rx - Qx)
+    //   So: lam * tx = -((Qy + Ry) / (Rx-Qx)) * (Rx-Qx) = -(Qy + Ry)
+    //   So: lam = -(Qy + Ry) * (Rx-Qx)^{-1}
+    //   lam * (Rx-Qx) + (Qy + Ry) = 0
+    //   lam * tx + (ty + Qy) = 0  ... since tx=Rx-Qx, ty=Ry
+    //
+    // To zero lam: we need lam + (ty + Qy) * inv_rxqx = 0
+    // i.e., lam += (ty + Qy) * inv_rxqx
+    //
+    // Compute ty + Qy first:
+    mod_add_qb(b, ty, oy, p); // ty = Ry + Qy
+
+    // inv_rxqx = (Rx-Qx)^{-1} = tx^{-1}
+    let inv_rxqx = b.alloc_qubits(n);
+    b.set_phase("fermat_inv_rxqx");
+    fermat_inv::fermat_inv(b, tx, &inv_rxqx, p);
+
+    // lam += (Ry + Qy) * (Rx-Qx)^{-1} → lam = 0
+    b.set_phase("compact_lam_cleanup");
+    fermat_inv::horner_mul_add(b, &lam, ty, &inv_rxqx, p);
+
+    // ty = Ry + Qy. Subtract Qy to get Ry.
+    mod_sub_qb(b, ty, oy, p); // ty = Ry
+
+    // tx = Rx - Qx. Add Qx to get Rx.
+    mod_add_qb(b, tx, ox, p); // tx = Rx
+
+    // Free lam (now zero)
+    b.free_vec(&lam);
+
+    // Uncompute inv_dx and inv_rxqx
+    // inv_dx = dx^{-1}. We no longer have dx (tx = Rx now).
+    // We need emit_inverse to reverse the Fermat inv.
+    // For now, just try freeing and see if it passes.
+    // This WILL fail because inv_dx and inv_rxqx are nonzero.
+    // TODO: implement proper uncompute.
+    b.free_vec(&inv_dx);
+    b.free_vec(&inv_rxqx);
+}
+
+pub fn build() -> Vec<Op> {
+    let b = &mut B::new();
+    // Register 0: target_x (quantum)
+    let tx = b.alloc_qubits(N);
+    b.declare_qubit_register(&tx);
+    // Register 1: target_y (quantum)
+    let ty = b.alloc_qubits(N);
+    b.declare_qubit_register(&ty);
+    // Register 2: offset_x (classical bits)
+    let ox = b.alloc_bits(N);
+    b.declare_bit_register(&ox);
+    // Register 3: offset_y (classical bits)
+    let oy = b.alloc_bits(N);
+    b.declare_bit_register(&oy);
+
+    let p = SECP256K1_P;
+
+    // Step 1-2: Px -= Qx, Py -= Qy
+    mod_sub_qb(b, &tx, &ox, p);
+    mod_sub_qb(b, &ty, &oy, p);
+
+    if std::env::var("COMPACT_POINT_ADD").ok().as_deref() == Some("1") {
+        build_compact_point_add(b, &tx, &ty, &ox, &oy, p);
+    } else {
+        build_standard_point_add(b, &tx, &ty, &ox, &oy, p);
+    }
 
     if std::env::var("BY_TEST").is_ok() {
         by::run_classical_test();
