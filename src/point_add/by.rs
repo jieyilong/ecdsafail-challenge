@@ -949,6 +949,102 @@ mod tests {
         assert!(approx_toffoli_lb < 500_000.0, "Approx BY lower bound too high");
     }
 
+    fn count_ccx(ops: &[crate::circuit::Op]) -> usize {
+        ops.iter()
+            .filter(|o| matches!(o.kind, crate::circuit::OperationType::CCX | crate::circuit::OperationType::CCZ))
+            .count()
+    }
+
+    fn add_shifted_term_for_cost(
+        b: &mut super::super::B,
+        src: &[super::super::QubitId],
+        dst: &[super::super::QubitId],
+        shift: usize,
+        subtract: bool,
+    ) {
+        if shift >= dst.len() {
+            return;
+        }
+        let len = src.len().min(dst.len() - shift);
+        let src_slice: Vec<_> = src[..len].to_vec();
+        let dst_slice: Vec<_> = dst[shift..shift + len].to_vec();
+        if subtract {
+            super::super::sub_nbit_qq_fast(b, &src_slice, &dst_slice);
+        } else {
+            super::super::add_nbit_qq_fast(b, &src_slice, &dst_slice);
+        }
+    }
+
+    fn add_coeff_times_for_cost(
+        b: &mut super::super::B,
+        coeff: i128,
+        src: &[super::super::QubitId],
+        dst: &[super::super::QubitId],
+    ) {
+        let subtract = coeff < 0;
+        let mut mag = coeff.unsigned_abs();
+        let mut shift = 0usize;
+        while mag != 0 {
+            if (mag & 1) != 0 {
+                add_shifted_term_for_cost(b, src, dst, shift, subtract);
+            }
+            mag >>= 1;
+            shift += 1;
+        }
+    }
+
+    fn emit_constant_matrix_apply_for_cost(b: &mut super::super::B, m: TransitionMatrix, width: usize) {
+        let f = b.alloc_qubits(width);
+        let g = b.alloc_qubits(width);
+        let out0 = b.alloc_qubits(width);
+        let out1 = b.alloc_qubits(width);
+        add_coeff_times_for_cost(b, m.m00, &f, &out0);
+        add_coeff_times_for_cost(b, m.m01, &g, &out0);
+        add_coeff_times_for_cost(b, m.m10, &f, &out1);
+        add_coeff_times_for_cost(b, m.m11, &g, &out1);
+        // This is only a forward cost/peak probe for row formation; outputs are
+        // not freed because the full BY state update would swap/use them.
+        let _ = (f, g, out0, out1);
+    }
+
+    #[test]
+    fn constant_jump_matrix_apply_cost_probe() {
+        // Build actual circuits for constant selected BY matrices to calibrate
+        // the row-popcount lower bound. This is still not a full reversible BY
+        // update, but it includes the real n-bit add/sub primitive cost and
+        // scratch peak for forming the two output rows.
+        const WIDTH: usize = 256 + 16 + 2;
+        let mut hasher = sha3::Shake128::default();
+        hasher.update(b"by-constant-matrix-apply-cost-v1");
+        let mut reader = hasher.finalize_xof();
+        let mut buf = [0u8; 24];
+        let mut total_ccx = 0usize;
+        let mut total_terms = 0usize;
+        let mut max_peak = 0u32;
+        let samples = 24usize;
+        for _ in 0..samples {
+            reader.read(&mut buf);
+            let f_low = (u64::from_le_bytes(buf[0..8].try_into().unwrap()) as i128) | 1;
+            let g_low = u64::from_le_bytes(buf[8..16].try_into().unwrap()) as i128;
+            let delta = (u64::from_le_bytes(buf[16..24].try_into().unwrap()) % 41) as i64 - 20;
+            let (_, _, _, m) = jump_matrix_direct_lowword(16, 16, delta, f_low, g_low);
+            let mut b = super::super::B::new();
+            let start = b.ops.len();
+            emit_constant_matrix_apply_for_cost(&mut b, m, WIDTH);
+            let ccx = count_ccx(&b.ops[start..]);
+            total_ccx += ccx;
+            total_terms += matrix_popcount_adds_i128(m);
+            max_peak = max_peak.max(b.peak_qubits);
+        }
+        let mean_ccx = total_ccx as f64 / samples as f64;
+        let mean_terms = total_terms as f64 / samples as f64;
+        eprintln!(
+            "constant BY w=16 matrix apply cost probe: mean_ccx={mean_ccx:.1}, mean_terms={mean_terms:.2}, ccx_per_term={:.1}, max_peak={max_peak}",
+            mean_ccx / mean_terms
+        );
+        assert!(mean_ccx < 10_000.0, "constant matrix row formation too costly to prototype");
+    }
+
     #[test]
     fn jumpdivstep_matrix_entry_survey_test() {
         let samples = 100_000;

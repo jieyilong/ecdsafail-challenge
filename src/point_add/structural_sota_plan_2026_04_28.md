@@ -252,9 +252,27 @@ normalization, so it is not a forecast. But it is far below the current ~1.6M
 Kaliski invocation cost. BY jump inversion is therefore the most concrete live
 prototype candidate now.
 
-This is not yet a circuit, but it is a better Toffoli-structural lead than
-Kaliski low-bit windows: no full comparator sequence, moderate matrix row
-intensity, and approximate iteration count is plausible.
+A first circuit-level calibration, `constant_jump_matrix_apply_cost_probe`,
+applies sampled constant `w=16` BY matrices to one full-width pair using the
+real add/sub primitives (row formation only, not full reversible update):
+
+```text
+mean_ccx      ≈ 3,908 per 274-bit pair
+mean_terms    ≈ 12.58
+ccx/term      ≈ 310.6
+row peak      ≈ 1370q for f,g,out0,out1 + carries
+```
+
+Scaling naively to three pairs and 35-47 windows gives roughly 0.4-0.55M
+Toffoli for row formation before matrix synthesis/cleanup. That is still far
+below current Kaliski's ~1.6M/invocation, so a live BY prototype is justified.
+The peak number also shows why register scheduling matters: row formation wants
+four full-width registers plus one carry strip; doing three pairs in parallel is
+not viable, but sequential coefficient-column updates may fit.
+
+This is not yet a full inversion circuit, but it is a better Toffoli-structural
+lead than Kaliski low-bit windows: no full comparator sequence, moderate matrix
+row intensity, and approximate iteration count is plausible.
 
 ### Program B — triangular one-inversion schedule (highest payoff, highest risk)
 
