@@ -2238,6 +2238,44 @@ mod tests {
     }
 
     #[test]
+    fn qcorr_roundtrip_recovers_m_for_sampled_by_matrices() {
+        // If q = s*adj(P)*m / 2^w, then P*q = m. This is the missing
+        // reversibility hook for general old-row cleanup: after q has been used
+        // to remove q*c from the old rows, m can be uncomputed from q even
+        // though the old sources have been zeroed.
+        const W: usize = 16;
+        let pinv = 51_919i128;
+        let mask = (1i128 << W) - 1;
+        let mut hasher = sha3::Shake128::default();
+        hasher.update(b"by-qcorr-roundtrip-v1");
+        let mut reader = hasher.finalize_xof();
+        let mut buf = [0u8; 24];
+        for _ in 0..5_000 {
+            reader.read(&mut buf);
+            let f_low = (u64::from_le_bytes(buf[0..8].try_into().unwrap()) as i128) | 1;
+            let g_low = u64::from_le_bytes(buf[8..16].try_into().unwrap()) as i128;
+            let delta = (u64::from_le_bytes(buf[16..24].try_into().unwrap()) % 41) as i64 - 20;
+            let (_, _, _, mtx) = jump_matrix_direct_lowword(W, W, delta, f_low, g_low);
+            // Use deterministic low row values; only low words matter for m.
+            let x0_low = (f_low * 17 + 3) & mask;
+            let x1_low = (g_low * 19 - 5) & mask;
+            let t0_low = (mtx.m00 * x0_low + mtx.m01 * x1_low) & mask;
+            let t1_low = (mtx.m10 * x0_low + mtx.m11 * x1_low) & mask;
+            let m0 = (-t0_low * pinv) & mask;
+            let m1 = (-t1_low * pinv) & mask;
+            let sgn = det_sign_pow2(mtx, W);
+            let q0_num = sgn * (mtx.m11 * m0 - mtx.m01 * m1);
+            let q1_num = sgn * (-mtx.m10 * m0 + mtx.m00 * m1);
+            assert_eq!(q0_num & mask, 0);
+            assert_eq!(q1_num & mask, 0);
+            let q0 = q0_num >> W;
+            let q1 = q1_num >> W;
+            assert_eq!(mtx.m00 * q0 + mtx.m01 * q1, m0, "P*q did not recover m0");
+            assert_eq!(mtx.m10 * q0 + mtx.m11 * q1, m1, "P*q did not recover m1");
+        }
+    }
+
+    #[test]
     fn adjugate_m_correction_is_integral_for_sampled_by_matrices() {
         // General cleanup formula behind the triangular prototype. If
         // 2^w*y = P*x + p*m and det(P)=s*2^w, then

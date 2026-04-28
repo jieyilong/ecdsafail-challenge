@@ -395,6 +395,11 @@ Positive forward-row progress:
   general cleanup algebra on samples: if `2^w y = P x + p m` and
   `det(P)=s 2^w`, then `s adj(P) y = x + p*(s adj(P)m/2^w)`, and the
   correction vector is integral.
+- `qcorr_roundtrip_recovers_m_for_sampled_by_matrices` proves the next
+  reversibility hook: with `q=s adj(P)m/2^w`, we have `P q = m`. Thus after
+  the old source rows are zeroed, the `m` registers can in principle be
+  uncomputed from the small `q` registers, and then `q` can be uncomputed from
+  residual high bits.
 - `positive_triangular_fixed_matrix_replacement_cleans_old_rows` uses that
   formula to build the first complete fixed-matrix replacement for the
   triangular positive matrix. It computes both scaled rows, recomputes `m` from
