@@ -354,9 +354,23 @@ The new test `end_state_needs_coefficient_registers_to_recover_branch` shows:
 - `(u,v,r,s,f)` at iteration end **does** determine the branch on 200×407
   sampled canonical coefficient trajectories.
 
-So a self-cleaning forward Kaliski is not information-theoretically dead, but
-its branch-recovery predicate must inspect the coefficient registers. It is not
-the cheap 4-bit start-state formula. This is the next hard synthesis problem.
+So a self-cleaning forward Kaliski is not information-theoretically dead for
+nonzero coefficient seeds, but its branch-recovery predicate must inspect the
+coefficient registers. It is not the cheap 4-bit start-state formula.
+
+The follow-up test `zero_coefficient_seed_loses_branch_information` shows a
+critical exactness problem: if the coefficient seed is zero, then even full
+`(u,v,r,s,f)` has collisions because `r=s=0` carries no trajectory signal.
+An exact point-add cannot rely on `dy` being nonzero. Therefore a self-cleaning
+DIV needs either:
+
+- a nonzero tag mixed into the coefficient state without destroying access to
+  `y/x`, or
+- a branch-recovery predicate that does not rely on the coefficient scalar, or
+- an acceptance of approximate failure on the rare `dy=0` subspace (not allowed
+  by the current exact harness unless the test distribution never hits it).
+
+This is the next hard synthesis problem.
 
 ## 11. Fast invalidation tasks still open
 

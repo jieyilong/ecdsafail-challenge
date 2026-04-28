@@ -247,6 +247,37 @@ fn end_state_needs_coefficient_registers_to_recover_branch() {
 }
 
 #[test]
+fn zero_coefficient_seed_loses_branch_information() {
+    // Exact DIV must also handle y=0 (or any value making the coefficient
+    // channel uninformative). With r=s=0, full state collapses to the
+    // denominator state, and branch recovery collides. Therefore any
+    // self-cleaning forward-only Kaliski needs either an additional nonzero
+    // tag mixed into the coefficient state or a branch predicate independent
+    // of the coefficient scalar.
+    use std::collections::HashMap;
+
+    let mut seen: HashMap<([u64; 4], [u64; 4], [u64; 4], [u64; 4], u8), Branch> = HashMap::new();
+    let mut conflicts = 0usize;
+    for seed in 1..=200u64 {
+        let mut st = LinState {
+            u: SECP256K1_P,
+            v: random_element(seed),
+            r: U256::ZERO,
+            s: U256::ZERO,
+            f: 1,
+        };
+        for _ in 0..ITERS {
+            let br = step_linear_canonical(&mut st);
+            let key = (limbs(st.u), limbs(st.v), limbs(st.r), limbs(st.s), st.f);
+            if let Some(prev) = seen.insert(key, br) {
+                if prev != br { conflicts += 1; }
+            }
+        }
+    }
+    assert!(conflicts > 0, "zero coefficient seed unexpectedly preserved branch information");
+}
+
+#[test]
 fn backward_write_condition_for_ry() {
     // If the coefficient transform is T=[[a,k],[dx,0]], then to have the
     // backward pass finish with `(r_initial=0, s_initial=Ry)`, the final
