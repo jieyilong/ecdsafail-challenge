@@ -530,11 +530,23 @@ So these scaffolds prove clean reversible tagged DIV below 2800q, but not SOTA
 Toffoli. The remaining gap is to eliminate/compress branch histories without
 full replay and/or make the branch predicate self-cleaning.
 
+A further algebraic invalidation is in
+`bilinear_invariant_does_not_recover_inverse_branch`. The obvious preserved
+relation
+
+```text
+r*v + s*u = 0 mod p
+```
+
+holds for almost all locally valid inverse-branch candidates, so it cannot be
+the cheap self-cleaning predicate. This kills the simplest “try all inverse
+branches and keep the one satisfying the invariant” route.
+
 Therefore a self-cleaning DIV now needs:
 
-- a **derived exact/near-exact predicate** over full `(u,v,r,s)` that is much
-  cheaper than storing `m_hist`, and can fail only on the negligible tag-zero
-  subspace; or
+- a **derived exact/near-exact predicate** over full `(u,v,r,s)` beyond the
+  bilinear invariant, much cheaper than storing `m_hist`, and failing only on
+  negligible tag-zero / collision subspaces; or
 - a different update convention whose inverse branch is local.
 
 Acceptance of a crude local classifier is not enough: >50% per-step blows up.

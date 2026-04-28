@@ -301,6 +301,57 @@ fn end_state_needs_coefficient_registers_to_recover_branch() {
 }
 
 #[test]
+fn bilinear_invariant_does_not_recover_inverse_branch() {
+    // The obvious algebraic invariant of the coefficient transform is
+    //     r*v + s*u = 0 (mod p)
+    // starting from (u,v,r,s)=(p,x,0,tag). Unfortunately it is preserved by
+    // almost all locally valid inverse candidates, so it does not provide the
+    // cheap self-cleaning branch predicate we need.
+    let p = SECP256K1_P;
+    let inv2 = U256::from(2u64).inv_mod(p).unwrap();
+    let mut ambiguous = 0usize;
+    let mut total = 0usize;
+
+    for seed in 1..=200u64 {
+        let x = random_element(seed);
+        let y = random_element(seed + 10_000);
+        let mut st = LinState { u: p, v: x, r: U256::ZERO, s: add_mod(y, x, p), f: 1 };
+        for _ in 0..ITERS {
+            let br = step_linear_canonical(&mut st);
+            if st.f == 0 { continue; }
+            let mut survivors = 0usize;
+            let candidates = [
+                // (case_is_true, pre_u, pre_v, pre_r, pre_s)
+                (!br.a_swap && !br.add, st.u, st.v << 1, st.r.mul_mod(inv2, p), st.s),
+                ( br.a_swap && !br.add, st.u << 1usize, st.v, st.r, st.s.mul_mod(inv2, p)),
+                ( br.a_swap &&  br.add, (st.u << 1usize).wrapping_add(st.v), st.v, sub_mod(st.r, st.s.mul_mod(inv2, p), p), st.s.mul_mod(inv2, p)),
+                (!br.a_swap &&  br.add, st.u, (st.v << 1usize).wrapping_add(st.u), st.r.mul_mod(inv2, p), sub_mod(st.s, st.r.mul_mod(inv2, p), p)),
+            ];
+            for (_is_true, pu, pv, pr, ps) in candidates {
+                let branch_valid = if pu.bit(0) == false {
+                    // U-even candidate.
+                    true
+                } else if pv.bit(0) == false {
+                    // V-even candidate.
+                    true
+                } else {
+                    // Odd/odd candidate; either ordering is locally valid.
+                    true
+                };
+                let invariant = add_mod(pr.mul_mod(pv % p, p), ps.mul_mod(pu % p, p), p) == U256::ZERO;
+                if branch_valid && invariant {
+                    survivors += 1;
+                }
+            }
+            if survivors > 1 { ambiguous += 1; }
+            total += 1;
+        }
+    }
+    let frac = ambiguous as f64 / total as f64;
+    assert!(frac > 0.90, "bilinear invariant unexpectedly disambiguated branches: ambiguous={frac}");
+}
+
+#[test]
 fn low_bit_end_state_branch_classifier_is_not_approx_good_enough() {
     // Approximate incorrectness reopens rare exceptional sets, but it does not
     // make a crude local branch predicate viable. Train a best-majority lookup

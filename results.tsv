@@ -754,3 +754,5 @@ timestamp	commit	toffoli	clifford	qubits	ops	correct	notes
 1777360125	fc1b32f	5957442.000	33053314.732	3147	45059348	OK	pair2-branch-inv-roll-peak
 1777360185	fc1b32f	4132750.000	24414411.956	2716	31193208	OK	schoolbook addsub correction3: cuccaro_sub_fast -> cuccaro_sub (saves 2n peak carries) 
 1777360215	fc1b32f	4132750.000	24414411.956	2716	31193208	OK	autoresearch-checks
+1777360418	8abd40f	4132750.000	24414411.956	2716	31193208	OK	schoolbook addsub correction3: cuccaro_sub_fast -> cuccaro_sub (saves 2n peak carries) 
+1777360447	8abd40f	4132750.000	24414411.956	2716	31193208	OK	autoresearch-checks
