@@ -469,12 +469,27 @@ classical/phase/ancilla failures = 0
 peak phase  = br_rec_step2 / br_stream_coeff_add
 ```
 
-It is still **not** a SOTA path as-is: Toffoli is worse than baseline because it
-stores 3 history streams and replays a full modular coefficient pass, with no
-Kaliski truncation in the branch generator. But it proves the y+x tagged DIV can
-be made into a clean reversible point-add sub-scaffold below 2800q. The
-remaining gap is to eliminate/compress branch histories and/or make the branch
-predicate self-cleaning.
+A compressed variant is wired as `KAL_TAGGED_DIV_BRANCH_TERM=1`. It replaces the
+full `add_hist` stream with a 9-bit terminal-iteration index. Coefficient replay
+reconstructs active VG adds using `term_idx > i`, leaving only `m_hist+a_hist`
+plus the tiny terminal register:
+
+```text
+KAL_TAGGED_DIV_BRANCH_TERM=1 cargo run --release -- --note branch-term-div
+avg_toffoli = 5,267,537
+qubits      = 2,714
+classical/phase/ancilla failures = 0
+peak phase  = pair2 Kaliski, not branch-DIV
+```
+
+This is a useful qubit-shape result: the tagged-DIV scaffold itself is now below
+the current baseline peak, and pair2 Kaliski again dominates peak qubits. It is
+also an invalidation of naive terminal-index replay as a Toffoli path: a 9-bit
+comparator inside every coefficient iteration costs far too much.
+
+So these scaffolds prove clean reversible tagged DIV below 2800q, but not SOTA
+Toffoli. The remaining gap is to eliminate/compress branch histories without a
+per-iteration comparator and/or make the branch predicate self-cleaning.
 
 Therefore a self-cleaning DIV now needs:
 

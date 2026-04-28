@@ -5234,6 +5234,17 @@ fn alloc_kaliski_branch_state(b: &mut B, n: usize, max_iters: usize) -> KaliskiB
     }
 }
 
+fn alloc_kaliski_branch_state_no_add(b: &mut B, n: usize, max_iters: usize) -> KaliskiBranchState {
+    KaliskiBranchState {
+        u: b.alloc_qubits(n),
+        v_w: b.alloc_qubits(n),
+        m_hist: b.alloc_qubits(max_iters),
+        a_hist: b.alloc_qubits(max_iters),
+        add_hist: Vec::new(),
+        f_flag: b.alloc_qubit(),
+    }
+}
+
 fn free_kaliski_branch_state(b: &mut B, st: KaliskiBranchState) {
     b.free(st.f_flag);
     b.free_vec(&st.add_hist);
@@ -5349,7 +5360,8 @@ fn kaliski_branch_iteration_record(
     v_w: &[QubitId],
     m_i: QubitId,
     a_i: QubitId,
-    add_i: QubitId,
+    add_i: Option<QubitId>,
+    term_bits: Option<(&[QubitId], usize)>,
     f: QubitId,
 ) {
     let n = u.len();
@@ -5360,6 +5372,13 @@ fn kaliski_branch_iteration_record(
     b.set_phase("br_rec_step0_eqzero");
     with_eq_zero_fast(b, v_w, add_f, |b| {
         b.ccx(f, add_f, m_i);
+        if let Some((term_bits, iter_idx)) = term_bits {
+            for (j, &q) in term_bits.iter().enumerate() {
+                if ((iter_idx >> j) & 1) != 0 {
+                    b.cx(m_i, q);
+                }
+            }
+        }
     });
     b.cx(m_i, f);
 
@@ -5409,7 +5428,9 @@ fn kaliski_branch_iteration_record(
 
     b.set_phase("br_rec_step4");
     mcx2_polar(b, f, true, b_f, false, add_f);
-    b.cx(add_f, add_i);
+    if let Some(add_i) = add_i {
+        b.cx(add_f, add_i);
+    }
     cucc_sub_ctrl(b, u, v_w, add_f);
 
     b.set_phase("br_rec_step5");
@@ -5455,6 +5476,56 @@ fn apply_coeff_channel_from_hist(
         b.set_phase("br_stream_coeff_double");
         coeff_channel_double(b, p, cr);
         b.set_phase("br_stream_coeff_cswap2");
+        coeff_channel_cswap(b, a_hist[i], cr, cs);
+    }
+}
+
+fn apply_coeff_channel_from_term_index(
+    b: &mut B,
+    p: U256,
+    cr: &[QubitId],
+    cs: &[QubitId],
+    a_hist: &[QubitId],
+    m_hist: &[QubitId],
+    term_bits: &[QubitId],
+) {
+    assert_eq!(a_hist.len(), m_hist.len());
+    for i in 0..a_hist.len() {
+        b.set_phase("br_term_coeff_cswap1");
+        coeff_channel_cswap(b, a_hist[i], cr, cs);
+
+        // add is true for UG: (a,m)=(1,1).
+        b.set_phase("br_term_coeff_add_ug");
+        let ug_ctrl = b.alloc_qubit();
+        b.ccx(a_hist[i], m_hist[i], ug_ctrl);
+        coeff_channel_cadd(b, p, cr, cs, ug_ctrl);
+        {
+            let um = b.alloc_bit();
+            b.hmr(ug_ctrl, um);
+            b.cz_if(a_hist[i], m_hist[i], um);
+        }
+        b.free(ug_ctrl);
+
+        // add is also true for active VG: (a,m)=(0,0) before the terminal
+        // iteration. The terminal index is written once during branch record.
+        b.set_phase("br_term_coeff_add_vg");
+        let active = b.alloc_qubit();
+        let ci = load_const(b, term_bits.len(), U256::from(i as u64));
+        cmp_gt_into(b, term_bits, &ci, active); // active = term_idx > i
+        let vg_ctrl = b.alloc_qubit();
+        let scratch = b.alloc_qubit();
+        mcx3_polar(b, active, true, a_hist[i], false, m_hist[i], false, vg_ctrl, scratch);
+        coeff_channel_cadd(b, p, cr, cs, vg_ctrl);
+        mcx3_polar(b, active, true, a_hist[i], false, m_hist[i], false, vg_ctrl, scratch);
+        b.free(scratch);
+        b.free(vg_ctrl);
+        cmp_gt_into(b, term_bits, &ci, active);
+        unload_const(b, &ci, U256::from(i as u64));
+        b.free(active);
+
+        b.set_phase("br_term_coeff_double");
+        coeff_channel_double(b, p, cr);
+        b.set_phase("br_term_coeff_cswap2");
         coeff_channel_cswap(b, a_hist[i], cr, cs);
     }
 }
@@ -5561,6 +5632,7 @@ fn kaliski_branch_iteration_backward(
     v_w: &[QubitId],
     m_i: QubitId,
     a_i: QubitId,
+    term_bits: Option<(&[QubitId], usize)>,
     f: QubitId,
 ) {
     let n = u.len();
@@ -5639,6 +5711,13 @@ fn kaliski_branch_iteration_backward(
     }
 
     b.set_phase("br_bk_step0_eqzero");
+    if let Some((term_bits, iter_idx)) = term_bits {
+        for (j, &q) in term_bits.iter().enumerate() {
+            if ((iter_idx >> j) & 1) != 0 {
+                b.cx(m_i, q);
+            }
+        }
+    }
     b.cx(m_i, f);
     with_eq_zero_fast(b, v_w, add_f, |b| {
         b.ccx(f, add_f, m_i);
@@ -5688,7 +5767,7 @@ fn kaliski_branch_backward(
 ) {
     let n = v_in.len();
     for i in (0..iters).rev() {
-        kaliski_branch_iteration_backward(b, &st.u, &st.v_w, st.m_hist[i], st.a_hist[i], st.f_flag);
+        kaliski_branch_iteration_backward(b, &st.u, &st.v_w, st.m_hist[i], st.a_hist[i], None, st.f_flag);
     }
     b.x(st.f_flag);
     for i in 0..n {
@@ -5721,7 +5800,8 @@ fn kaliski_branch_record_forward(
             &st.v_w,
             st.m_hist[i],
             st.a_hist[i],
-            st.add_hist[i],
+            Some(st.add_hist[i]),
+            None,
             st.f_flag,
         );
     }
@@ -5753,6 +5833,95 @@ fn kaliski_branch_record_backward(
             b.x(st.u[i]);
         }
     }
+}
+
+fn kaliski_branch_record_forward_term(
+    b: &mut B,
+    v_in: &[QubitId],
+    st: &KaliskiBranchState,
+    term_bits: &[QubitId],
+    p: U256,
+    iters: usize,
+) {
+    let n = v_in.len();
+    for i in 0..n {
+        if bit(p, i) {
+            b.x(st.u[i]);
+        }
+        b.cx(v_in[i], st.v_w[i]);
+    }
+    b.x(st.f_flag);
+    for i in 0..iters {
+        kaliski_branch_iteration_record(
+            b,
+            &st.u,
+            &st.v_w,
+            st.m_hist[i],
+            st.a_hist[i],
+            None,
+            Some((term_bits, i)),
+            st.f_flag,
+        );
+    }
+}
+
+fn kaliski_branch_record_backward_term(
+    b: &mut B,
+    v_in: &[QubitId],
+    st: &KaliskiBranchState,
+    term_bits: &[QubitId],
+    p: U256,
+    iters: usize,
+) {
+    let n = v_in.len();
+    for i in (0..iters).rev() {
+        kaliski_branch_iteration_backward(
+            b,
+            &st.u,
+            &st.v_w,
+            st.m_hist[i],
+            st.a_hist[i],
+            Some((term_bits, i)),
+            st.f_flag,
+        );
+    }
+    b.x(st.f_flag);
+    for i in 0..n {
+        b.cx(v_in[i], st.v_w[i]);
+        if bit(p, i) {
+            b.x(st.u[i]);
+        }
+    }
+}
+
+fn with_kal_branch_term_tagged_div<F: FnOnce(&mut B)>(
+    b: &mut B,
+    v_in: &[QubitId],
+    p: U256,
+    iters: usize,
+    coeff: (&[QubitId], &[QubitId]),
+    body: F,
+) {
+    let n = v_in.len();
+    let mut st = alloc_kaliski_branch_state_no_add(b, n, iters);
+    let term_bits = b.alloc_qubits(9);
+    kaliski_branch_record_forward_term(b, v_in, &st, &term_bits, p, iters);
+
+    b.x(st.u[0]);
+    b.free_vec(&st.u);
+    b.free_vec(&st.v_w);
+    b.free(st.f_flag);
+
+    apply_coeff_channel_from_term_index(b, p, coeff.0, coeff.1, &st.a_hist, &st.m_hist, &term_bits);
+    body(b);
+
+    st.u = b.alloc_qubits(n);
+    st.v_w = b.alloc_qubits(n);
+    st.f_flag = b.alloc_qubit();
+    b.x(st.u[0]);
+    kaliski_branch_record_backward_term(b, v_in, &st, &term_bits, p, iters);
+    b.free_vec(&term_bits);
+    free_kaliski_branch_state(b, st);
 }
 
 fn with_kal_branch_stream_tagged_div<F: FnOnce(&mut B)>(
@@ -6244,9 +6413,11 @@ fn build_standard_point_add(
     let coeff_channel_div = std::env::var("KAL_TAGGED_DIV_COEFF_CHANNEL").ok().as_deref() == Some("1");
     let branch_hist_div = std::env::var("KAL_TAGGED_DIV_BRANCH_HIST").ok().as_deref() == Some("1");
     let branch_stream_div = std::env::var("KAL_TAGGED_DIV_BRANCH_STREAM").ok().as_deref() == Some("1");
+    let branch_term_div = std::env::var("KAL_TAGGED_DIV_BRANCH_TERM").ok().as_deref() == Some("1");
     let tagged_div_validate = coeff_channel_div
         || branch_hist_div
         || branch_stream_div
+        || branch_term_div
         || std::env::var("KAL_TAGGED_DIV_VALIDATE").ok().as_deref() == Some("1");
     let pair1_iters = 407;
     // The tagged validation paths change the op stream / Fiat-Shamir seed;
@@ -6263,7 +6434,31 @@ fn build_standard_point_add(
     }
 
     let lam_cell: std::cell::RefCell<Option<Vec<QubitId>>> = std::cell::RefCell::new(None);
-    if branch_stream_div {
+    if branch_term_div {
+        // Compressed branch stream: store m_hist+a_hist plus a 9-bit terminal
+        // index instead of a full add_hist. Coefficient replay reconstructs
+        // active VG adds using term_idx > i.
+        let lam_inner = b.alloc_qubits(N);
+        let lam_coeff = lam_inner.clone();
+        let ty_coeff: Vec<QubitId> = ty.to_vec();
+        b.set_phase("pair1_kaliski_branch_term");
+        with_kal_branch_term_tagged_div(
+            b,
+            &tx,
+            p,
+            pair1_iters,
+            (&lam_coeff, &ty_coeff),
+            |b| {
+                b.set_phase("pair1_branch_term_halve");
+                for _ in 0..pair1_iters {
+                    mod_halve_inplace_fast(b, &lam_inner, p);
+                }
+                b.set_phase("pair1_branch_term_untag_lam");
+                mod_add_qc(b, &lam_inner, U256::from(1u64), p);
+                *lam_cell.borrow_mut() = Some(lam_inner);
+            },
+        );
+    } else if branch_stream_div {
         // Branch-generation stream: record just branch histories, free the
         // denominator state, then replay those histories into the tagged
         // coefficient channel. This tests the qubit shape that a future
