@@ -367,12 +367,32 @@ trajectories, reversing it needed rank up to `71769` (`17` bits/window), and a
 16-bit/window rank would fail about `10.95%` of inversions. So low-ratio-only
 state is not the 600-scratch escape.
 
+Carry-slack correction: the earlier shifted-row cost helper truncated carries
+when summing multi-bit coefficients. After fixing it to extend addends to the
+remaining row width, the 3-pair full BY cleanup model becomes `≈1.03M` Toffoli
+but `≈2852q`, just over the current cap. The 2-pair optimistic integer-cleanup
+lower bound is `≈575k` at 35 windows but `≈2304q` (`≈1792q` beyond two field
+registers), so it is not a 600-scratch primitive by itself.
+
+Positive forward-row progress:
+
+- `noncanonical_scaled_pair_map_is_injective_on_canonical_domain` shows the
+  two-row scaled matrix map can be injective on canonical input pairs even
+  though one row alone loses representative quotient. This keeps fixed-matrix
+  pair replacement algebraically possible.
+- `fixed_positive_matrix_forward_rows_clean_m_and_match_classical` builds and
+  simulates the first actual noncanonical forward row circuit for the positive
+  matrix `[[65536,0],[65535,1]]`: correction `m` is computed from the original
+  sources and uncomputed from those same sources after the shift. It matches
+  the classical rows on 32 random basis states at `8772 CCX`, peak `1624q` for
+  forward rows only. Old-row cleanup remains open.
+
 This reopens BY as a live SOTA-shaped route but with precise remaining
 obstacles: quotient cleanup for noncanonical row scaling, and branch/matrix
 history compression. Approximate scaled modular jump is plausibly comparable to
 the integer denominator jump only if quotient cleanup is fused cheaply with row
 formation. The next implementation target is a fixed-matrix row circuit that
-proves quotient cleanup, then a BY tagged-DIV scaffold.
+proves old-row quotient cleanup, then a BY tagged-DIV scaffold.
 
 ### Program B — triangular one-inversion schedule (highest payoff, highest risk)
 

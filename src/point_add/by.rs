@@ -1199,14 +1199,22 @@ mod tests {
         if shift >= dst.len() {
             return;
         }
-        let len = src.len().min(dst.len() - shift);
-        let src_slice: Vec<_> = src[..len].to_vec();
+        let len = dst.len() - shift;
+        let addend = b.alloc_qubits(len);
+        let copy_len = src.len().min(len);
+        for i in 0..copy_len {
+            b.cx(src[i], addend[i]);
+        }
         let dst_slice: Vec<_> = dst[shift..shift + len].to_vec();
         if subtract {
-            super::super::sub_nbit_qq_fast(b, &src_slice, &dst_slice);
+            super::super::sub_nbit_qq_fast(b, &addend, &dst_slice);
         } else {
-            super::super::add_nbit_qq_fast(b, &src_slice, &dst_slice);
+            super::super::add_nbit_qq_fast(b, &addend, &dst_slice);
         }
+        for i in 0..copy_len {
+            b.cx(src[i], addend[i]);
+        }
+        b.free_vec(&addend);
     }
 
     fn add_coeff_times_for_cost(
@@ -1361,7 +1369,7 @@ mod tests {
             "scaled BY w=16 pair update+cleanup probe: mean_ccx={mean_ccx:.1}, max_peak={max_peak}"
         );
         assert!(mean_ccx < 9_000.0, "scaled pair replacement too expensive");
-        assert!(max_peak < 1_600, "single-pair replacement peak unexpectedly high");
+        assert!(max_peak < 1_800, "single-pair replacement peak unexpectedly high");
     }
 
     fn cadd_qq_fast_for_cost(
@@ -1931,6 +1939,202 @@ mod tests {
         add_shifted_small_reg_for_cost(b, &k, v, 256, true);
     }
 
+    fn add_low_coeff_mod16_for_cost(
+        b: &mut super::super::B,
+        coeff_mod: u64,
+        src: &[super::super::QubitId],
+        dst: &[super::super::QubitId],
+        inverse: bool,
+    ) {
+        assert_eq!(dst.len(), 16);
+        if inverse {
+            for sh in (0..16usize).rev() {
+                if ((coeff_mod >> sh) & 1) != 0 {
+                    add_shifted_term_for_cost(b, src, dst, sh, true);
+                }
+            }
+        } else {
+            for sh in 0..16usize {
+                if ((coeff_mod >> sh) & 1) != 0 {
+                    add_shifted_term_for_cost(b, src, dst, sh, false);
+                }
+            }
+        }
+    }
+
+    fn compute_row_correction_m_from_sources(
+        b: &mut super::super::B,
+        coeff0: i128,
+        src0: &[super::super::QubitId],
+        coeff1: i128,
+        src1: &[super::super::QubitId],
+        m: &[super::super::QubitId],
+        inverse: bool,
+    ) {
+        const W: u64 = 1u64 << 16;
+        let neg_pinv = ((!51_919u64).wrapping_add(1)) & (W - 1);
+        let c0 = ((coeff0.rem_euclid(W as i128) as u64).wrapping_mul(neg_pinv)) & (W - 1);
+        let c1 = ((coeff1.rem_euclid(W as i128) as u64).wrapping_mul(neg_pinv)) & (W - 1);
+        if inverse {
+            add_low_coeff_mod16_for_cost(b, c1, src1, m, true);
+            add_low_coeff_mod16_for_cost(b, c0, src0, m, true);
+        } else {
+            add_low_coeff_mod16_for_cost(b, c0, src0, m, false);
+            add_low_coeff_mod16_for_cost(b, c1, src1, m, false);
+        }
+    }
+
+    fn emit_positive_row_scaled_from_sources_for_test(
+        b: &mut super::super::B,
+        coeff0: i128,
+        src0: &[super::super::QubitId],
+        coeff1: i128,
+        src1: &[super::super::QubitId],
+        out: &[super::super::QubitId],
+    ) {
+        add_coeff_times_for_cost(b, coeff0, src0, out);
+        add_coeff_times_for_cost(b, coeff1, src1, out);
+        let m = b.alloc_qubits(16);
+        compute_row_correction_m_from_sources(b, coeff0, src0, coeff1, src1, &m, false);
+        for &sh in &[0usize, 4, 6, 7, 8, 9, 32] {
+            add_shifted_small_reg_for_cost(b, &m, out, sh, true);
+        }
+        add_shifted_small_reg_for_cost(b, &m, out, 256, false);
+        for i in 0..(out.len() - 16) {
+            b.swap(out[i], out[i + 16]);
+        }
+        compute_row_correction_m_from_sources(b, coeff0, src0, coeff1, src1, &m, true);
+        b.free_vec(&m);
+    }
+
+    #[test]
+    fn row_correction_m_from_sources_circuit_matches_classical() {
+        let mut b = super::super::B::new();
+        let x0 = b.alloc_qubits(256);
+        let x1 = b.alloc_qubits(256);
+        let m = b.alloc_qubits(16);
+        compute_row_correction_m_from_sources(&mut b, 65535, &x0, 1, &x1, &m, false);
+        let ops = b.ops;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let a = U256::from_limbs([
+            0x7f7df51fc0ad69fa,
+            0x79422d087c39ea56,
+            0x00a59c1897e6d50a,
+            0xfc2ad18cfe76cc7f,
+        ]) % SECP256K1_P;
+        let c = U256::from_limbs([
+            0x96e72f29e7c30894,
+            0x4ae30ac8953f8e71,
+            0xc9ab887a528b640a,
+            0x9d92bbd5d05a25ba,
+        ]) % SECP256K1_P;
+        let pinv = 51_919u64;
+        let low = ((a.as_limbs()[0].wrapping_neg()).wrapping_add(c.as_limbs()[0])) & 0xffff;
+        let expected = low.wrapping_mul((!pinv).wrapping_add(1)) & 0xffff;
+        let mut hasher = sha3::Shake128::default();
+        hasher.update(b"by-row-correction-m-sim-v1");
+        let mut xof = hasher.finalize_xof();
+        let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+        set_slice_u512_by(&mut sim, &x0, u256_to_u512_for_by_tests(a));
+        set_slice_u512_by(&mut sim, &x1, u256_to_u512_for_by_tests(c));
+        sim.apply(&ops);
+        let got = get_slice_u512_by(&sim, &m).to::<u64>();
+        assert_eq!(got, expected, "m mismatch got={got} exp={expected}");
+    }
+
+    #[test]
+    fn fixed_positive_matrix_forward_rows_clean_m_and_match_classical() {
+        // First actual noncanonical row circuit: m is computed from the original
+        // row sources and uncomputed from those same sources after the shift,
+        // so no top-bit recovery or quotient history is needed for the forward
+        // rows. This is only the forward half for a positive sampled matrix;
+        // old-row cleanup is still the open problem.
+        const WIDTH: usize = 274;
+        let mtx = jump_matrix_direct_lowword(16, 16, -20, 1, 1).3;
+        assert_eq!((mtx.m00, mtx.m01, mtx.m10, mtx.m11), (65536, 0, 65535, 1));
+        let mut b = super::super::B::new();
+        let x0 = b.alloc_qubits(256);
+        let x1 = b.alloc_qubits(256);
+        let y0 = b.alloc_qubits(WIDTH);
+        let y1 = b.alloc_qubits(WIDTH);
+        emit_positive_row_scaled_from_sources_for_test(&mut b, mtx.m00, &x0, mtx.m01, &x1, &y0);
+        emit_positive_row_scaled_from_sources_for_test(&mut b, mtx.m10, &x0, mtx.m11, &x1, &y1);
+        let ccx = count_ccx(&b.ops);
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let p512 = u256_to_u512_for_by_tests(SECP256K1_P);
+        let pinv = 51_919u64;
+        let mask = (1u64 << 16) - 1;
+        let mut sx = Sampler::new(b"by-fixed-positive-row-x0-v1", SECP256K1_P);
+        let mut sy = Sampler::new(b"by-fixed-positive-row-x1-v1", SECP256K1_P);
+        for _ in 0..32 {
+            let a = sx.next();
+            let c = sy.next();
+            let t0 = u256_to_u512_for_by_tests(a) * U512::from(mtx.m00 as u128);
+            let low0 = t0.as_limbs()[0] & mask;
+            let corr0 = low0.wrapping_mul((!pinv).wrapping_add(1)) & mask;
+            let exp0: U512 = (t0 + U512::from(corr0) * p512) >> 16usize;
+            let t1 = u256_to_u512_for_by_tests(a) * U512::from(mtx.m10 as u128)
+                + u256_to_u512_for_by_tests(c) * U512::from(mtx.m11 as u128);
+            let low1 = t1.as_limbs()[0] & mask;
+            let corr1 = low1.wrapping_mul((!pinv).wrapping_add(1)) & mask;
+            let exp1: U512 = (t1 + U512::from(corr1) * p512) >> 16usize;
+            let mut hasher = sha3::Shake128::default();
+            hasher.update(b"by-fixed-positive-row-sim-v1");
+            let mut xof = hasher.finalize_xof();
+            let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+            set_slice_u512_by(&mut sim, &x0, u256_to_u512_for_by_tests(a));
+            set_slice_u512_by(&mut sim, &x1, u256_to_u512_for_by_tests(c));
+            sim.apply(&ops);
+            let got0 = get_slice_u512_by(&sim, &y0);
+            let got1 = get_slice_u512_by(&sim, &y1);
+            assert_eq!(got0, exp0, "row0 mismatch a={a} got={got0} exp={exp0}");
+            assert_eq!(got1, exp1, "row1 mismatch a={a} c={c} got={got1} exp={exp1}");
+        }
+        eprintln!(
+            "fixed positive BY matrix forward rows: ccx={ccx}, peak={}q, matrix={:?}",
+            num_qubits, mtx
+        );
+        assert!(ccx < 20_000, "forward rows too expensive for BY window budget");
+    }
+
+    #[test]
+    fn noncanonical_scaled_pair_map_is_injective_on_canonical_domain() {
+        // Row scaling alone loses representative quotient (T and T+p collide),
+        // but the TWO-row matrix map can still be injective on canonical input
+        // pairs because det(P)=±2^w and p is odd. This is the algebraic reason
+        // a fixed-matrix pair replacement might clean quotient bits using both
+        // rows/sources instead of storing m histories.
+        use std::collections::HashSet;
+        let p_small: i128 = 251;
+        let w = 4usize;
+        let mask = (1i128 << w) - 1;
+        let pinv = 3i128; // 251^{-1} mod 16.
+        let matrices = [
+            jump_matrix_direct_lowword(w, w, 1, 1, 3).3,
+            jump_matrix_direct_lowword(w, w, -3, 1, 5).3,
+            jump_matrix_direct_lowword(w, w, 7, 1, -2).3,
+            jump_matrix_direct_lowword(w, w, 0, 1, 6).3,
+        ];
+        for mtx in matrices {
+            det_sign_pow2(mtx, w);
+            let mut seen = HashSet::new();
+            for x0 in 0..p_small {
+                for x1 in 0..p_small {
+                    let t0 = mtx.m00 * x0 + mtx.m01 * x1;
+                    let t1 = mtx.m10 * x0 + mtx.m11 * x1;
+                    let c0 = (-(t0 & mask) * pinv) & mask;
+                    let c1 = (-(t1 & mask) * pinv) & mask;
+                    let q0 = (t0 + c0 * p_small) >> w;
+                    let q1 = (t1 + c1 * p_small) >> w;
+                    assert!(seen.insert((q0, q1)), "collision for matrix {:?} at ({x0},{x1})", mtx);
+                }
+            }
+        }
+    }
+
     #[test]
     fn noncanonical_batched_shift_needs_quotient_uncompute() {
         // Important caveat for the highfold idea: for noncanonical T, the final
@@ -2238,15 +2442,16 @@ mod tests {
             "BY optimistic 2-pair integer-cleanup lower bound: width={WIDTH}, mean_pair_ccx={mean_pair_ccx:.1}, exact≈{exact_ccx:.0}, approx≈{approx_ccx:.0}, scheduled_peak≈{scheduled_peak}q, scratch_beyond_2n≈{scratch_beyond_two_field_regs}q"
         );
         assert!(approx_ccx < 600_000.0, "approx tagged-DIV BY budget not SOTA-shaped");
-        assert!(scheduled_peak < 2_100, "two-pair BY tagged-DIV model peak too high");
+        assert!(scheduled_peak < 2_400, "two-pair BY tagged-DIV lower-bound peak too high");
     }
 
     #[test]
-    fn jumpdivstep_full_state_cleanup_budget_model() {
+    fn jumpdivstep_full_state_cleanup_budget_exceeds_2800_after_carry_fix() {
         // Stronger model than row-only: use the measured replacement+cleanup
         // pair cost and schedule the three BY pairs sequentially. This is the
         // best current proxy for a real jumped-BY inversion before low-word
-        // matrix synthesis is included.
+        // matrix synthesis is included. After fixing shifted-row carry slack,
+        // this full 3-pair state no longer fits the current 2800q cap.
         const N: usize = 256;
         const W: usize = 16;
         const WIDTH: usize = N + W + 2;
@@ -2282,7 +2487,7 @@ mod tests {
             "BY full-state cleanup budget: width={WIDTH}, mean_pair_ccx={mean_pair_ccx:.1}, exact≈{exact_ccx:.0}, approx≈{approx_ccx:.0}, scheduled_peak≈{scheduled_peak}q"
         );
         assert!(exact_ccx < 1_250_000.0, "exact BY cleanup budget no longer competitive");
-        assert!(scheduled_peak < 2_800, "scheduled BY cleanup model exceeds cap");
+        assert!(scheduled_peak > 2_800, "3-pair BY cleanup unexpectedly fits again; revisit full inverse path");
     }
 
     #[test]
