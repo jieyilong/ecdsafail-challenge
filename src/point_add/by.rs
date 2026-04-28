@@ -3463,6 +3463,98 @@ mod tests {
     }
 
     #[test]
+    fn scaled_by_pattern_history_560_tagged_div_scaffold_reduces_peak() {
+        let p = SECP256K1_P;
+        let inv2 = (p.wrapping_add(U256::from(1u64))) >> 1usize;
+        let mut sx = Sampler::new(b"by-pattern-560-sim-x-v1", p);
+        let mut sy = Sampler::new(b"by-pattern-560-sim-y-v1", p);
+        let (x, y, controls, exp_r, exp_s, f_final) = loop {
+            let x = sx.next();
+            let y = sy.next();
+            let mut delta = 1i64;
+            let mut f = SInt::from_u(p);
+            let mut g = SInt::from_u(x);
+            let mut r_exp = U256::ZERO;
+            let mut s_exp = addm(y, x, p);
+            let mut controls = Vec::with_capacity(560);
+            for _ in 0..560 {
+                let odd = g.bit0();
+                let a = delta > 0 && odd;
+                controls.push((odd, a));
+                if a {
+                    let nr = s_exp;
+                    let ns = mulm(subm(s_exp, r_exp, p), inv2, p);
+                    r_exp = nr;
+                    s_exp = ns;
+                } else if odd {
+                    s_exp = mulm(addm(s_exp, r_exp, p), inv2, p);
+                } else {
+                    s_exp = mulm(s_exp, inv2, p);
+                }
+                divstep_sint_state(&mut delta, &mut f, &mut g);
+            }
+            if g.is_zero() && (f.is_one_pos() || f.is_one_neg()) {
+                break (x, y, controls, r_exp, s_exp, f);
+            }
+        };
+
+        let mut b = super::super::B::new();
+        let pattern = b.alloc_qubits(560); // raw pattern history; compressed IDs are a later decoder layer.
+        let a_scratch = b.alloc_qubits(16);
+        let r = b.alloc_qubits(256);
+        let s = b.alloc_qubits(256);
+        for win in 0..35 {
+            for i in 0..16 {
+                if controls[win * 16 + i].1 {
+                    b.x(a_scratch[i]);
+                }
+            }
+            for i in 0..16 {
+                emit_scaled_by_controlled_microstep_for_test(
+                    &mut b,
+                    &r,
+                    &s,
+                    pattern[win * 16 + i],
+                    a_scratch[i],
+                    p,
+                );
+            }
+            for i in 0..16 {
+                if controls[win * 16 + i].1 {
+                    b.x(a_scratch[i]);
+                }
+            }
+        }
+        let ccx = count_ccx(&b.ops);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let mut hasher = sha3::Shake128::default();
+        hasher.update(b"by-pattern-560-sim-xof-v1");
+        let mut xof = hasher.finalize_xof();
+        let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+        for (i, &(odd_v, _)) in controls.iter().enumerate() {
+            if odd_v {
+                *sim.qubit_mut(pattern[i]) |= 1;
+            }
+        }
+        set_slice_u512_by(&mut sim, &r, U512::ZERO);
+        set_slice_u512_by(&mut sim, &s, u256_to_u512_for_by_tests(addm(y, x, p)));
+        sim.apply(&ops);
+        assert_eq!(get_slice_u512_by(&sim, &r), u256_to_u512_for_by_tests(exp_r), "r mismatch");
+        assert_eq!(get_slice_u512_by(&sim, &s), u256_to_u512_for_by_tests(exp_s), "s mismatch");
+        assert_eq!(exp_s, U256::ZERO, "bottom tagged channel did not zero");
+        let plus_one = if f_final.is_one_pos() { exp_r } else { negm(exp_r, p) };
+        let quotient = subm(plus_one, U256::from(1u64), p);
+        assert_eq!(quotient, mulm(y, fermat_modinv(x, p), p), "tagged quotient mismatch");
+        eprintln!(
+            "BY pattern-history 560-step tagged-DIV scaffold: ccx={ccx}, peak={peak}q, raw_pattern_bits=560"
+        );
+        assert!(peak < 1_900, "raw pattern-history scaffold peak too high");
+    }
+
+    #[test]
     fn scaled_by_controlled_560_tagged_div_basis_simulation() {
         let p = SECP256K1_P;
         let inv2 = (p.wrapping_add(U256::from(1u64))) >> 1usize;

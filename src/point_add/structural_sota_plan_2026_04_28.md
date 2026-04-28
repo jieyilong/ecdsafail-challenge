@@ -630,10 +630,18 @@ further: for a sampled converged denominator it sets all 560 controls, starts
 bottom channel zero, and recovers `y/x` as `sign(f)*r-1`.
 
 The raw `(odd,A)` controls can be compressed further because A is not an
-independent bit. `window_pattern_and_delta_reconstruct_a_controls` proves that a
-16-bit odd-pattern plus the starting delta reconstructs all 16 A-controls and
-the next delta. Thus the history payload can be branch patterns only; A-controls
-are decoder scratch. A pessimistic reversible decoder estimate in
+independent bit. `scaled_by_pattern_history_560_tagged_div_scaffold_reduces_peak`
+replaces the 1120 raw control qubits by 560 raw odd-pattern bits plus one
+16-bit A scratch window and still simulates tagged-DIV correctly:
+
+```text
+raw-pattern 560-step scaffold = 1,145,760 CCX, peak 1,861q
+```
+
+`window_pattern_and_delta_reconstruct_a_controls` proves that a 16-bit
+odd-pattern plus the starting delta reconstructs all 16 A-controls and the next
+delta. Thus the history payload can be branch patterns only; A-controls are
+decoder scratch. A pessimistic reversible decoder estimate in
 `pattern_decoder_budget_fits_branch_decode_margin` uses a 10-bit signed delta
 register and still costs only:
 
