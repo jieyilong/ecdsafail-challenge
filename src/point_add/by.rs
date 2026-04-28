@@ -3727,6 +3727,95 @@ mod tests {
         (a_mask, delta)
     }
 
+    fn emit_pattern_delta_decode_window_for_test(
+        b: &mut super::super::B,
+        pattern: &[super::super::QubitId],
+        delta: &[super::super::QubitId],
+        a_bits: &[super::super::QubitId],
+    ) {
+        assert_eq!(pattern.len(), a_bits.len());
+        for i in 0..pattern.len() {
+            let positive = b.alloc_qubit();
+            emit_delta_positive_into_for_test(b, delta, positive);
+            b.ccx(pattern[i], positive, a_bits[i]);
+            emit_delta_positive_into_for_test(b, delta, positive);
+            b.free(positive);
+            emit_twos_complement_cneg_for_test(b, delta, a_bits[i]);
+            super::super::add_nbit_const_fast(b, delta, U256::from(1u64));
+        }
+    }
+
+    fn emit_pattern_delta_decode_window_reverse_for_test(
+        b: &mut super::super::B,
+        pattern: &[super::super::QubitId],
+        delta: &[super::super::QubitId],
+        a_bits: &[super::super::QubitId],
+    ) {
+        assert_eq!(pattern.len(), a_bits.len());
+        for i in (0..pattern.len()).rev() {
+            super::super::sub_nbit_const_fast(b, delta, U256::from(1u64));
+            emit_twos_complement_cneg_for_test(b, delta, a_bits[i]);
+            let positive = b.alloc_qubit();
+            emit_delta_positive_into_for_test(b, delta, positive);
+            b.ccx(pattern[i], positive, a_bits[i]);
+            emit_delta_positive_into_for_test(b, delta, positive);
+            b.free(positive);
+        }
+    }
+
+    fn twos_u512_for_delta(delta: i64, width: usize) -> U512 {
+        let modulus = 1i128 << width;
+        let v = if delta < 0 { modulus + delta as i128 } else { delta as i128 };
+        U512::from(v as u128)
+    }
+
+    #[test]
+    fn reversible_pattern_delta_decoder_matches_and_cleans() {
+        const W: usize = 16;
+        const DBITS: usize = 12;
+        let mut b = super::super::B::new();
+        let pattern = b.alloc_qubits(W);
+        let delta = b.alloc_qubits(DBITS);
+        let a_bits = b.alloc_qubits(W);
+        emit_pattern_delta_decode_window_for_test(&mut b, &pattern, &delta, &a_bits);
+        let forward_ops_len = b.ops.len();
+        emit_pattern_delta_decode_window_reverse_for_test(&mut b, &pattern, &delta, &a_bits);
+        let total_ccx = count_ccx(&b.ops);
+        let forward_ccx = count_ccx(&b.ops[..forward_ops_len]);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let cases = [
+            (0x0000u16, 1i64),
+            (0xffffu16, 1i64),
+            (0xa55au16, 7i64),
+            (0x5015u16, -3i64),
+            (0x8c31u16, 19i64),
+        ];
+        for &(pat, d0) in &cases {
+            let (exp_a, exp_delta) = a_mask_from_pattern_and_delta_for_test(pat, W, d0);
+            let mut hasher = sha3::Shake128::default();
+            hasher.update(b"by-pattern-delta-decoder-v1");
+            let mut xof = hasher.finalize_xof();
+            let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+            set_slice_u512_by(&mut sim, &pattern, U512::from(pat));
+            set_slice_u512_by(&mut sim, &delta, twos_u512_for_delta(d0, DBITS));
+            sim.apply(&ops[..forward_ops_len]);
+            assert_eq!(get_slice_u512_by(&sim, &a_bits), U512::from(exp_a), "A-mask mismatch for {pat:#x}/{d0}");
+            assert_eq!(get_slice_u512_by(&sim, &delta), twos_u512_for_delta(exp_delta, DBITS), "delta mismatch for {pat:#x}/{d0}");
+            sim.apply(&ops[forward_ops_len..]);
+            assert_eq!(get_slice_u512_by(&sim, &pattern), U512::from(pat), "pattern changed");
+            assert_eq!(get_slice_u512_by(&sim, &delta), twos_u512_for_delta(d0, DBITS), "delta did not restore");
+            assert_eq!(get_slice_u512_by(&sim, &a_bits), U512::ZERO, "A scratch not cleaned");
+            assert_eq!(sim.global_phase() & 1, 0, "phase garbage");
+        }
+        eprintln!(
+            "BY reversible pattern+delta decoder: forward_ccx={forward_ccx}, roundtrip_ccx={total_ccx}, peak={peak}q"
+        );
+        assert!(forward_ccx < 2_000, "pattern decoder synthesis exceeds budget");
+    }
+
     #[test]
     fn pattern_decoder_budget_fits_branch_decode_margin() {
         // Rough reversible budget for pattern+delta -> A-mask+next-delta. Delta

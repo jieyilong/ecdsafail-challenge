@@ -641,16 +641,26 @@ raw-pattern 560-step scaffold = 1,145,760 CCX, peak 1,861q
 `window_pattern_and_delta_reconstruct_a_controls` proves that a 16-bit
 odd-pattern plus the starting delta reconstructs all 16 A-controls and the next
 delta. Thus the history payload can be branch patterns only; A-controls are
-decoder scratch. A pessimistic reversible decoder estimate in
-`pattern_decoder_budget_fits_branch_decode_margin` uses a 10-bit signed delta
-register and still costs only:
+decoder scratch. The decoder is now an actual reversible circuit, not only a
+budget line: `reversible_pattern_delta_decoder_matches_and_cleans` implements
 
 ```text
-~41 CCX/step, ~22,960 CCX total
+(pattern, delta_start, A=0) -> (pattern, delta_next, A_mask)
 ```
 
-This fits comfortably inside the 150k branch/decode margin used in the whole
-point-add budget.
+and its inverse. It matches sampled patterns/deltas, restores `delta_start`,
+cleans A, and is phase clean:
+
+```text
+one 16-step window decoder: 1,808 CCX forward, 3,616 CCX roundtrip, peak 68q
+35 windows forward-only:    ≈63,280 CCX
+```
+
+This is inside the 150k branch/decode margin used in the whole point-add budget.
+The remaining integration subtlety is scheduling: clearing A immediately with
+the inverse also restores `delta_start`, so a production replay needs either a
+small delta pebble, a reverse-from-`delta_next` A-clearer, or on-the-fly A use
+inside a self-cleaning window.
 
 `compressed_pattern_history_scratch_model_is_600q_if_add_workspace_is_removed`
 spells out the remaining scratch equation:
