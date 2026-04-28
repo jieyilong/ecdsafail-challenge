@@ -604,6 +604,15 @@ one scaled controlled microstep = 2046 CCX, peak 1287q
 560 steps                       ≈ 1,145,760 CCX
 ```
 
+`scaled_by_controlled_window_matches_jump_matrix` composes 16 such controlled
+microsteps for the sample window and verifies the circuit equals
+`2^-16 P(r,s)` for the sampled jump matrix:
+
+```text
+16-step controlled window = 32,736 CCX, peak 1,317q
+matrix = [[-8192,24576],[-3,1]]
+```
+
 This is the first coherent selected BY replay model in the right Toffoli band.
 It is not yet a complete DIV: branch-history compression/cleanup and the
 controlled-neg zero representative need production handling. But algebraically

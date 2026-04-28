@@ -3342,6 +3342,98 @@ mod tests {
         super::super::mod_halve_inplace_fast(b, s, p);
     }
 
+    fn branch_controls_for_lowword_window_for_test(
+        w: usize,
+        mut delta: i64,
+        mut f: i128,
+        mut g: i128,
+    ) -> Vec<(bool, bool)> {
+        let mut out = Vec::with_capacity(w);
+        f = truncate_i128(f, w);
+        g = truncate_i128(g, w);
+        for t in (1..=w).rev() {
+            f = truncate_i128(f, t);
+            let odd = (g & 1) != 0;
+            let a_case = delta > 0 && odd;
+            out.push((odd, a_case));
+            if a_case {
+                let nf = g;
+                let ng = (g - f) / 2;
+                delta = 1 - delta;
+                f = nf;
+                g = ng;
+            } else if odd {
+                g = (g + f) / 2;
+                delta = 1 + delta;
+            } else {
+                g /= 2;
+                delta = 1 + delta;
+            }
+            g = truncate_i128(g, t - 1);
+        }
+        out
+    }
+
+    #[test]
+    fn scaled_by_controlled_window_matches_jump_matrix() {
+        const W: usize = 16;
+        let p = SECP256K1_P;
+        let delta = 1i64;
+        let f_low = 1i128;
+        let g_low = 3i128;
+        let controls = branch_controls_for_lowword_window_for_test(W, delta, f_low, g_low);
+        let (_, _, _, pmat) = jump_matrix_direct_lowword(W, W, delta, f_low, g_low);
+        let mut b = super::super::B::new();
+        let odd = b.alloc_qubits(W);
+        let a_ctrl = b.alloc_qubits(W);
+        let r = b.alloc_qubits(256);
+        let s = b.alloc_qubits(256);
+        for i in 0..W {
+            emit_scaled_by_controlled_microstep_for_test(&mut b, &r, &s, odd[i], a_ctrl[i], p);
+        }
+        let ccx = count_ccx(&b.ops);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let inv2w = inv_pow2_mod_p_for_test(W, p);
+        let row_expected = |x0: U256, x1: U256, c0: i128, c1: i128| -> U256 {
+            let t0 = mulm(signed_i128_mod_p(c0, p), x0, p);
+            let t1 = mulm(signed_i128_mod_p(c1, p), x1, p);
+            mulm(addm(t0, t1, p), inv2w, p)
+        };
+        let mut sx = Sampler::new(b"by-scaled-window-r-v1", p);
+        let mut sy = Sampler::new(b"by-scaled-window-s-v1", p);
+        for _ in 0..16 {
+            let rv = sx.next();
+            let sv = sy.next();
+            let exp_r = row_expected(rv, sv, pmat.m00, pmat.m01);
+            let exp_s = row_expected(rv, sv, pmat.m10, pmat.m11);
+            let mut hasher = sha3::Shake128::default();
+            hasher.update(b"by-scaled-window-sim-v1");
+            let mut xof = hasher.finalize_xof();
+            let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+            for (i, &(odd_v, a_v)) in controls.iter().enumerate() {
+                if odd_v {
+                    *sim.qubit_mut(odd[i]) |= 1;
+                }
+                if a_v {
+                    *sim.qubit_mut(a_ctrl[i]) |= 1;
+                }
+            }
+            set_slice_u512_by(&mut sim, &r, u256_to_u512_for_by_tests(rv));
+            set_slice_u512_by(&mut sim, &s, u256_to_u512_for_by_tests(sv));
+            sim.apply(&ops);
+            assert_eq!(get_slice_u512_by(&sim, &r), u256_to_u512_for_by_tests(exp_r), "r mismatch");
+            assert_eq!(get_slice_u512_by(&sim, &s), u256_to_u512_for_by_tests(exp_s), "s mismatch");
+        }
+        eprintln!(
+            "BY scaled controlled 16-step window: ccx={ccx}, peak={peak}q, matrix={pmat:?}"
+        );
+        assert!(ccx < 35_000, "scaled controlled window too costly");
+        assert!(peak < 1_350, "scaled controlled window peak too high");
+    }
+
     #[test]
     fn scaled_by_controlled_microstep_matches_all_cases_and_hits_target_cost() {
         let p = SECP256K1_P;
