@@ -146,8 +146,26 @@ than ~2 q-q adds/subs plus one controlled shift per microstep, it cannot beat
 current Kaliski. If a low-coefficient t=2 or t=3 schedule can be synthesized
 with one scratch n-register and <=~1.5n Toffoli/step equivalent, it is live.
 
+Fresh survey from `kaliski_jump.rs` / scratch replay (10k inputs for the
+low-bit table, 2k inputs for quick t sweep):
+
+| t | distinct matrices | max coeff | mean log2 coeff | mean mixed rows |
+|---:|---:|---:|---:|---:|
+| 2 | 13 | 4 | 1.79 | 0.85 |
+| 3 | 41 | 8 | 2.58 | 1.12 |
+| 4 | 125 | 16 | 3.29 | 1.34 |
+| 6 | 1133 | 64 | 4.71 | 1.63 |
+
+Low-bit lookup is **not** enough: at `w=8,t=4`, each low-bit class still has
+`mean 4.49` possible matrices and up to `16`; at `w=8,t=6`, mean `9.46`, max
+`62`. So a cheap table keyed only by low bits is invalid. A real jumped
+Kaliski must either compute the comparator sequence coherently or use a
+Bernstein-Yang-like divstep variable that avoids full comparisons.
+
 Next concrete work: extend `kaliski_jump.rs` from matrix observation into a
-matrix-application lower-bound/synthesis search for `t=2,3`.
+matrix-application lower-bound/synthesis search for `t=2,3`, with comparator
+cost included. If t=2 cannot beat two ordinary iterations after paying for the
+second-step branch computation, kill this path quickly and move to BY/divstep.
 
 ### Program B — triangular one-inversion schedule (highest payoff, highest risk)
 
