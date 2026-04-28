@@ -386,6 +386,11 @@ Positive forward-row progress:
   sources and uncomputed from those same sources after the shift. It matches
   the classical rows on 32 random basis states at `8772 CCX`, peak `1624q` for
   forward rows only.
+- `signed_matrix_forward_rows_clean_m_and_match_twos_complement` extends the
+  forward-row circuit to a signed sampled matrix
+  `[[-8192,24576],[-3,1]]`, using arithmetic right shift after adding `m*p`.
+  It matches two's-complement classical rows on 32 random basis states at
+  `5563 CCX`, peak `1624q`.
 - `adjugate_m_correction_is_integral_for_sampled_by_matrices` proves the
   general cleanup algebra on samples: if `2^w y = P x + p m` and
   `det(P)=s 2^w`, then `s adj(P) y = x + p*(s adj(P)m/2^w)`, and the

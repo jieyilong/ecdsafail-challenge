@@ -1984,6 +1984,54 @@ mod tests {
         }
     }
 
+    fn arith_shift_right_mod_width_for_test(v: U512, width: usize, shift: usize) -> U512 {
+        let mut q = v >> shift;
+        if v.bit(width - 1) {
+            for i in (width - shift)..width {
+                q.set_bit(i, true);
+            }
+        }
+        q
+    }
+
+    fn signed_coeff_mod_width_for_test(c: i128, width: usize) -> U512 {
+        if c >= 0 {
+            U512::from(c as u128)
+        } else {
+            (U512::from(1u64) << width) - U512::from(c.unsigned_abs())
+        }
+    }
+
+    fn emit_signed_row_scaled_from_sources_for_test(
+        b: &mut super::super::B,
+        coeff0: i128,
+        src0: &[super::super::QubitId],
+        coeff1: i128,
+        src1: &[super::super::QubitId],
+        out: &[super::super::QubitId],
+    ) {
+        add_coeff_times_for_cost(b, coeff0, src0, out);
+        add_coeff_times_for_cost(b, coeff1, src1, out);
+        let m = b.alloc_qubits(16);
+        compute_row_correction_m_from_sources(b, coeff0, src0, coeff1, src1, &m, false);
+        for &sh in &[0usize, 4, 6, 7, 8, 9, 32] {
+            add_shifted_small_reg_for_cost(b, &m, out, sh, true);
+        }
+        add_shifted_small_reg_for_cost(b, &m, out, 256, false);
+        let sign = b.alloc_qubit();
+        b.cx(out[out.len() - 1], sign);
+        for i in 0..(out.len() - 16) {
+            b.swap(out[i], out[i + 16]);
+        }
+        for i in (out.len() - 16)..out.len() {
+            b.cx(sign, out[i]);
+        }
+        b.cx(out[out.len() - 1], sign);
+        b.free(sign);
+        compute_row_correction_m_from_sources(b, coeff0, src0, coeff1, src1, &m, true);
+        b.free_vec(&m);
+    }
+
     fn emit_positive_row_scaled_from_sources_for_test(
         b: &mut super::super::B,
         coeff0: i128,
@@ -2005,6 +2053,59 @@ mod tests {
         }
         compute_row_correction_m_from_sources(b, coeff0, src0, coeff1, src1, &m, true);
         b.free_vec(&m);
+    }
+
+    #[test]
+    fn signed_matrix_forward_rows_clean_m_and_match_twos_complement() {
+        const WIDTH: usize = 274;
+        let mtx = jump_matrix_direct_lowword(16, 16, 1, 1, 3).3;
+        assert!(mtx.m00 < 0 || mtx.m01 < 0 || mtx.m10 < 0 || mtx.m11 < 0, "sample matrix should exercise signs: {:?}", mtx);
+        let mut b = super::super::B::new();
+        let x0 = b.alloc_qubits(256);
+        let x1 = b.alloc_qubits(256);
+        let y0 = b.alloc_qubits(WIDTH);
+        let y1 = b.alloc_qubits(WIDTH);
+        emit_signed_row_scaled_from_sources_for_test(&mut b, mtx.m00, &x0, mtx.m01, &x1, &y0);
+        emit_signed_row_scaled_from_sources_for_test(&mut b, mtx.m10, &x0, mtx.m11, &x1, &y1);
+        let ccx = count_ccx(&b.ops);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let width_mod = U512::from(1u64) << WIDTH;
+        let width_mask = width_mod - U512::from(1u64);
+        let p512 = u256_to_u512_for_by_tests(SECP256K1_P);
+        let pinv = 51_919u64;
+        let low_mask = (1u64 << 16) - 1;
+        let mut sx = Sampler::new(b"by-signed-forward-row-x0-v1", SECP256K1_P);
+        let mut sy = Sampler::new(b"by-signed-forward-row-x1-v1", SECP256K1_P);
+        for _ in 0..32 {
+            let a = sx.next();
+            let c = sy.next();
+            let x0w = u256_to_u512_for_by_tests(a);
+            let x1w = u256_to_u512_for_by_tests(c);
+            let expected_row = |c0: i128, c1: i128| -> U512 {
+                let t = (x0w * signed_coeff_mod_width_for_test(c0, WIDTH)
+                    + x1w * signed_coeff_mod_width_for_test(c1, WIDTH)) & width_mask;
+                let corr = (t.as_limbs()[0] & low_mask).wrapping_mul((!pinv).wrapping_add(1)) & low_mask;
+                let v = (t + U512::from(corr) * p512) & width_mask;
+                arith_shift_right_mod_width_for_test(v, WIDTH, 16)
+            };
+            let exp0 = expected_row(mtx.m00, mtx.m01);
+            let exp1 = expected_row(mtx.m10, mtx.m11);
+            let mut hasher = sha3::Shake128::default();
+            hasher.update(b"by-signed-forward-row-sim-v1");
+            let mut xof = hasher.finalize_xof();
+            let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+            set_slice_u512_by(&mut sim, &x0, x0w);
+            set_slice_u512_by(&mut sim, &x1, x1w);
+            sim.apply(&ops);
+            assert_eq!(get_slice_u512_by(&sim, &y0), exp0, "signed row0 mismatch for {:?}", mtx);
+            assert_eq!(get_slice_u512_by(&sim, &y1), exp1, "signed row1 mismatch for {:?}", mtx);
+        }
+        eprintln!("signed BY matrix forward rows: ccx={ccx}, peak={peak}q, matrix={:?}", mtx);
+        assert!(ccx < 35_000, "signed forward rows too costly");
+        assert!(peak < 2_200, "signed forward row peak too high");
     }
 
     #[test]
