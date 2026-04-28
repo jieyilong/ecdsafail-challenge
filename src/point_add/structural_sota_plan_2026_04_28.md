@@ -438,12 +438,39 @@ scheduled peak model ≈ 2772q
 selector history ≈ 770 bits (35 × 22-bit delta,h key)
 ```
 
+`branch_bits_reconstruct_by_jump_matrix` proves a simpler exact selector:
+each `w=16` BY matrix is reconstructed from the 16 odd/even divstep branch bits
+plus starting delta. Thus 35 windows need exactly `560` selector bits, no
+large matrix IDs/QROM table. `branch_bit_history_by_tagged_div_budget_model`
+combines this with the modular replacement peak: `2224 + 560 + 16 = 2800q`.
+This is exact for matrix reconstruction but does not solve how to generate the
+branch bits from `x` without a denominator pass.
+
+`h_only_compressed_history_by_tagged_div_budget_model` sketches the next,
+more aggressive architecture: delete the full integer denominator pair and keep
+only low-ratio state `(delta,h)`, plus compressed matrix history. Using the
+measured modular fixed-matrix replacement cost and a conservative 480-bit
+history budget from the entropy experiment:
+
+```text
+mean modular window ≈ 19,219 CCX
+35 windows          ≈ 672,650 CCX
+modular peak        ≈ 2224q
+history budget      = 480q
+h/delta/control     ≈ 32q
+modeled peak        ≈ 2736q
+```
+
+This is the first BY model simultaneously under 1M Toffoli for the DIV-like
+component and under the current 2800q cap. It is not a circuit: it requires a
+reversible compressed-history selector and an h-only state update/reverse.
+
 This reopens BY as a live SOTA-shaped route but with precise remaining
 obstacles: branch/matrix history compression and integration into a 35-window
 BY tagged-DIV scaffold. The fixed-matrix replacement itself is now no longer a
-one-off; sampled arithmetic is around 1.0M Toffoli for a tagged DIV before
-selection/history overhead, plausibly cheaper than Kaliski but not yet a
-600-scratch primitive.
+one-off; sampled arithmetic is around 1.0M Toffoli for stored-matrix tagged DIV
+or ~0.67M for the h-only compressed-history model, plausibly cheaper than
+Kaliski but not yet a complete 600-scratch primitive.
 
 ### Program B — triangular one-inversion schedule (highest payoff, highest risk)
 

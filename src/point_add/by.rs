@@ -2573,6 +2573,147 @@ mod tests {
         assert!(fail_550 < 0.01, "550-bit matrix history would exceed 1% failure tolerance");
     }
 
+    fn branch_bits_for_lowword_window(w: usize, mut delta: i64, mut f: i128, mut g: i128) -> Vec<bool> {
+        let mut bits = Vec::with_capacity(w);
+        f = truncate_i128(f, w);
+        g = truncate_i128(g, w);
+        for t in (1..=w).rev() {
+            f = truncate_i128(f, t);
+            let odd = (g & 1) != 0;
+            bits.push(odd);
+            if delta > 0 && odd {
+                let nf = g;
+                let ng = (g - f) / 2;
+                delta = 1 - delta;
+                f = nf;
+                g = ng;
+            } else if odd {
+                g = (g + f) / 2;
+                delta = 1 + delta;
+            } else {
+                g /= 2;
+                delta = 1 + delta;
+            }
+            g = truncate_i128(g, t - 1);
+        }
+        bits
+    }
+
+    fn matrix_from_branch_bits(mut delta: i64, bits: &[bool]) -> TransitionMatrix {
+        let (mut p00, mut p01, mut p10, mut p11) = (1i128, 0i128, 0i128, 1i128);
+        for &odd in bits {
+            if delta > 0 && odd {
+                let (np00, np01, np10, np11) = (2 * p10, 2 * p11, -p00 + p10, -p01 + p11);
+                delta = 1 - delta;
+                p00 = np00;
+                p01 = np01;
+                p10 = np10;
+                p11 = np11;
+            } else if odd {
+                let (np00, np01, np10, np11) = (2 * p00, 2 * p01, p00 + p10, p01 + p11);
+                delta = 1 + delta;
+                p00 = np00;
+                p01 = np01;
+                p10 = np10;
+                p11 = np11;
+            } else {
+                p00 *= 2;
+                p01 *= 2;
+                delta = 1 + delta;
+            }
+        }
+        TransitionMatrix { m00: p00, m01: p01, m10: p10, m11: p11, delta_final: delta }
+    }
+
+    #[test]
+    fn branch_bits_reconstruct_by_jump_matrix() {
+        const W: usize = 16;
+        let mut hasher = sha3::Shake128::default();
+        hasher.update(b"by-branch-bits-reconstruct-v1");
+        let mut reader = hasher.finalize_xof();
+        let mut buf = [0u8; 24];
+        for _ in 0..10_000 {
+            reader.read(&mut buf);
+            let f_low = (u64::from_le_bytes(buf[0..8].try_into().unwrap()) as i128) | 1;
+            let g_low = u64::from_le_bytes(buf[8..16].try_into().unwrap()) as i128;
+            let delta = (u64::from_le_bytes(buf[16..24].try_into().unwrap()) % 41) as i64 - 20;
+            let (_, _, _, direct) = jump_matrix_direct_lowword(W, W, delta, f_low, g_low);
+            let bits = branch_bits_for_lowword_window(W, delta, f_low, g_low);
+            let rebuilt = matrix_from_branch_bits(delta, &bits);
+            assert_eq!(rebuilt, direct);
+        }
+    }
+
+    #[test]
+    fn branch_bit_history_by_tagged_div_budget_model() {
+        // Each w=16 BY matrix is exactly determined by the 16 odd/even branch
+        // bits plus the starting delta. This gives a concrete 560-bit selector
+        // history for 35 windows, unlike empirical entropy codes. It does not
+        // solve generation of those bits from x; it only makes the matrix
+        // selector representation compatible with the 2800q cap.
+        const WINDOWS: usize = 35;
+        const BRANCH_HISTORY_BITS: usize = WINDOWS * 16;
+        const DELTA_AND_CONTROL: usize = 16;
+        const MOD_PEAK: usize = 2224;
+        let peak_model = MOD_PEAK + BRANCH_HISTORY_BITS + DELTA_AND_CONTROL;
+        eprintln!(
+            "BY branch-bit history budget: branch_bits={BRANCH_HISTORY_BITS}, peak_model≈{peak_model}q"
+        );
+        assert!(peak_model <= 2_800, "branch-bit selector history does not fit cap");
+    }
+
+    #[test]
+    fn h_only_compressed_history_by_tagged_div_budget_model() {
+        // Structural target model: delete the full integer denominator pair and
+        // keep only the 16-bit low ratio h plus delta. Matrix/history is stored
+        // in a compressed code (empirical p99 below), and arithmetic is just the
+        // modular fixed-matrix replacement per window. This is not a circuit,
+        // but it is the first BY model that is simultaneously sub-MToffoli and
+        // under the 2800q cap.
+        const WINDOWS: usize = 35;
+        const WIDTH: usize = 274;
+        let mut hasher = sha3::Shake128::default();
+        hasher.update(b"by-h-only-compressed-budget-v1");
+        let mut reader = hasher.finalize_xof();
+        let mut buf = [0u8; 24];
+        let samples = 24usize;
+        let mut mod_costs = Vec::with_capacity(samples);
+        let mut mod_peaks = Vec::with_capacity(samples);
+        for _ in 0..samples {
+            reader.read(&mut buf);
+            let f_low = (u64::from_le_bytes(buf[0..8].try_into().unwrap()) as i128) | 1;
+            let g_low = u64::from_le_bytes(buf[8..16].try_into().unwrap()) as i128;
+            let delta = (u64::from_le_bytes(buf[16..24].try_into().unwrap()) % 41) as i64 - 20;
+            let (_, _, _, mtx) = jump_matrix_direct_lowword(16, 16, delta, f_low, g_low);
+            let mut b_mod = super::super::B::new();
+            let x0 = b_mod.alloc_qubits(256);
+            let x1 = b_mod.alloc_qubits(256);
+            let y0 = b_mod.alloc_qubits(WIDTH);
+            let y1 = b_mod.alloc_qubits(WIDTH);
+            emit_signed_row_scaled_from_sources_for_test(&mut b_mod, mtx.m00, &x0, mtx.m01, &x1, &y0);
+            emit_signed_row_scaled_from_sources_for_test(&mut b_mod, mtx.m10, &x0, mtx.m11, &x1, &y1);
+            let _regs = emit_fixed_matrix_old_cleanup_for_test(&mut b_mod, mtx, &x0, &x1, &y0, &y1);
+            mod_costs.push(count_ccx(&b_mod.ops));
+            mod_peaks.push(b_mod.peak_qubits as usize);
+        }
+        mod_costs.sort_unstable();
+        mod_peaks.sort_unstable();
+        let mean_mod_window = mod_costs.iter().sum::<usize>() as f64 / samples as f64;
+        let approx_arith = mean_mod_window * WINDOWS as f64;
+
+        // Conservative p99 code length from the 10k entropy experiment, rounded
+        // up with margin; h/delta/control allowance covers live low-ratio state.
+        let history_bits = 480usize;
+        let h_delta_control = 32usize;
+        let peak_model = mod_peaks[samples - 1] + history_bits + h_delta_control;
+        eprintln!(
+            "BY h-only compressed-history budget: mean_mod_window≈{mean_mod_window:.1}, approx35≈{approx_arith:.0}, mod_peak={}q, history_bits={history_bits}, peak_model≈{peak_model}q",
+            mod_peaks[samples - 1]
+        );
+        assert!(approx_arith < 900_000.0, "h-only BY arithmetic no longer sub-MToffoli");
+        assert!(peak_model < 2_800, "h-only compressed BY model exceeds cap");
+    }
+
     #[test]
     fn by_tagged_div_stored_matrix_upper_bound_model() {
         // Upper-bound architecture with per-window matrix history already known:
