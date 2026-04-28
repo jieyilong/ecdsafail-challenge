@@ -670,9 +670,23 @@ peak                 = 2,415q
 ```
 
 This all-A-history schedule is not the final low-scratch implementation, but it
-turns the pattern-history replay into a clean reversible circuit. A production
-replay still wants an on-the-fly/window-local A schedule so it pays closer to
-forward-only decoder cost and does not keep 560 A bits live.
+turns the pattern-history replay into a clean reversible circuit. A tempting
+window-local schedule was tested in
+`window_local_a_clear_fails_phase_with_mbu_microsteps`: keep only 16 A bits plus
+350 boundary-delta bits, decode one window, use A immediately, then clear A
+before later windows. It reduces peak but fails the phase contract with the
+current measurement-based modular microsteps:
+
+```text
+window-local A clear: 1,270,080 CCX, peak 2,221q, phase=1
+```
+
+Classical tagged-DIV data is correct, but clearing controls early invalidates
+phase corrections left by the MBU modular add/halve primitives. Therefore a
+production replay needs either (a) keep A controls live until the end, (b)
+exact/phase-safe modular microsteps for window-local control clearing, or (c)
+a self-cleaning denominator/window design whose phase fixup includes the early
+control uncompute.
 
 `compressed_pattern_history_scratch_model_is_600q_if_add_workspace_is_removed`
 spells out the remaining scratch equation:

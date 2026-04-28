@@ -4179,6 +4179,130 @@ mod tests {
     }
 
     #[test]
+    fn window_local_a_clear_fails_phase_with_mbu_microsteps() {
+        // Tempting low-scratch schedule: decode one 16-step A window, use it
+        // immediately, then reverse the decoder and clear A before later
+        // windows. Classical data comes out right, but current scaled-BY
+        // microsteps use measurement-based modular arithmetic whose phase
+        // corrections still depend on those controls. Clearing A early leaves
+        // phase garbage. Keep this as an executable invalidation: with the
+        // current MBU microsteps, A controls must remain live until the replay
+        // is complete, or the modular primitives must be made exact/phase-safe
+        // under early control clearing.
+        let p = SECP256K1_P;
+        let inv2 = (p.wrapping_add(U256::from(1u64))) >> 1usize;
+        let mut sx = Sampler::new(b"by-window-local-decoder-560-x-v1", p);
+        let mut sy = Sampler::new(b"by-window-local-decoder-560-y-v1", p);
+        let (x, y, controls, boundary_delta, exp_r, exp_s, f_final) = loop {
+            let x = sx.next();
+            let y = sy.next();
+            let mut delta = 1i64;
+            let mut f = SInt::from_u(p);
+            let mut g = SInt::from_u(x);
+            let mut r_exp = U256::ZERO;
+            let mut s_exp = addm(y, x, p);
+            let mut controls = Vec::with_capacity(560);
+            let mut boundary_delta = Vec::with_capacity(35);
+            for step in 0..560 {
+                if step % 16 == 0 {
+                    boundary_delta.push(delta);
+                }
+                let odd = g.bit0();
+                let a = delta > 0 && odd;
+                controls.push((odd, a));
+                if a {
+                    let nr = s_exp;
+                    let ns = mulm(subm(s_exp, r_exp, p), inv2, p);
+                    r_exp = nr;
+                    s_exp = ns;
+                } else if odd {
+                    s_exp = mulm(addm(s_exp, r_exp, p), inv2, p);
+                } else {
+                    s_exp = mulm(s_exp, inv2, p);
+                }
+                divstep_sint_state(&mut delta, &mut f, &mut g);
+            }
+            if g.is_zero() && (f.is_one_pos() || f.is_one_neg()) {
+                break (x, y, controls, boundary_delta, r_exp, s_exp, f);
+            }
+        };
+
+        let mut b = super::super::B::new();
+        let pattern = b.alloc_qubits(560);
+        let delta_starts: Vec<Vec<super::super::QubitId>> = (0..35).map(|_| b.alloc_qubits(10)).collect();
+        let delta_work = b.alloc_qubits(10);
+        let a_window = b.alloc_qubits(16);
+        let r = b.alloc_qubits(256);
+        let s = b.alloc_qubits(256);
+        for win in 0..35 {
+            for i in 0..10 {
+                b.cx(delta_starts[win][i], delta_work[i]);
+            }
+            emit_pattern_delta_decode_window_for_test(
+                &mut b,
+                &pattern[win * 16..win * 16 + 16],
+                &delta_work,
+                &a_window,
+            );
+            for i in 0..16 {
+                emit_scaled_by_controlled_microstep_for_test(
+                    &mut b,
+                    &r,
+                    &s,
+                    pattern[win * 16 + i],
+                    a_window[i],
+                    p,
+                );
+            }
+            emit_pattern_delta_decode_window_reverse_for_test(
+                &mut b,
+                &pattern[win * 16..win * 16 + 16],
+                &delta_work,
+                &a_window,
+            );
+            for i in 0..10 {
+                b.cx(delta_starts[win][i], delta_work[i]);
+            }
+        }
+        let ccx = count_ccx(&b.ops);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let mut hasher = sha3::Shake128::default();
+        hasher.update(b"by-window-local-decoder-560-sim-v1");
+        let mut xof = hasher.finalize_xof();
+        let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+        for (i, &(odd_v, _)) in controls.iter().enumerate() {
+            if odd_v {
+                *sim.qubit_mut(pattern[i]) |= 1;
+            }
+        }
+        for (win, &d) in boundary_delta.iter().enumerate() {
+            set_slice_u512_by(&mut sim, &delta_starts[win], twos_u512_for_delta(d, 10));
+        }
+        set_slice_u512_by(&mut sim, &r, U512::ZERO);
+        set_slice_u512_by(&mut sim, &s, u256_to_u512_for_by_tests(addm(y, x, p)));
+        sim.apply(&ops);
+        assert_eq!(get_slice_u512_by(&sim, &r), u256_to_u512_for_by_tests(exp_r), "r mismatch");
+        assert_eq!(get_slice_u512_by(&sim, &s), u256_to_u512_for_by_tests(exp_s), "s mismatch");
+        let plus_one = if f_final.is_one_pos() { exp_r } else { negm(exp_r, p) };
+        let quotient = subm(plus_one, U256::from(1u64), p);
+        assert_eq!(quotient, mulm(y, fermat_modinv(x, p), p), "tagged quotient mismatch");
+        assert_eq!(get_slice_u512_by(&sim, &a_window), U512::ZERO, "A window scratch not clean");
+        assert_eq!(get_slice_u512_by(&sim, &delta_work), U512::ZERO, "delta work not clean");
+        for (win, &d) in boundary_delta.iter().enumerate() {
+            assert_eq!(get_slice_u512_by(&sim, &delta_starts[win]), twos_u512_for_delta(d, 10), "boundary delta changed");
+        }
+        let phase = sim.global_phase() & 1;
+        eprintln!(
+            "BY window-local A-clear phase failure: ccx={ccx}, peak={peak}q, boundary_delta_bits=350, phase={phase}"
+        );
+        assert_ne!(phase, 0, "window-local A clearing unexpectedly phase-clean; revisit low-scratch schedule");
+        assert!(peak < 2_300, "window-local schedule did not reduce peak enough to be worth revisiting");
+    }
+
+    #[test]
     fn scaled_by_pattern_decoder_560_tagged_div_scaffold_is_clean() {
         // Clean version of the raw-pattern scaffold: expand 560 odd-pattern
         // bits into A controls using the reversible pattern+delta decoder,
