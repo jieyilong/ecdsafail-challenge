@@ -1454,6 +1454,101 @@ mod tests {
         }
     }
 
+    fn ratio_window_next(w: usize, delta: i64, h: u64) -> (i64, u64) {
+        let signed_h = if (h & (1u64 << (w - 1))) != 0 {
+            (h as i128) - (1i128 << w)
+        } else {
+            h as i128
+        };
+        let mut d = delta;
+        let mut f = SInt::from_u(U256::from(1));
+        let mag = U256::from(signed_h.unsigned_abs());
+        let mut g = SInt { neg: signed_h < 0, mag };
+        for _ in 0..w {
+            divstep_sint_state(&mut d, &mut f, &mut g);
+        }
+        let mask = (1u64 << w) - 1;
+        let f_low = if f.neg {
+            ((!f.mag.as_limbs()[0]).wrapping_add(1)) & mask
+        } else {
+            f.mag.as_limbs()[0] & mask
+        };
+        let g_low = if g.neg {
+            ((!g.mag.as_limbs()[0]).wrapping_add(1)) & mask
+        } else {
+            g.mag.as_limbs()[0] & mask
+        };
+        let inv_f = inv_odd_mod_pow2_u64(f_low, w);
+        (d, g_low.wrapping_mul(inv_f) & mask)
+    }
+
+    fn low_ratio_of_sints(f: SInt, g: SInt, w: usize) -> u64 {
+        let mask = (1u64 << w) - 1;
+        let f_low = if f.neg {
+            ((!f.mag.as_limbs()[0]).wrapping_add(1)) & mask
+        } else {
+            f.mag.as_limbs()[0] & mask
+        };
+        let g_low = if g.neg {
+            ((!g.mag.as_limbs()[0]).wrapping_add(1)) & mask
+        } else {
+            g.mag.as_limbs()[0] & mask
+        };
+        g_low.wrapping_mul(inv_odd_mod_pow2_u64(f_low, w)) & mask
+    }
+
+    #[test]
+    fn low_ratio_window_state_needs_large_rank_history() {
+        // Tempting idea: keep only h=g/f mod 2^w and delta to select BY jump
+        // matrices, instead of a full denominator pair. But the h-update is
+        // many-to-one. On actual 35-window secp256k1 trajectories, recovering
+        // the previous h from (delta',h') needs up to 17 bits of rank per
+        // window in this sample. That is about 595 history bits before any
+        // arithmetic scratch, so h-only state is not the 600-scratch escape.
+        use std::collections::HashMap;
+        const W: usize = 16;
+        let mut counts: HashMap<(i64, u64), u32> = HashMap::new();
+        for delta in -24i64..=64i64 {
+            for h in 0u64..(1u64 << W) {
+                let out = ratio_window_next(W, delta, h);
+                *counts.entry(out).or_insert(0) += 1;
+            }
+        }
+
+        let samples = 2_000usize;
+        let mut sampler = Sampler::new(b"by-low-ratio-rank-history-v1", SECP256K1_P);
+        let mut max_rank = 0u32;
+        let mut over_16 = 0usize;
+        for _ in 0..samples {
+            let x = sampler.next();
+            let mut delta = 1i64;
+            let mut f = SInt::from_u(SECP256K1_P);
+            let mut g = SInt::from_u(x);
+            let mut sample_max = 0u32;
+            for _ in 0..35 {
+                assert!((-24..=64).contains(&delta), "delta out of modeled range: {delta}");
+                let h = low_ratio_of_sints(f, g, W);
+                let out = ratio_window_next(W, delta, h);
+                let rank_space = *counts.get(&out).expect("counted output");
+                sample_max = sample_max.max(rank_space);
+                for _ in 0..W {
+                    divstep_sint_state(&mut delta, &mut f, &mut g);
+                }
+            }
+            max_rank = max_rank.max(sample_max);
+            if sample_max > (1u32 << 16) {
+                over_16 += 1;
+            }
+        }
+        let fail_16 = over_16 as f64 / samples as f64;
+        eprintln!(
+            "BY low-ratio reversible-state rank: max_rank={max_rank}, bits={}, fail_if_16bit_rank={fail_16:.4}",
+            32 - (max_rank - 1).leading_zeros()
+        );
+        assert!(max_rank > (1u32 << 16), "16-bit/window rank unexpectedly sufficient");
+        assert!(fail_16 > 0.01, "16-bit/window rank would meet 1% tolerance; revisit h-only path");
+    }
+
     #[test]
     fn naive_variable_coefficient_jump_apply_is_too_expensive() {
         // If we synthesize the w-bit matrix entries into quantum coefficient

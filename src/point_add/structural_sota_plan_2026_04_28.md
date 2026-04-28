@@ -359,11 +359,20 @@ real reversible row primitive must therefore keep the quotient, recover it from
 row sources, or fuse row reduction with cleanup. The canonical batched shift is
 real; the noncanonical row highfold is still an integration problem.
 
-This reopens BY as a live SOTA-shaped route but with a precise remaining
-obstacle: approximate scaled modular jump is plausibly comparable to the integer
-denominator jump only if quotient cleanup is fused cheaply with row formation.
-The next implementation target is a fixed-matrix row circuit that proves this
-quotient cleanup, then a BY tagged-DIV scaffold.
+Another tempting branch-history compression was tested and mostly killed:
+`low_ratio_window_state_needs_large_rank_history` keeps only
+`h=g/f mod 2^16` plus `delta` to select matrices. The window map
+`(delta,h)->(delta',h')` is many-to-one; on sampled secp256k1 35-window
+trajectories, reversing it needed rank up to `71769` (`17` bits/window), and a
+16-bit/window rank would fail about `10.95%` of inversions. So low-ratio-only
+state is not the 600-scratch escape.
+
+This reopens BY as a live SOTA-shaped route but with precise remaining
+obstacles: quotient cleanup for noncanonical row scaling, and branch/matrix
+history compression. Approximate scaled modular jump is plausibly comparable to
+the integer denominator jump only if quotient cleanup is fused cheaply with row
+formation. The next implementation target is a fixed-matrix row circuit that
+proves quotient cleanup, then a BY tagged-DIV scaffold.
 
 ### Program B — triangular one-inversion schedule (highest payoff, highest risk)
 
