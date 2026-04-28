@@ -2505,6 +2505,67 @@ mod tests {
     }
 
     #[test]
+    fn actual_matrix_sequence_entropy_supports_sub600_history_target() {
+        // Storing raw 22-bit (delta,h) keys costs 770 bits for 35 windows, but
+        // actual secp256k1 trajectories are highly non-uniform, especially near
+        // convergence. An entropy-coded matrix history is not a circuit yet, but
+        // this shows the information-theoretic target is below the user's
+        // ~600-scratch budget.
+        use std::collections::HashMap;
+        const W: usize = 16;
+        const WINDOWS: usize = 35;
+        let samples = 10_000usize;
+        let mut sampler = Sampler::new(b"by-matrix-sequence-entropy-v1", SECP256K1_P);
+        let mut seqs: Vec<Vec<TransitionMatrix>> = Vec::with_capacity(samples);
+        let mut counts: Vec<HashMap<TransitionMatrix, usize>> = (0..WINDOWS).map(|_| HashMap::new()).collect();
+        for _ in 0..samples {
+            let x = sampler.next();
+            let mut delta = 1i64;
+            let mut f = SInt::from_u(SECP256K1_P);
+            let mut g = SInt::from_u(x);
+            let mut seq = Vec::with_capacity(WINDOWS);
+            for j in 0..WINDOWS {
+                let f_low = sint_low_i128(f, W);
+                let g_low = sint_low_i128(g, W);
+                let (_, _, _, mtx) = jump_matrix_direct_lowword(W, W, delta, f_low, g_low);
+                *counts[j].entry(mtx).or_insert(0) += 1;
+                seq.push(mtx);
+                for _ in 0..W {
+                    divstep_sint_state(&mut delta, &mut f, &mut g);
+                }
+            }
+            seqs.push(seq);
+        }
+        let mut entropy_sum = 0.0f64;
+        for c in &counts {
+            for &n in c.values() {
+                let p = n as f64 / samples as f64;
+                entropy_sum -= p * p.log2();
+            }
+        }
+        let mut code_lengths = Vec::with_capacity(samples);
+        for seq in &seqs {
+            let mut len = 0.0f64;
+            for (j, mtx) in seq.iter().enumerate() {
+                let n = *counts[j].get(mtx).unwrap();
+                let p = n as f64 / samples as f64;
+                len -= p.log2();
+            }
+            code_lengths.push(len);
+        }
+        code_lengths.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p99 = code_lengths[(samples * 99) / 100];
+        let p999 = code_lengths[(samples * 999) / 1000];
+        let fail_550 = code_lengths.iter().filter(|&&l| l > 550.0).count() as f64 / samples as f64;
+        eprintln!(
+            "BY matrix-sequence entropy: H≈{entropy_sum:.1} bits, p99_len≈{p99:.1}, p999_len≈{p999:.1}, fail>550≈{fail_550:.4}"
+        );
+        assert!(entropy_sum < 520.0, "matrix history entropy too high for sub600 target");
+        assert!(p99 < 540.0, "p99 matrix history code length too high");
+        assert!(fail_550 < 0.01, "550-bit matrix history would exceed 1% failure tolerance");
+    }
+
+    #[test]
     fn by_tagged_div_stored_matrix_upper_bound_model() {
         // Upper-bound architecture with per-window matrix history already known:
         // update the integer denominator pair with sparse scaled rows, and the

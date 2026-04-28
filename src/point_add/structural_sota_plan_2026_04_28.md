@@ -417,6 +417,13 @@ Positive forward-row progress:
   matrices: mean `20991 CCX`, p90 `24234`, max `28099`, peak `2256q` for the
   full pair replacement.
 
+`actual_matrix_sequence_entropy_supports_sub600_history_target` shows the raw
+770-bit selector history is not information-theoretically necessary. Over 10k
+sampled secp256k1 denominators, the 35-window matrix sequence has empirical
+per-window entropy sum `≈449` bits; an independent per-window entropy code gives
+`p99≈463` bits, `p999≈465` bits, and `fail>550=0`. This is not a reversible
+circuit, but it says a sub-600-bit matrix-history target is plausible.
+
 `by_tagged_div_stored_matrix_upper_bound_model` separates arithmetic from
 selection/history. With per-window matrices already known, one tagged-DIV
 window costs an integer denominator replacement plus one modular fixed-matrix
