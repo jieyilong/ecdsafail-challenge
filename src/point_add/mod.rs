@@ -4179,11 +4179,18 @@ fn mulmod(a: U256, b: U256, p: U256) -> U256 {
 /// WITHIN this function, via the conjugate pattern. The persistent flags
 /// `a_f, b_f, add_f` carry no data across iterations (each iteration resets
 /// them via classical uncomputation).
-/// Threshold: for iter_idx < R_SMALL_THRESHOLD, r's top bit is guaranteed 0
+/// Threshold: for iter_idx < r_small_threshold(), r's top bit is guaranteed 0
 /// (since max(r,s) doubles per iter starting from max=1, so max ≤ 2^iter_idx).
 /// In that range, mod_double(r)'s Solinas cadd is identity — replace with
 /// a plain shift (0 Toffoli) for ~255 CCX savings per iter.
 const R_SMALL_THRESHOLD: usize = 255;
+
+fn r_small_threshold() -> usize {
+    std::env::var("KAL_R_SMALL_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(R_SMALL_THRESHOLD)
+}
 
 /// For nonzero secp256k1 inputs, the first 256 Kaliski iterations are always
 /// nonterminal, so `f = 1` and `v_w != 0` at step entry are guaranteed.
@@ -5780,7 +5787,7 @@ fn kaliski_iteration_bulk_prefix3(
     for i in 0..(u.len() - 1) {
         b.swap(v_w[i], v_w[i + 1]);
     }
-    if iter_idx < R_SMALL_THRESHOLD {
+    if iter_idx < r_small_threshold() {
         mod_double_no_corr(b, r);
     } else {
         mod_double_inplace_fast(b, r, p);
@@ -6025,10 +6032,10 @@ fn kaliski_iteration(
     }
 
     // ─── STEP 7 + 8: r := 2*r mod p ───────────────────────────────────
-    // For iter_idx < R_SMALL_THRESHOLD, r's top bit is guaranteed 0 (since
+    // For iter_idx < r_small_threshold(), r's top bit is guaranteed 0 (since
     // max(r,s) ≤ 2^iter_idx by induction). mod_double's Solinas correction
     // is identity; a plain shift suffices. Saves ~255 CCX per small iter.
-    if iter_idx < R_SMALL_THRESHOLD {
+    if iter_idx < r_small_threshold() {
         mod_double_no_corr(b, r);
     } else {
         mod_double_inplace_fast(b, r, p);
@@ -6407,7 +6414,7 @@ fn kaliski_iteration_bulk_prefix3_backward(
     // Previously unconditional mod_halve_no_corr was a latent bug that
     // happened not to manifest in tested seeds.
     b.set_phase("bk_bulk_step6_7_8");
-    if iter_idx < R_SMALL_THRESHOLD {
+    if iter_idx < r_small_threshold() {
         mod_halve_no_corr(b, r);
     } else {
         let mut dirty: Vec<QubitId> = u.to_vec();
@@ -6555,9 +6562,9 @@ fn kaliski_iteration_backward(
 
     b.set_phase("bk_step6_7_8");
     // Reverse STEP 8 + 7 ─────────────────────────────────────────────
-    // For iter_idx < R_SMALL_THRESHOLD, forward used mod_double_no_corr —
+    // For iter_idx < r_small_threshold(), forward used mod_double_no_corr —
     // r is guaranteed even (bit 0 = 0), so a plain shift-right inverts it.
-    if iter_idx < R_SMALL_THRESHOLD {
+    if iter_idx < r_small_threshold() {
         mod_halve_no_corr(b, r);
     } else {
         let mut dirty: Vec<QubitId> = u.to_vec();
