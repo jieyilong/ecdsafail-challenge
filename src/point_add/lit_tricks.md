@@ -125,6 +125,14 @@ get reused instead of new alloc. Could turn a 258q transient into a
 0q transient at the pair1_mul2 peak, finally making karatsuba-1
 fit in budget at pair1_mul2.
 
+A branchless fixed-sequence inversion route was also checked as a sanity floor.
+`fermat_fixed_chain_inversion_floor_misses_sota_by_order` uses the measured
+n=256 modular-square floor (`148,342` CCX).  Any exponentiation chain reaching
+an exponent near `2^256` has at least 255 square/multiply layers, giving an
+optimistic inverse floor of `37,827,210` CCX before scratch/Bennett costs.  So
+Fermat/addition-chain inversion is not a SOTA-shaped substitute for Euclidean
+DIV.
+
 ## 4. HRSL 2020 — swap-based Kaliski round
 
 Same paper, Fig. 7b / Algorithm 7b. Instead of our current 4-branch

@@ -112,6 +112,33 @@ fn cost_squaring_sub_n256() {
 }
 
 #[test]
+fn fermat_fixed_chain_inversion_floor_misses_sota_by_order() {
+    // Branchless inversion by Fermat/exponentiation is the obvious way to avoid
+    // Euclidean branch histories.  But even an unrealistically optimal addition
+    // chain for an exponent near 2^256 needs at least 255 modular
+    // square/multiply layers (each layer can at most double the exponent).  With
+    // the measured current n=256 modular-square floor, this is already tens of
+    // millions of CCX per inverse before any Bennett cleanup, scratch pressure,
+    // or the second point-add denominator.  So fixed-sequence exponentiation is
+    // not the missing SOTA-shaped DIV/IMUL primitive.
+    let mut b = B::new();
+    let p = SECP256K1_P;
+    let acc = b.alloc_qubits(N);
+    let x = b.alloc_qubits(N);
+    let start = b.ops.len();
+    mod_mul_sub_qq(&mut b, &acc, &x, &x, p);
+    let square_ccx = count_ccx(&b.ops[start..]);
+    let chain_layer_lower_bound = 255usize;
+    let inv_floor = square_ccx * chain_layer_lower_bound;
+    println!("METRIC fermat_inv_square_floor_ccx={square_ccx}");
+    println!("METRIC fermat_inv_chain_floor_ccx={inv_floor}");
+    eprintln!(
+        "Fermat inversion floor: square_ccx={square_ccx}, layers>={chain_layer_lower_bound}, inv_floor={inv_floor}"
+    );
+    assert!(inv_floor > 30_000_000);
+}
+
+#[test]
 fn cost_halve_double_n256() {
     let mut b = B::new();
     let p = SECP256K1_P;

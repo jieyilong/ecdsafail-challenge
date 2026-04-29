@@ -127,6 +127,15 @@ problem.
 
 ## 3. Therefore the most credible Toffoli route is a cheaper Kaliski
 
+The obvious branchless alternative, Fermat inversion by a fixed addition chain,
+is not in the same cost class with current multiplication primitives.  The
+executable floor `fermat_fixed_chain_inversion_floor_misses_sota_by_order`
+measures a modular-square layer at `148,342` CCX; any chain reaching an exponent
+near `2^256` needs at least 255 square/multiply layers, so even an optimistic
+single inverse costs at least `37,827,210` CCX before scratch and Bennett
+cleanup.  Avoiding Euclidean branch history by exponentiation is therefore not
+a SOTA route.
+
 Current Kaliski cost sources, across both forward and backward and both
 invocations:
 
