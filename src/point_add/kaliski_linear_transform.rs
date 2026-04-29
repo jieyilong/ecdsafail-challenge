@@ -330,6 +330,58 @@ fn toy_branch_history_phase_anf_stats(n: usize, p: u64) -> (usize, usize) {
     (degree, density)
 }
 
+fn encode_branch_sequence_for_entropy_test(seq: &[Branch]) -> Vec<u8> {
+    let mut out = vec![0u8; (2 * seq.len() + 7) / 8];
+    for (i, br) in seq.iter().enumerate() {
+        let val = (br.a_swap as u8) | ((br.add as u8) << 1);
+        let bit = 2 * i;
+        out[bit / 8] |= (val & 1) << (bit % 8);
+        out[(bit + 1) / 8] |= ((val >> 1) & 1) << ((bit + 1) % 8);
+    }
+    out
+}
+
+#[test]
+fn exact_branch_history_has_field_entropy_lower_bound() {
+    // Even if we ignore circuit cost and just ask for a compressed exact
+    // branch-history payload, the branch sequence appears to encode the whole
+    // denominator.  Exhaustive toy fields are injective, and secp samples are
+    // collision-free.  Therefore exact history compression cannot hope for
+    // O(log n) or ~100 bits; it has a ~log2(p)≈256-bit information floor.
+    use std::collections::BTreeSet;
+    for &(n, p) in &[(4usize, 13u64), (6, 61), (8, 251)] {
+        let mut seen = BTreeSet::new();
+        for x in 1..p {
+            let seq = toy_branch_sequence_for_a_coeff(x, p, 2 * n - 1);
+            seen.insert(encode_branch_sequence_for_entropy_test(&seq));
+        }
+        eprintln!(
+            "toy branch-history injectivity: n={n}, p={p}, distinct_sequences={} / {}",
+            seen.len(),
+            p - 1
+        );
+        assert_eq!(seen.len() as u64, p - 1);
+    }
+
+    let mut xs = BTreeSet::new();
+    let mut seqs = BTreeSet::new();
+    let mut seed = 1u64;
+    while xs.len() < 4096 {
+        let x = random_element(seed);
+        seed += 1;
+        if xs.insert(x) {
+            let seq = branch_sequence(x, ITERS);
+            seqs.insert(encode_branch_sequence_for_entropy_test(&seq));
+        }
+    }
+    eprintln!(
+        "secp branch-history sampled injectivity: distinct_sequences={} / {}",
+        seqs.len(),
+        xs.len()
+    );
+    assert_eq!(seqs.len(), xs.len());
+}
+
 #[test]
 fn initial_x_to_branch_history_oracle_is_dense_on_toy_kaliski() {
     // Compressing m/a history down to the initial denominator x is

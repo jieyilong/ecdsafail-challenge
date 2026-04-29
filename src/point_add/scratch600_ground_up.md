@@ -435,6 +435,21 @@ So while the whole history is information-theoretically determined by `x`, an
 on-demand branch oracle is basically another Kaliski-like computation, not a
 small phase/lookup gadget.
 
+There is also a hard information floor.  `exact_branch_history_has_field_entropy_lower_bound`
+shows the complete branch sequence is injective in exhaustive toy fields and in
+4096 secp samples:
+
+```text
+toy n=4,6,8: distinct sequences = p-1 exactly
+secp sample: distinct sequences = 4096 / 4096
+```
+
+Thus any exact encoded history for arbitrary secp denominators needs about
+`log2(p) ≈ 256` bits.  This can save at most ~150 bits versus a 407-bit raw
+history, but it cannot become a ~64-bit or ~100-bit miracle.  History-only
+compression is not enough unless the rest of the Kaliski state is also
+fundamentally folded.
+
 ### Jumped Kaliski matrix route hard gate
 
 A separate two-inversion route was Kaliski windowing: store short matrix hints

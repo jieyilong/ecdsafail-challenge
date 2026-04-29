@@ -1629,9 +1629,12 @@ post-state are known (`n=4,5,6` conflicts `108,1200,5760`).  Direct
 regeneration from the preserved initial `x` is not cheap either:
 `initial_x_to_branch_history_oracle_is_dense_on_toy_kaliski` sees branch-history
 parity as full-degree/near-half-density in `x` (`n=8: degree 8, density 116/256;
-`n=12: degree 11, density 1976/4096`).  So branch cleanup cannot simply inspect
-live post-state or use a tiny x-oracle; it needs history, a different invariant,
-or a deliberate approximate exception argument.
+`n=12: degree 11, density 1976/4096`).  `exact_branch_history_has_field_entropy_lower_bound`
+adds the information floor: complete branch sequences are injective in toy
+fields and collision-free on 4096 secp samples, so exact history encoding needs
+~256 bits.  So branch cleanup cannot simply inspect live post-state, use a tiny
+x-oracle, or compress to ~64 bits; it needs substantial history, a different
+invariant, or a deliberate approximate exception argument.
 
 Coefficient-transform refinement checked: a single Kaliski coefficient pair
 cannot both preserve `x` and expose `y/x` by just using a constant tag.  If
