@@ -2545,6 +2545,58 @@ mod tests {
         assert_eq!(hist[0], 0, "m01 should be even after scaled 16-step windows");
     }
 
+    fn bitlen_u256_for_compact_pair_test(x: U256) -> usize {
+        let limbs = x.as_limbs();
+        for i in (0..4).rev() {
+            if limbs[i] != 0 {
+                return i * 64 + (64 - limbs[i].leading_zeros() as usize);
+            }
+        }
+        0
+    }
+
+    fn bitlen_sint_for_compact_pair_test(x: SInt) -> usize {
+        bitlen_u256_for_compact_pair_test(x.mag)
+    }
+
+    #[test]
+    fn denominator_pair_plus_49_sidecar_can_hold_raw_history_on_samples() {
+        // Better low-qubit idea than the scalar ratio: keep the 256-bit f/g
+        // denominator pair and stash consumed branch bits into high zero slack
+        // as the pair shrinks, with a tiny sidecar for the initial lag.  Real
+        // traces need at most 49 extra raw-history bits over the pair slack in
+        // this sampled check, matching the 560-step vs 511-slack intuition.
+        let samples = 1024usize;
+        let mut sampler = Sampler::new(b"by-pair-slack-history-v1", SECP256K1_P);
+        let mut worst_deficit = 0isize;
+        let mut max_converge = 0usize;
+        for _ in 0..samples {
+            let x = sampler.next();
+            let mut delta = 1i64;
+            let mut f = SInt::from_u(SECP256K1_P);
+            let mut g = SInt::from_u(x);
+            for step in 0..(35 * 16) {
+                if g.is_zero() {
+                    max_converge = max_converge.max(step);
+                    break;
+                }
+                divstep_sint_state(&mut delta, &mut f, &mut g);
+                let used = bitlen_sint_for_compact_pair_test(f) + bitlen_sint_for_compact_pair_test(g);
+                let slack = 512isize - used as isize;
+                let deficit = (step + 1) as isize - slack;
+                worst_deficit = worst_deficit.max(deficit);
+                if step == 35 * 16 - 1 {
+                    max_converge = max_converge.max(35 * 16);
+                }
+            }
+        }
+        eprintln!(
+            "BY denominator-pair slack+sidecar history: samples={samples}, max_converge={max_converge}, worst_raw_history_deficit={worst_deficit} bits"
+        );
+        assert!(worst_deficit > 0, "pair slack unexpectedly stores all raw branch bits");
+        assert!(worst_deficit <= 49, "sidecar exceeded the 49-bit target");
+    }
+
     #[test]
     fn ratio_a_step_serial_inverse_budget_is_too_large() {
         // A bit-serial triangular inverse avoids large scratch, but each A step

@@ -119,6 +119,36 @@ two-to-one.  Therefore the x-column must be recomputed from retained pattern
 history, kept at a wider exact width, or cleaned by a nontrivial MBUC phase
 method.  Do not wire the 816-bit model as a rolling register.
 
+## Compact denominator-pair history sink
+
+The full-ratio path below solved state but exposed a gate blocker in the A-step
+inverse.  A better state/gate compromise is to keep the ordinary 256-bit BY
+integer denominator pair `(f,g)` and store consumed raw branch bits in the high
+zero slack that appears as the pair shrinks.
+
+`denominator_pair_plus_49_sidecar_can_hold_raw_history_on_samples` checks 1024
+sampled secp256k1 denominators over the 560-step schedule:
+
+```text
+max convergence step observed      = 558
+worst raw-history deficit vs slack = 49 bits
+```
+
+So a `512-bit` magnitude pair plus a `49-bit` sidecar can carry all raw branch
+history in the sampled traces.  With two sign bits this is roughly
+`512 + 2 + 49 = 563` selector/history bits, inside the low-qubit ~600-bit target
+and with only linear shift/add divstep updates (no ratio inverse).  This is now
+the most promising selector architecture.
+
+Open implementation questions:
+
+1. Prove or enforce the 49-bit deficit bound for all nonzero secp256k1 inputs
+   under the fixed 560-step schedule.
+2. Design the reversible allocator/compactor that moves history bits between
+   the sidecar and pair high-zero slack as `bitlen(f)+bitlen(g)` changes.
+3. Couple the recovered/stored raw branch bits to the scaled modular replay and
+   reverse the pair/history sink cleanly.
+
 ## Full ratio selector compression
 
 A stronger route eliminates the x-column/carry split entirely.  BY branch
