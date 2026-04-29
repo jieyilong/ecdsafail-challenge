@@ -1596,15 +1596,13 @@ measured ~206k correction-loop component.  Since raw Kaliski returns
 `-v^-1 * 2^iters`, feed it `v' = 2^iters v`; the exposed inverse becomes exact
 and the slope halving / cleanup doubling loops disappear.
 
-Pair1 was wired behind `KAL_PRESCALE_PAIR1_SAFE=1` using an exact Cuccaro
-constant prescaler and passed the full harness:
+Pair1 and pair2 were wired behind `KAL_PRESCALE_PAIR1_SAFE=1` /
+`KAL_PRESCALE_PAIR2_SAFE=1` using an exact Cuccaro constant prescaler and passed
+the full harness:
 
 ```text
-avg_toffoli=4,786,373
-qubits=2,972
-altseed_classical_total=0
-altseed_phase_batches_total=0
-altseed_ancilla_batches_total=0
+pair1: avg_toffoli=4,786,373  qubits=2,972  clean
+pair2: avg_toffoli=4,771,009  qubits=2,969  clean
 ```
 
 The generic prescaler makes the path much worse than default, but the algebraic

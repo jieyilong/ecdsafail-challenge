@@ -703,13 +703,18 @@ which makes the exposed raw inverse exact:
 -(v')^-1 * 2^iters = -v^-1 .
 ```
 
-This validated algebraically and at full-circuit level for pair1 when the
-prescaler used exact Cuccaro arithmetic:
+This validated algebraically and at full-circuit level for both inversion
+sites when the prescaler used exact Cuccaro arithmetic:
 
 ```text
 KAL_PRESCALE_PAIR1_SAFE=1
 avg_toffoli = 4,786,373
 qubits      = 2,972
+clean       = yes
+
+KAL_PRESCALE_PAIR2_SAFE=1
+avg_toffoli = 4,771,009
+qubits      = 2,969
 clean       = yes
 ```
 
