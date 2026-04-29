@@ -1690,6 +1690,168 @@ mod tests {
         assert!(fail_16 > 0.01, "16-bit/window rank would meet 1% tolerance; revisit h-only path");
     }
 
+    fn low_signed_sint16_for_streaming_test(x: SInt) -> i128 {
+        let low = x.mag.as_limbs()[0] & 0xffff;
+        let residue = if x.neg { ((!low).wrapping_add(1)) & 0xffff } else { low };
+        if (residue & 0x8000) != 0 {
+            residue as i128 - (1i128 << 16)
+        } else {
+            residue as i128
+        }
+    }
+
+    fn u256_limb16_for_streaming_test(x: U256, win: usize) -> u64 {
+        let shift = 16 * win;
+        if shift >= 256 {
+            0
+        } else {
+            ((x >> shift) & U256::from(0xffffu64)).to::<u64>()
+        }
+    }
+
+    fn mask_u512_bits_for_streaming_test(bits: usize) -> U512 {
+        if bits == 512 {
+            !U512::ZERO
+        } else {
+            (U512::from(1u64) << bits) - U512::from(1u64)
+        }
+    }
+
+    fn sign_extend_u512_for_streaming_test(x: U512, from_bits: usize, to_bits: usize) -> U512 {
+        debug_assert!(from_bits <= to_bits);
+        let mut y = x & mask_u512_bits_for_streaming_test(from_bits);
+        if from_bits > 0 && y.bit(from_bits - 1) {
+            for i in from_bits..to_bits {
+                y.set_bit(i, true);
+            }
+        }
+        y & mask_u512_bits_for_streaming_test(to_bits)
+    }
+
+    fn mul_i128_mod_width_for_streaming_test(x: U512, coeff: i128, bits: usize) -> U512 {
+        let c = signed_coeff_mod_width_for_test(coeff, bits);
+        (x * c) & mask_u512_bits_for_streaming_test(bits)
+    }
+
+    fn add_i128_term_mod_width_for_streaming_test(acc: U512, x: U512, coeff: i128, bits: usize) -> U512 {
+        (acc + mul_i128_mod_width_for_streaming_test(x, coeff, bits)) & mask_u512_bits_for_streaming_test(bits)
+    }
+
+    fn low_i16_from_residue_for_streaming_test(x: U512) -> i128 {
+        let low = x.as_limbs()[0] & 0xffff;
+        if (low & 0x8000) != 0 {
+            low as i128 - (1i128 << 16)
+        } else {
+            low as i128
+        }
+    }
+
+    fn streaming_selector_model_matches_for_test(x: U256, state_limbs: usize) -> bool {
+        const W: usize = 16;
+        const WINDOWS: usize = 35;
+        let bits = state_limbs * W;
+        let prod_bits = bits + W;
+        let mut a = [[U512::ZERO; 2]; 2];
+        a[0][0] = U512::from(1u64);
+        a[1][1] = U512::from(1u64);
+        let mut c = [U512::ZERO; 2];
+        let p = SECP256K1_P;
+        let mut delta = 1i64;
+        let mut actual_delta = 1i64;
+        let mut f = SInt::from_u(p);
+        let mut g = SInt::from_u(x);
+        for win in 0..WINDOWS {
+            let limb_f = U512::from(u256_limb16_for_streaming_test(p, win));
+            let limb_g = U512::from(u256_limb16_for_streaming_test(x, win));
+            let v0_bits = (a[0][0] * limb_f + a[0][1] * limb_g + c[0])
+                & mask_u512_bits_for_streaming_test(bits);
+            let v1_bits = (a[1][0] * limb_f + a[1][1] * limb_g + c[1])
+                & mask_u512_bits_for_streaming_test(bits);
+            let low0 = low_i16_from_residue_for_streaming_test(v0_bits);
+            let low1 = low_i16_from_residue_for_streaming_test(v1_bits);
+            let exp0 = low_signed_sint16_for_streaming_test(f);
+            let exp1 = low_signed_sint16_for_streaming_test(g);
+            if low0 != exp0 || low1 != exp1 {
+                return false;
+            }
+            let bits_vec = branch_bits_for_lowword_window(W, delta, low0, low1);
+            let m = matrix_from_branch_bits(delta, &bits_vec);
+
+            let v0_ext = sign_extend_u512_for_streaming_test(v0_bits, bits, prod_bits);
+            let v1_ext = sign_extend_u512_for_streaming_test(v1_bits, bits, prod_bits);
+            let mut n0 = U512::ZERO;
+            n0 = add_i128_term_mod_width_for_streaming_test(n0, v0_ext, m.m00, prod_bits);
+            n0 = add_i128_term_mod_width_for_streaming_test(n0, v1_ext, m.m01, prod_bits);
+            let mut n1 = U512::ZERO;
+            n1 = add_i128_term_mod_width_for_streaming_test(n1, v0_ext, m.m10, prod_bits);
+            n1 = add_i128_term_mod_width_for_streaming_test(n1, v1_ext, m.m11, prod_bits);
+            // The low-word window matrix guarantees divisibility by 2^W.
+            if (n0.as_limbs()[0] & 0xffff) != 0 || (n1.as_limbs()[0] & 0xffff) != 0 {
+                return false;
+            }
+            c[0] = sign_extend_u512_for_streaming_test(n0 >> W, bits, bits);
+            c[1] = sign_extend_u512_for_streaming_test(n1 >> W, bits, bits);
+
+            let old_a = a;
+            a[0][0] = U512::ZERO;
+            a[0][0] = add_i128_term_mod_width_for_streaming_test(a[0][0], old_a[0][0], m.m00, bits);
+            a[0][0] = add_i128_term_mod_width_for_streaming_test(a[0][0], old_a[1][0], m.m01, bits);
+            a[0][1] = U512::ZERO;
+            a[0][1] = add_i128_term_mod_width_for_streaming_test(a[0][1], old_a[0][1], m.m00, bits);
+            a[0][1] = add_i128_term_mod_width_for_streaming_test(a[0][1], old_a[1][1], m.m01, bits);
+            a[1][0] = U512::ZERO;
+            a[1][0] = add_i128_term_mod_width_for_streaming_test(a[1][0], old_a[0][0], m.m10, bits);
+            a[1][0] = add_i128_term_mod_width_for_streaming_test(a[1][0], old_a[1][0], m.m11, bits);
+            a[1][1] = U512::ZERO;
+            a[1][1] = add_i128_term_mod_width_for_streaming_test(a[1][1], old_a[0][1], m.m10, bits);
+            a[1][1] = add_i128_term_mod_width_for_streaming_test(a[1][1], old_a[1][1], m.m11, bits);
+            delta = m.delta_final;
+
+            for _ in 0..W {
+                divstep_sint_state(&mut actual_delta, &mut f, &mut g);
+            }
+            if actual_delta != delta {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn streaming_limb_selector_is_exact_but_state_heavy() {
+        // Architectural pivot test for a real BY-DIV selector generator.  The
+        // h-only state is not forward-complete, but a streaming base-2^16 limb
+        // recurrence is: keep the current affine carry
+        //
+        //     (f_j,g_j) = A_j · (p>>16j, x>>16j) + c_j
+        //
+        // modulo a fixed number of 16-bit limbs.  This generates all 35 branch
+        // windows without a full 560-bit denominator pair.  The catch is state:
+        // the first robust sampled setting needs roughly A(4 entries)+c(2
+        // entries) at 12 limbs each = 1152 logical bits before compression.  This
+        // is a plausible Toffoli architecture, but not yet a 1175q Google-shape
+        // circuit unless A is recomputed/compressed from pattern history.
+        let samples = 64usize;
+        let mut sampler = Sampler::new(b"by-streaming-limb-selector-v1", SECP256K1_P);
+        let mut k8_failures = 0usize;
+        for _ in 0..samples {
+            let x = sampler.next();
+            if !streaming_selector_model_matches_for_test(x, 8) {
+                k8_failures += 1;
+            }
+            assert!(
+                streaming_selector_model_matches_for_test(x, 12),
+                "12-limb streaming selector lost exactness"
+            );
+        }
+        let state_bits = 6 * 12 * 16;
+        eprintln!(
+            "BY streaming limb selector: samples={samples}, k8_failures={k8_failures}, k12_state_bits={state_bits}"
+        );
+        assert!(k8_failures > 0, "8-limb streaming state unexpectedly exact on all samples");
+        assert!(state_bits > 600, "streaming selector would already fit the low-scratch target");
+    }
+
     #[test]
     fn naive_variable_coefficient_jump_apply_is_too_expensive() {
         // If we synthesize the w-bit matrix entries into quantum coefficient
