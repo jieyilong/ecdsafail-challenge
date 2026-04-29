@@ -1626,8 +1626,13 @@ that the output is curve-supported, not full-domain.  The follow-up
 support-restricted interpolation problem and still sees growing minimum degree:
 `n=4,6,8,10,12 -> 1,3,3,4,4`.  This matches the dimension-threshold story
 (`sum_i<=d C(2n,i) >= ~2^n`, giving `d≈0.22n≈56` at secp256k1), not a
-constant-degree identity.  Thus generic top-level MBUC is just dense/high-degree
-point-subtraction phase correction, not a cheap single-inversion cleanup.
+constant-degree identity.  Sequential one-coordinate MBUC was checked too:
+`sequential_old_coordinate_mbuc_still_has_growing_phase_degree` keeps old `x`
+live while measuring old `y`, and the support-restricted degree still grows
+`n=4,6,8,10 -> 1,2,2,3` (dimension extrapolation for `3n` variables is still
+~49 at secp256k1).  Thus generic top-level/sequential MBUC is just
+dense/high-degree point-subtraction phase correction, not a cheap
+single-inversion cleanup.
 
 ## 7. Post-E attempt: Kaliski scale absorption by denominator pre-scaling
 

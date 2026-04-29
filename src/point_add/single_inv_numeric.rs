@@ -927,6 +927,33 @@ mod tests {
         Some((px, py))
     }
 
+    fn point_add_const_u16_for_phase_test(px: u16, py: u16, qx: u16, qy: u16, p: u16) -> Option<(u16, u16)> {
+        if !is_curve_point_u16_for_phase_test(px, py, p) {
+            return None;
+        }
+        if px == qx && add_mod_u16_for_phase_test(py, qy, p) == 0 {
+            return None;
+        }
+        let lam = if px == qx && py == qy {
+            if py == 0 {
+                return None;
+            }
+            let num = mul_mod_u16_for_phase_test(3, mul_mod_u16_for_phase_test(px, px, p), p);
+            let den = mul_mod_u16_for_phase_test(2, py, p);
+            mul_mod_u16_for_phase_test(num, inv_mod_u16_for_phase_test(den, p), p)
+        } else {
+            let dx = sub_mod_u16_for_phase_test(qx, px, p);
+            if dx == 0 {
+                return None;
+            }
+            let dy = sub_mod_u16_for_phase_test(qy, py, p);
+            mul_mod_u16_for_phase_test(dy, inv_mod_u16_for_phase_test(dx, p), p)
+        };
+        let rx = sub_mod_u16_for_phase_test(sub_mod_u16_for_phase_test(mul_mod_u16_for_phase_test(lam, lam, p), px, p), qx, p);
+        let ry = sub_mod_u16_for_phase_test(mul_mod_u16_for_phase_test(lam, sub_mod_u16_for_phase_test(px, rx, p), p), py, p);
+        Some((rx, ry))
+    }
+
     fn top_level_measured_input_phase_anf_stats(n: usize, p: u16, qx: u16, qy: u16, mask: u16) -> (usize, usize) {
         let vars = 2 * n;
         let size = 1usize << vars;
@@ -1127,6 +1154,85 @@ mod tests {
             last_min = min_degree;
         }
         assert!(last_min >= 4);
+    }
+
+    fn sequential_old_y_phase_min_degree_with_old_x_live(
+        n: usize,
+        p: u16,
+        qx: u16,
+        qy: u16,
+        phase_mask: u16,
+        max_degree: usize,
+    ) -> Option<usize> {
+        let vars = 3 * n;
+        assert!(vars <= 32, "test mask helper is u32-backed");
+        for degree in 0..=max_degree {
+            let masks = monomial_masks_for_curve_phase_test(vars, degree);
+            let cols = masks.len();
+            let chunks = (cols + 1 + 63) / 64;
+            let mut rows = Vec::new();
+            for px in 0..p {
+                for py in 0..p {
+                    if !is_curve_point_u16_for_phase_test(px, py, p) {
+                        continue;
+                    }
+                    let Some((rx, ry)) = point_add_const_u16_for_phase_test(px, py, qx, qy, p) else {
+                        continue;
+                    };
+                    let idx = (px as u32) | ((rx as u32) << n) | ((ry as u32) << (2 * n));
+                    let mut row = vec![0u64; chunks];
+                    for (col, &m) in masks.iter().enumerate() {
+                        if (idx & m) == m {
+                            row[col / 64] |= 1u64 << (col % 64);
+                        }
+                    }
+                    if ((py & phase_mask).count_ones() & 1) != 0 {
+                        row[cols / 64] |= 1u64 << (cols % 64);
+                    }
+                    rows.push(row);
+                }
+            }
+            let mut rows_a = rows.clone();
+            for row in &mut rows_a {
+                row[cols / 64] &= !(1u64 << (cols % 64));
+            }
+            let rank_a = gf2_rank_bitrows_for_curve_phase_test(&mut rows_a, cols);
+            let rank_aug = gf2_rank_bitrows_for_curve_phase_test(&mut rows, cols + 1);
+            if rank_a == rank_aug {
+                return Some(degree);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn sequential_old_coordinate_mbuc_still_has_growing_phase_degree() {
+        // Try to rescue top-level MBUC by measuring old coordinates one at a
+        // time.  If old x remains live when old y is X-measured, the phase only
+        // needs to be a function of (old_x, R_x, R_y), not R alone.  This extra
+        // n-bit side information lowers the degree threshold, but does not make
+        // the phase constant-degree: support interpolation still grows from
+        // degree 1 to 3 over tiny fields.  Dimension extrapolation for 3n live
+        // variables and ~2^n supported points is still around degree 49 at
+        // secp256k1, i.e. not a cheap kickmix correction.
+        let cases = [
+            (4usize, 13u16, 0b1010u16, 1usize),
+            (6usize, 61u16, 0b10_1010u16, 2usize),
+            (8usize, 251u16, 0b1010_0101u16, 2usize),
+            (10usize, 1021u16, 0b10_1001_0101u16, 3usize),
+        ];
+        let mut last = 0usize;
+        for &(n, p, mask, expected) in &cases {
+            let (qx, qy) = first_curve_point_u16_for_phase_test(p);
+            let got = sequential_old_y_phase_min_degree_with_old_x_live(n, p, qx, qy, mask, expected)
+                .expect("phase should interpolate by expected degree");
+            eprintln!(
+                "Sequential old-y MBUC with old-x live: n={n}, p={p}, q=({qx},{qy}), min_degree={got}"
+            );
+            assert!(got >= last);
+            last = got;
+        }
+        assert!(last >= 3);
     }
 
     #[test]

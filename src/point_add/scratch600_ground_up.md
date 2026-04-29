@@ -742,6 +742,24 @@ extension near `d≈0.22n` (`≈56` for secp256k1), before sparsity/synthesis co
 So support restriction does not resurrect generic top-level MBUC; only a highly
 specialized sparse kickmix phase would be worth revisiting.
 
+Sequential MBUC was also checked: measure only old `y` while keeping old `x`
+and the output point live.  `sequential_old_coordinate_mbuc_still_has_growing_phase_degree`
+solves the support-restricted interpolation on `(old_x,R_x,R_y)` and sees:
+
+```text
+n=4  p=13    min_degree=1
+n=6  p=61    min_degree=2
+n=8  p=251   min_degree=2
+n=10 p=1021  min_degree=3
+```
+
+The extra live coordinate lowers the small-toy degree, but does not produce a
+constant-degree identity.  A dimension-threshold extrapolation for `3n` live
+variables and `~2^n` supported points still lands near degree `49` at
+secp256k1.  So one-coordinate-at-a-time MBUC is not an obvious cheap cleanup
+either; it just trades one dense point-subtraction phase for a slightly larger
+state phase.
+
 ### Attempt E5: reverse-decode destructive Montgomery instead of phase cleanup
 
 Maybe the destructive Montgomery product was too quickly killed: even though a
