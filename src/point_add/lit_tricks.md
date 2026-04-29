@@ -34,9 +34,12 @@ Cost: Luo uses a long-division-style EEA (Proos-Zalka shape), not
 Kaliski's halving-based one, so the per-round Toffoli profile is
 different. Their full Shor-algorithm Toffoli count is ~976 n³ =
 ~1.6·10¹⁰ for n=256 whole-algorithm; extracting per-point-add requires
-dividing by the 2n=512 point-adds, giving ~3.1·10⁷ Toffoli per point-add
-— worse than our 4.18M on raw count. So this is a qubit-vs-Toffoli
-tradeoff: Luo wins qubits by 50%, loses Toffoli by ~7x at the same n.
+dividing by the 2n=512 point-adds, giving ~3.2·10⁷ Toffoli per point-add
+— worse than our 4.18M on raw count.  `luo_pz_gate_slope_is_not_point_add_sota_shaped`
+records this as 31,981,568 Toffoli, 11.85× the Google low-qubit point-add
+budget and 15.23× the low-gate budget.  So this is a qubit-vs-Toffoli
+tradeoff: Luo wins qubits by 50%, loses Toffoli by ~7x vs us and >10× vs
+Google SOTA.
 
 **Takeaway:** register sharing is the single biggest-ticket qubit lever
 we're not using. BUT implementing it means switching from our

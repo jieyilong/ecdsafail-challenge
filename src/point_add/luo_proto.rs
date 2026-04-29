@@ -154,6 +154,30 @@ mod tests {
     }
 
     #[test]
+    fn luo_pz_gate_slope_is_not_point_add_sota_shaped() {
+        // Luo/PZ register sharing is a real qubit lever, but the published
+        // long-division EEA gate slope is not a hidden Google-style low-gate
+        // point-add primitive.  The paper-level whole-ECDLP estimate is about
+        // 976 n^3 Toffoli.  Dividing by the 2n point-add invocations gives a
+        // per point-add inversion-scale cost of 488 n^2, before our affine
+        // multiplications/cleanup.  At n=256 this is ~32M Toffoli, over an
+        // order of magnitude above the 2.1M--2.7M Google point-add targets.
+        let n = 256usize;
+        let luo_whole_ecdlp_toffoli = 976usize * n * n * n;
+        let per_point_add_proxy = luo_whole_ecdlp_toffoli / (2 * n);
+        let google_low_qubit = 2_700_000usize;
+        let google_low_gate = 2_100_000usize;
+        eprintln!(
+            "Luo/PZ gate-slope proxy: whole_ecdlp={luo_whole_ecdlp_toffoli}, per_point_add={per_point_add_proxy}, ratios_vs_google=({:.2}, {:.2})",
+            per_point_add_proxy as f64 / google_low_qubit as f64,
+            per_point_add_proxy as f64 / google_low_gate as f64
+        );
+        assert_eq!(per_point_add_proxy, 31_981_568);
+        assert!(per_point_add_proxy > 10 * google_low_qubit);
+        assert!(per_point_add_proxy > 15 * google_low_gate / 1); // loose integer guard
+    }
+
+    #[test]
     fn optimistic_luo_still_needs_hundreds_more_qubits_cut() {
         let n = 256usize;
         let cur = current_budget_estimate(n, 407);

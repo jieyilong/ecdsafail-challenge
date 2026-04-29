@@ -1651,7 +1651,10 @@ Kim-style unconditional Kaliski was checked through the same lens:
 postponed-reduction arithmetic but enumerates exact local inverse branches for
 `swap`/`both_odd`, finding `5178/10240 = 50.6%` ambiguous reached secp
 poststates.  Thus Kim removes the terminal flag but does not by itself remove
-branch history.
+branch history.  Luo/PZ register sharing is also not a hidden low-gate SOTA
+route: `luo_pz_gate_slope_is_not_point_add_sota_shaped` converts the published
+~976 n^3 whole-ECDLP slope into `31,981,568` Toffoli per point-add proxy, about
+11.85x/15.23x above Google low-qubit/low-gate point-add budgets.
 
 Coefficient-transform refinement checked: a single Kaliski coefficient pair
 cannot both preserve `x` and expose `y/x` by just using a constant tag.  If
