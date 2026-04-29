@@ -300,3 +300,30 @@ At toy `n=8`, an all-row mask is already full degree (`16/16`) with density
 `20440/65536`; a high-column mask has degree `15/16` and density `3602/65536`.
 Carry-save avoids final propagation, but its majority carries are still dense
 phase functions.
+
+## Later coordinate check: slope-carried tags do not retarget cheaply
+
+A tempting way around the affine cleanup wall is to keep a 2n-bit accumulator
+as `(x, λ_Q)` instead of `(x, y)`, where `λ_Q=(y-Q_y)/(x-Q_x)` is the line
+slope relative to the current table point.  For a single fixed `Q`, keeping the
+slope as part of the output would avoid deleting the hard slope.  But Google's
+windowed point-add selects different table points, so the slope channel must be
+retargeted from `Q` to `Q'`:
+
+```text
+λ_Q' = (Q_y - Q'_y + λ_Q*(x-Q_x))/(x-Q'_x)
+```
+
+Executable test: `slope_carried_coordinate_retargeting_is_dense_division` in
+`src/point_add/single_inv_numeric.rs`.
+
+Toy results:
+
+```text
+full-domain retarget n=10: degree 19/20, density 522204/1048576
+curve-support retarget n=12: min_degree=4
+```
+
+So a single slope tag is just moving the variable division to every change of
+selected table point.  It is not a universal 2n-bit coordinate system for the
+windowed/kickmix architecture.

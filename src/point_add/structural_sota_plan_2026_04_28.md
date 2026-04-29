@@ -84,6 +84,21 @@ remove the second inverse: `1/bx = dx / (dx*bx)`.  Replacing `inv(bx)` by
 `inv(dx*bx)` merely moves the second Kaliski to a different denominator and adds
 at least one variable multiply (`149,889` CCX floor) to recover `1/bx`.
 
+A slope-carried coordinate channel is also closed for the windowed setting.
+Representing a point as `(x,λ_Q)` with `λ_Q=(y-Q_y)/(x-Q_x)` would avoid erasing
+one slope for a single fixed `Q`, but changing the next selected table point to
+`Q'` requires
+
+```text
+λ_Q' = (Q_y - Q'_y + λ_Q (x-Q_x))/(x-Q'_x)
+```
+
+which is exactly another variable division.  The executable probe
+`slope_carried_coordinate_retargeting_is_dense_division` gets full-domain toy
+`n=10` degree `19/20`, density `522204/1048576`, and curve-support `n=12`
+minimum degree `4`.  A single slope tag therefore does not provide a universal
+2n-bit accumulator representation for Google's windowed point-add circuit.
+
 ### Strategy C re-estimate at the current baseline
 
 Classically correct formula:

@@ -1174,6 +1174,135 @@ mod tests {
         panic!("toy curve had no point")
     }
 
+    fn second_curve_point_distinct_x_u16_for_phase_test(p: u16, qx0: u16) -> (u16, u16) {
+        for x in 1..p {
+            if x == qx0 {
+                continue;
+            }
+            for y in 1..p {
+                if is_curve_point_u16_for_phase_test(x, y, p) {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("toy curve had no second point with distinct x")
+    }
+
+    fn slope_tag_retarget_phase_anf_stats(n: usize, p: u16, qa: (u16, u16), qb: (u16, u16), phase_mask: u16) -> (usize, usize) {
+        // Full-domain ANF for changing the carried slope tag from being
+        // relative to qa to being relative to qb:
+        //   lambda_b = (qa_y - qb_y + lambda_a*(x - qa_x))/(x - qb_x).
+        // This is the coordinate-conversion cost that a slope-carried
+        // accumulator would pay when the next window selects a different table
+        // point.  Invalid bit patterns are mapped to 0, as in the other dense
+        // phase probes in this file.
+        let vars = 2 * n;
+        let size = 1usize << vars;
+        let limb_mask = (1u16 << n) - 1;
+        let mut anf = vec![0u8; size];
+        for idx in 0..size {
+            let x = (idx as u16) & limb_mask;
+            let lambda_a = ((idx >> n) as u16) & limb_mask;
+            let phase_word = if x < p && lambda_a < p && x != qb.0 {
+                let y = add_mod_u16_for_phase_test(
+                    qa.1,
+                    mul_mod_u16_for_phase_test(lambda_a, sub_mod_u16_for_phase_test(x, qa.0, p), p),
+                    p,
+                );
+                let lambda_b = mul_mod_u16_for_phase_test(
+                    sub_mod_u16_for_phase_test(y, qb.1, p),
+                    inv_mod_u16_for_phase_test(sub_mod_u16_for_phase_test(x, qb.0, p), p),
+                    p,
+                );
+                lambda_b
+            } else {
+                0
+            };
+            anf[idx] = ((phase_word & phase_mask).count_ones() & 1) as u8;
+        }
+        for bit in 0..vars {
+            for idx in 0..size {
+                if (idx & (1usize << bit)) != 0 {
+                    anf[idx] ^= anf[idx ^ (1usize << bit)];
+                }
+            }
+        }
+        let density = anf.iter().filter(|&&c| c != 0).count();
+        let degree = anf
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &c)| if c != 0 { Some(i.count_ones() as usize) } else { None })
+            .max()
+            .unwrap_or(0);
+        (degree, density)
+    }
+
+    fn slope_tag_retarget_support_phase_has_degree_at_most(
+        n: usize,
+        p: u16,
+        qa: (u16, u16),
+        qb: (u16, u16),
+        phase_mask: u16,
+        degree: usize,
+    ) -> bool {
+        let vars = 2 * n;
+        let masks = monomial_masks_for_curve_phase_test(vars, degree);
+        let cols = masks.len();
+        let chunks = (cols + 1 + 63) / 64;
+        let mut rows = Vec::new();
+        for x in 0..p {
+            if x == qa.0 || x == qb.0 {
+                continue;
+            }
+            for y in 0..p {
+                if !is_curve_point_u16_for_phase_test(x, y, p) {
+                    continue;
+                }
+                let lambda_a = mul_mod_u16_for_phase_test(
+                    sub_mod_u16_for_phase_test(y, qa.1, p),
+                    inv_mod_u16_for_phase_test(sub_mod_u16_for_phase_test(x, qa.0, p), p),
+                    p,
+                );
+                let lambda_b = mul_mod_u16_for_phase_test(
+                    sub_mod_u16_for_phase_test(y, qb.1, p),
+                    inv_mod_u16_for_phase_test(sub_mod_u16_for_phase_test(x, qb.0, p), p),
+                    p,
+                );
+                let idx = (x as u32) | ((lambda_a as u32) << n);
+                let mut row = vec![0u64; chunks];
+                for (col, &m) in masks.iter().enumerate() {
+                    if (idx & m) == m {
+                        row[col / 64] |= 1u64 << (col % 64);
+                    }
+                }
+                if ((lambda_b & phase_mask).count_ones() & 1) != 0 {
+                    row[cols / 64] |= 1u64 << (cols % 64);
+                }
+                rows.push(row);
+            }
+        }
+        let mut rows_a = rows.clone();
+        for row in &mut rows_a {
+            row[cols / 64] &= !(1u64 << (cols % 64));
+        }
+        let rank_a = gf2_rank_bitrows_for_curve_phase_test(&mut rows_a, cols);
+        let rank_aug = gf2_rank_bitrows_for_curve_phase_test(&mut rows, cols + 1);
+        rank_a == rank_aug
+    }
+
+    fn slope_tag_retarget_support_phase_min_degree(
+        n: usize,
+        p: u16,
+        qa: (u16, u16),
+        qb: (u16, u16),
+        phase_mask: u16,
+        max_degree: usize,
+    ) -> Option<usize> {
+        (0..=max_degree).find(|&d| {
+            slope_tag_retarget_support_phase_has_degree_at_most(n, p, qa, qb, phase_mask, d)
+        })
+    }
+
     fn lambda_from_output_const_u16_for_phase_test(rx: u16, ry: u16, qx: u16, qy: u16, p: u16) -> Option<u16> {
         if !is_curve_point_u16_for_phase_test(rx, ry, p) {
             return None;
@@ -1311,6 +1440,71 @@ mod tests {
             assert!(degree + 1 >= n);
             assert!(density > table / 4);
         }
+    }
+
+    #[test]
+    fn slope_carried_coordinate_retargeting_is_dense_division() {
+        // A more structural single-inversion escape is to stop insisting that
+        // the accumulator is affine.  Store a point as (x, lambda_Q), where
+        // lambda_Q = (y-Q_y)/(x-Q_x) is the slope of the line from a fixed table
+        // point Q to the accumulator.  For repeated addition by the SAME Q this
+        // carries the hard slope instead of erasing it.  But a windowed ECDLP
+        // point-add must retarget the slope channel when the next selected table
+        // point is Q' instead of Q:
+        //   lambda_Q' = (Q_y - Q'_y + lambda_Q*(x-Q_x))/(x-Q'_x).
+        // This is a fresh variable division.  Full-domain toy ANFs are nearly
+        // maximal degree/density, and even curve-support interpolation follows
+        // the same growing threshold as direct lambda MBUC.  So a single slope
+        // channel is not a universal 2n-bit coordinate system for Google's
+        // three-lookup/window point-add architecture.
+        let (qa8, qb8) = {
+            let qa = first_curve_point_u16_for_phase_test(251);
+            let qb = second_curve_point_distinct_x_u16_for_phase_test(251, qa.0);
+            (qa, qb)
+        };
+        let (deg8, dens8) = slope_tag_retarget_phase_anf_stats(8, 251, qa8, qb8, 0b1010_0101);
+        eprintln!(
+            "slope-tag retarget full ANF n=8 qa={qa8:?} qb={qb8:?}: degree={deg8}, density={dens8}/65536"
+        );
+        assert_eq!(deg8, 15);
+        assert_eq!(dens8, 32_320);
+
+        let (qa10, qb10) = {
+            let qa = first_curve_point_u16_for_phase_test(1021);
+            let qb = second_curve_point_distinct_x_u16_for_phase_test(1021, qa.0);
+            (qa, qb)
+        };
+        let (deg10, dens10) = slope_tag_retarget_phase_anf_stats(10, 1021, qa10, qb10, 0b10_1001_0101);
+        println!("METRIC slope_tag_retarget_full_degree_n10={deg10}");
+        println!("METRIC slope_tag_retarget_full_density_n10={dens10}");
+        eprintln!(
+            "slope-tag retarget full ANF n=10 qa={qa10:?} qb={qb10:?}: degree={deg10}, density={dens10}/1048576"
+        );
+        assert_eq!(deg10, 19);
+        assert_eq!(dens10, 522_204);
+
+        let support_cases = [
+            (6usize, 61u16, 0b10_1010u16, 2usize),
+            (8usize, 251u16, 0b1010_0101u16, 3usize),
+            (10usize, 1021u16, 0b10_1001_0101u16, 3usize),
+            (12usize, 4093u16, 0b1010_0101_0101u16, 4usize),
+        ];
+        let mut last = 0usize;
+        for &(n, p, mask, expected) in &support_cases {
+            let qa = first_curve_point_u16_for_phase_test(p);
+            let qb = second_curve_point_distinct_x_u16_for_phase_test(p, qa.0);
+            let got = slope_tag_retarget_support_phase_min_degree(n, p, qa, qb, mask, expected)
+                .expect("slope retarget support phase should interpolate by expected degree");
+            eprintln!(
+                "slope-tag retarget support phase: n={n}, p={p}, qa={qa:?}, qb={qb:?}, min_degree={got}"
+            );
+            if n == 12 {
+                println!("METRIC slope_tag_retarget_support_min_degree_n12={got}");
+            }
+            assert!(got >= last);
+            last = got;
+        }
+        assert!(last >= 4);
     }
 
     #[test]
