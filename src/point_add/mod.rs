@@ -4047,11 +4047,13 @@ const R_SMALL_THRESHOLD: usize = 255;
 const BULK_PREFIX_SAFE_ITERS: usize = 375;
 
 fn bulk_prefix_safe_iters() -> usize {
-    let default = if std::env::var("BY_CENTERED_CLEAN_ROUNDTRIP_BENCH").ok().as_deref() == Some("1") {
-        // The huge exact centered roundtrip hook changes the circuit hash / RNG
-        // stream enough that the aggressively tuned 375 bulk-prefix setting hits
-        // a rare phase cliff in the old Kaliski scaffold.  Use the previously
-        // validated 370 setting for this smoke hook; normal default remains 375.
+    let centered_roundtrip_hook = std::env::var("BY_CENTERED_CLEAN_ROUNDTRIP_BENCH").ok().as_deref() == Some("1")
+        || std::env::var("BY_CENTERED_FAST_CLEAN_ROUNDTRIP_BENCH").ok().as_deref() == Some("1");
+    let default = if centered_roundtrip_hook {
+        // The huge centered roundtrip hooks change the circuit hash / RNG stream
+        // enough that the aggressively tuned 375 bulk-prefix setting can hit a
+        // rare phase cliff in the old Kaliski scaffold. Use the previously
+        // validated 370 setting for these smoke hooks; normal default remains 375.
         370
     } else {
         BULK_PREFIX_SAFE_ITERS
@@ -4155,6 +4157,20 @@ fn by_signed_controlled_add_for_bench(b: &mut B, acc: &[QubitId], a: &[QubitId],
         b.ccx(ctrl, a[i], f[i]);
     }
     add_nbit_qq_fast(b, &f, acc);
+    for i in 0..acc.len() {
+        let m = b.alloc_bit();
+        b.hmr(f[i], m);
+        b.cz_if(ctrl, a[i], m);
+    }
+    b.free_vec(&f);
+}
+
+fn by_signed_controlled_sub_for_bench(b: &mut B, acc: &[QubitId], a: &[QubitId], ctrl: QubitId) {
+    let f = b.alloc_qubits(acc.len());
+    for i in 0..acc.len() {
+        b.ccx(ctrl, a[i], f[i]);
+    }
+    sub_nbit_qq_fast(b, &f, acc);
     for i in 0..acc.len() {
         let m = b.alloc_bit();
         b.hmr(f[i], m);
@@ -4280,6 +4296,30 @@ fn by_centered_halve_live_parity_exact_for_bench(b: &mut B, v: &[QubitId], parit
     b.free(sign_hist);
 }
 
+fn by_centered_unhalve_with_parity_for_bench(b: &mut B, v: &[QubitId], parity: QubitId, p: U256) {
+    by_arithmetic_shift_left_even_inverse_for_bench(b, v);
+    let sign_hist = b.alloc_qubit();
+    let add_ctrl = b.alloc_qubit();
+    let sub_ctrl = b.alloc_qubit();
+    let sign = v[v.len() - 1];
+    b.cx(sign, sign_hist);
+    b.ccx(parity, sign_hist, add_ctrl);
+    b.x(sign_hist);
+    b.ccx(parity, sign_hist, sub_ctrl);
+    b.x(sign_hist);
+    cadd_nbit_const_fast(b, v, p, add_ctrl);
+    csub_nbit_const_fast(b, v, p, sub_ctrl);
+    b.x(sign_hist);
+    b.ccx(parity, sign_hist, sub_ctrl);
+    b.x(sign_hist);
+    b.ccx(parity, sign_hist, add_ctrl);
+    b.free(sub_ctrl);
+    b.free(add_ctrl);
+    b.cx(sign, sign_hist);
+    b.cx(parity, sign_hist);
+    b.free(sign_hist);
+}
+
 fn by_centered_unhalve_with_parity_exact_for_bench(b: &mut B, v: &[QubitId], parity: QubitId, p: U256) {
     by_arithmetic_shift_left_even_inverse_for_bench(b, v);
     let sign_hist = b.alloc_qubit();
@@ -4306,6 +4346,23 @@ fn by_centered_unhalve_with_parity_exact_for_bench(b: &mut B, v: &[QubitId], par
     b.cx(sign, sign_hist);
     b.cx(parity, sign_hist);
     b.free(sign_hist);
+}
+
+fn centered_signed_by_microstep_inverse_for_bench(
+    b: &mut B,
+    r: &[QubitId],
+    s: &[QubitId],
+    odd: QubitId,
+    a: QubitId,
+    parity: QubitId,
+    p: U256,
+) {
+    by_centered_unhalve_with_parity_for_bench(b, s, parity, p);
+    by_signed_controlled_sub_for_bench(b, s, r, odd);
+    by_twos_cneg_for_bench(b, s, a);
+    for i in 0..r.len() {
+        cswap(b, a, r[i], s[i]);
+    }
 }
 
 fn centered_signed_by_microstep_all_exact_for_bench(
@@ -4460,6 +4517,86 @@ fn emit_centered_signed_by_clean_roundtrip_benchmark_scaffold(b: &mut B, p: U256
     // Leave the zeroed scratch allocated in this smoke hook. If any of it is
     // nonzero the ancilla-garbage checker catches it directly; avoiding R here
     // keeps the hook from hiding restoration bugs behind reset phase noise.
+    let _ = (odd, a_ctrl, parity, r, s);
+}
+
+fn emit_centered_signed_by_fast_clean_roundtrip_benchmark_scaffold(b: &mut B, p: U256) {
+    // Same fixed-trace clean roundtrip as BY_CENTERED_CLEAN_ROUNDTRIP_BENCH,
+    // but using the fast MBU centered signed replay body.  This is the quickest
+    // harness check after the unhalve sign-history fix: if this passes, the
+    // sub-million centered replay body is compatible with real parity cleanup.
+    const WIDE: usize = N + 4;
+    const ODD_WORDS: [u64; 9] = [
+        0x9f0102a4a879b9a7,
+        0x39950f607ecb1db3,
+        0xefaf7e99e64fb43a,
+        0x6f3857abf7ed1f44,
+        0x5b90e29f6d3d3b0c,
+        0xb9f3f86e0ff7143e,
+        0xb54e3a746addb473,
+        0xd88e00e18c323864,
+        0x00000000066e560a,
+    ];
+    const A_WORDS: [u64; 9] = [
+        0x9501008408488925,
+        0x0881002054411510,
+        0x2525548924450402,
+        0x2508548955211544,
+        0x4910209521111104,
+        0x8911080205550412,
+        0x9542124422548410,
+        0x4802002104120824,
+        0x0000000002220202,
+    ];
+    const START_S_WORDS: [u64; 5] = [
+        0x543668999ebc619a,
+        0xe53862dc6983ea27,
+        0x70aaecb9190602dd,
+        0x0d5ac6c9f6d54fca,
+        0x0000000000000000,
+    ];
+    b.set_phase("by_centered_fast_clean_roundtrip_bench_alloc");
+    let odd = b.alloc_qubits(560);
+    let a_ctrl = b.alloc_qubits(560);
+    let parity = b.alloc_qubits(560);
+    let r = b.alloc_qubits(WIDE);
+    let s = b.alloc_qubits(WIDE);
+    for i in 0..560 {
+        if ((ODD_WORDS[i / 64] >> (i % 64)) & 1) != 0 {
+            b.x(odd[i]);
+        }
+        if ((A_WORDS[i / 64] >> (i % 64)) & 1) != 0 {
+            b.x(a_ctrl[i]);
+        }
+    }
+    for i in 0..WIDE {
+        if ((START_S_WORDS[i / 64] >> (i % 64)) & 1) != 0 {
+            b.x(s[i]);
+        }
+    }
+    b.set_phase("by_centered_fast_clean_roundtrip_bench_forward");
+    for i in 0..560 {
+        centered_signed_by_microstep_for_bench(b, &r, &s, odd[i], a_ctrl[i], parity[i], p);
+    }
+    b.set_phase("by_centered_fast_clean_roundtrip_bench_inverse");
+    for i in (0..560).rev() {
+        centered_signed_by_microstep_inverse_for_bench(b, &r, &s, odd[i], a_ctrl[i], parity[i], p);
+        centered_signed_by_clear_parity_after_inverse_for_bench(b, &r, &s, odd[i], parity[i]);
+    }
+    b.set_phase("by_centered_fast_clean_roundtrip_bench_free");
+    for i in 0..WIDE {
+        if ((START_S_WORDS[i / 64] >> (i % 64)) & 1) != 0 {
+            b.x(s[i]);
+        }
+    }
+    for i in 0..560 {
+        if ((A_WORDS[i / 64] >> (i % 64)) & 1) != 0 {
+            b.x(a_ctrl[i]);
+        }
+        if ((ODD_WORDS[i / 64] >> (i % 64)) & 1) != 0 {
+            b.x(odd[i]);
+        }
+    }
     let _ = (odd, a_ctrl, parity, r, s);
 }
 
@@ -7326,6 +7463,9 @@ pub fn build() -> Vec<Op> {
     }
     if std::env::var("BY_CENTERED_CLEAN_ROUNDTRIP_BENCH").ok().as_deref() == Some("1") {
         emit_centered_signed_by_clean_roundtrip_benchmark_scaffold(b, p);
+    }
+    if std::env::var("BY_CENTERED_FAST_CLEAN_ROUNDTRIP_BENCH").ok().as_deref() == Some("1") {
+        emit_centered_signed_by_fast_clean_roundtrip_benchmark_scaffold(b, p);
     }
 
     if std::env::var("BY_TEST").is_ok() {

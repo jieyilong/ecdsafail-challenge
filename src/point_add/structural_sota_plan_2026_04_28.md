@@ -852,6 +852,27 @@ importantly, the sign-history fix reopens the fast MBU centered cleanup path:
 the previous data-dependent phase diagnosis was polluted by a dirty unhalve
 control, not necessarily by a fundamental signed-adder phase witness.
 
+The fast cleaned body is now also wired behind
+`BY_CENTERED_FAST_CLEAN_ROUNDTRIP_BENCH=1`. It uses the same fixed real BY
+control trace and corrected unhalve, but uses the fast MBU centered replay body
+instead of all-exact arithmetic:
+
+```text
+BY_CENTERED_FAST_CLEAN_ROUNDTRIP_BENCH=1
+avg_toffoli = 5,860,218
+qubits      = 3,235
+emitted_ops = 47,024,860
+altseed/classical/phase/ancilla failures = 0
+```
+
+This is still Kaliski + appended BY roundtrip, not a replacement. The useful
+increment is `≈1.748M` Toffoli for a clean forward+inverse centered replay with
+raw odd/A/parity controls, matching `2×873,600` plus tiny parity-clear overhead.
+The price is peak width (`3,235q`) because raw controls and fast-adder workspace
+are all live. It is nevertheless the first production-harness proof that the
+SOTA-shaped fast centered replay can be cleaned once the correct unhalve
+sign-history is used.
+
 Naively synthesizing the range test is too expensive:
 `naive_centered_parity_recovery_cost_would_erase_redundant_replay_win` measures
 about `1,296 CCX/flag`, or `≈725,760` CCX just to clean 560 parity bits. A cheap
