@@ -1750,6 +1750,35 @@ mod tests {
         (acc + mul_i128_mod_width_for_streaming_test(x, coeff, bits)) & mask_u512_bits_for_streaming_test(bits)
     }
 
+    fn sint_residue_u512_for_streaming_test(x: SInt, bits: usize) -> U512 {
+        let mask = mask_u512_bits_for_streaming_test(bits);
+        let mag = U512::from(x.mag) & mask;
+        if x.neg {
+            ((!mag) + U512::from(1u64)) & mask
+        } else {
+            mag
+        }
+    }
+
+    fn h_ratio_step_u512_for_streaming_test(delta: i64, h: U512, t: usize) -> (i64, U512, bool) {
+        let odd = h.bit(0);
+        if t == 1 {
+            let next_delta = if delta > 0 && odd { 1 - delta } else { 1 + delta };
+            return (next_delta, U512::ZERO, odd);
+        }
+        let next_bits = t - 1;
+        let mask = mask_u512_bits_for_streaming_test(next_bits);
+        if delta > 0 && odd {
+            let half_num = (h - U512::from(1u64)) >> 1usize;
+            let inv_h = inv_odd_u512_pow2_for_streaming_test(h, next_bits);
+            (1 - delta, (half_num * inv_h) & mask, odd)
+        } else if odd {
+            (1 + delta, ((h + U512::from(1u64)) >> 1usize) & mask, odd)
+        } else {
+            (1 + delta, (h >> 1usize) & mask, odd)
+        }
+    }
+
     fn low_i16_from_residue_for_streaming_test(x: U512) -> i128 {
         let low = x.as_limbs()[0] & 0xffff;
         if (low & 0x8000) != 0 {
@@ -2210,6 +2239,49 @@ mod tests {
         );
         assert_eq!(c_core_bits, 528);
         assert!(c_core_bits < 600, "post-tail selector core misses low-scratch target");
+    }
+
+    #[test]
+    fn tail_ratio_state_streams_remaining_branches_in_304_bits() {
+        // After the first 16 windows, the 256-bit x tail is exhausted.  Instead
+        // of keeping both carry rows (528 bits), keep the 2-adic ratio
+        // h=g/f mod 2^304.  The closed BY ratio update streams the remaining
+        // 304 branch bits exactly while the active h width tapers by one bit per
+        // divstep.  The same 304-qubit register can also hold the consumed tail
+        // branch history in its vacated high bits in a reversible circuit.
+        const PREFIX_WINDOWS: usize = 16;
+        const REM_BITS: usize = (35 - PREFIX_WINDOWS) * 16;
+        let samples = 64usize;
+        let mut sampler = Sampler::new(b"by-tail-ratio-state-v1", SECP256K1_P);
+        for _ in 0..samples {
+            let x = sampler.next();
+            let mut delta = 1i64;
+            let mut f = SInt::from_u(SECP256K1_P);
+            let mut g = SInt::from_u(x);
+            for _ in 0..(PREFIX_WINDOWS * 16) {
+                divstep_sint_state(&mut delta, &mut f, &mut g);
+            }
+            let f_res = sint_residue_u512_for_streaming_test(f, REM_BITS);
+            assert!(f_res.bit(0), "f must remain odd for BY ratio state");
+            let g_res = sint_residue_u512_for_streaming_test(g, REM_BITS);
+            let mut h = (g_res * inv_odd_u512_pow2_for_streaming_test(f_res, REM_BITS))
+                & mask_u512_bits_for_streaming_test(REM_BITS);
+            let mut d_h = delta;
+            for t in (1..=REM_BITS).rev() {
+                let (next_d, next_h, odd_h) = h_ratio_step_u512_for_streaming_test(d_h, h, t);
+                assert_eq!(odd_h, g.bit0(), "ratio odd mismatch at t={t}");
+                divstep_sint_state(&mut delta, &mut f, &mut g);
+                assert_eq!(next_d, delta, "ratio delta mismatch at t={t}");
+                d_h = next_d;
+                h = next_h;
+            }
+            assert!(g.is_zero(), "remaining BY steps did not converge g");
+            assert_eq!(h, U512::ZERO, "ratio state did not taper to zero");
+        }
+        eprintln!(
+            "BY tail ratio selector: samples={samples}, prefix_windows={PREFIX_WINDOWS}, tail_bits={REM_BITS}"
+        );
+        assert_eq!(REM_BITS, 304);
     }
 
     #[test]

@@ -119,6 +119,35 @@ two-to-one.  Therefore the x-column must be recomputed from retained pattern
 history, kept at a wider exact width, or cleaned by a nontrivial MBUC phase
 method.  Do not wire the 816-bit model as a rolling register.
 
+## Tail ratio compression
+
+Once the first 16 windows have consumed all quantum bits of `x`, the remaining
+19 windows do not need a two-row carry at all.  Because BY branch choices are
+invariant under common odd scale, keep only
+
+```text
+h = g/f mod 2^304
+```
+
+and update it with the closed 2-adic ratio formulas.  The test
+`tail_ratio_state_streams_remaining_branches_in_304_bits` validates this for 64
+sampled denominators: the 304-bit `h` stream produces exactly the same remaining
+branch bits and tapers to zero.
+
+This reframes the selector budget:
+
+```text
+first16 fixed pattern IDs ≈ 208 bits
+post-tail ratio/history   = 304 bits
+combined selector payload = 512 bits
+```
+
+That is finally low-qubit-shaped in information terms (`512 data + 512 selector
+≈ 1024q`, before b-workspace and arithmetic scratch).  The remaining hard part
+is making the transition from first16 carry state to `h` reversible/cheap, and
+borrowing/recomputing the 288-bit first16 x-column workspace without keeping it
+live next to replay.
+
 A tempting projective normalization sets the folded carry `c0=1`, because BY
 branch choices are invariant under a common odd scale.  That would reduce the
 selector to three entries:
