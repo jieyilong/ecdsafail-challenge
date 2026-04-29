@@ -2711,6 +2711,30 @@ mod tests {
     }
 
     #[test]
+    fn centered_signed_replay_budget_hits_google_if_parity_and_denominator_are_folded() {
+        let non_inv_scaffold = 942_750.0;
+        let deleted_pair1_muls = 149_889.0 + 150_145.0;
+        let two_replay_scaffold = non_inv_scaffold
+            - deleted_pair1_muls
+            - 407.0 * 255.0
+            - 404.0 * 255.0
+            - 150_145.0;
+        let centered_replay = 873_600.0;
+        let tapered_den_compute_per_denominator = 303_828.0;
+        let naive_parity_cleanup_per_replay = 725_760.0;
+        let folded_parity_selected_denominator = two_replay_scaffold
+            + 2.0 * centered_replay
+            + 2.0 * tapered_den_compute_per_denominator;
+        let naive_parity_total = folded_parity_selected_denominator + 2.0 * naive_parity_cleanup_per_replay;
+        eprintln!(
+            "centered signed BY budget: scaffold≈{two_replay_scaffold:.0}, two_replay≈{:.0}, +selected_den≈{folded_parity_selected_denominator:.0}, naive_parity≈{naive_parity_total:.0}",
+            2.0 * centered_replay
+        );
+        assert!(folded_parity_selected_denominator < 2_700_000.0, "centered replay no longer has low-qubit SOTA margin with selected denominator");
+        assert!(naive_parity_total > 3_500_000.0, "naive parity cleanup unexpectedly acceptable");
+    }
+
+    #[test]
     fn low_scratch_scaled_by_budget_still_beats_27m_after_pair1_mul_deletion() {
         // Important refinement: a true tagged DIV does not merely replace the
         // two Kaliski bodies. It also deletes pair1's two schoolbook
@@ -3965,6 +3989,25 @@ mod tests {
         b.free_vec(&f);
     }
 
+    fn emit_signed_controlled_sub_for_test(
+        b: &mut super::super::B,
+        acc: &[super::super::QubitId],
+        a: &[super::super::QubitId],
+        ctrl: super::super::QubitId,
+    ) {
+        let f = b.alloc_qubits(acc.len());
+        for i in 0..acc.len() {
+            b.ccx(ctrl, a[i], f[i]);
+        }
+        super::super::sub_nbit_qq_fast(b, &f, acc);
+        for i in 0..acc.len() {
+            let m = b.alloc_bit();
+            b.hmr(f[i], m);
+            b.cz_if(ctrl, a[i], m);
+        }
+        b.free_vec(&f);
+    }
+
     fn emit_signed_redundant_halve_live_parity_for_test(
         b: &mut super::super::B,
         v: &[super::super::QubitId],
@@ -4041,6 +4084,49 @@ mod tests {
         emit_twos_complement_cneg_for_test(b, s, a_ctrl);
         emit_signed_controlled_add_for_test(b, s, r, odd_ctrl);
         emit_signed_redundant_halve_centered_live_parity_for_test(b, s, parity_hist, p);
+    }
+
+    fn emit_signed_redundant_unhalve_centered_with_parity_for_test(
+        b: &mut super::super::B,
+        v: &[super::super::QubitId],
+        parity_hist: super::super::QubitId,
+        p: U256,
+    ) {
+        // Inverse of the centered halve with a stored parity bit: arithmetic
+        // shift left, then if parity was set undo the sign-conditioned ±p.
+        emit_arithmetic_shift_left_even_inverse_for_test(b, v);
+        let add_ctrl = b.alloc_qubit();
+        let sub_ctrl = b.alloc_qubit();
+        let sign = v[v.len() - 1];
+        b.ccx(parity_hist, sign, add_ctrl);
+        b.x(sign);
+        b.ccx(parity_hist, sign, sub_ctrl);
+        b.x(sign);
+        super::super::cadd_nbit_const_fast(b, v, p, add_ctrl);
+        super::super::csub_nbit_const_fast(b, v, p, sub_ctrl);
+        b.x(sign);
+        b.ccx(parity_hist, sign, sub_ctrl);
+        b.x(sign);
+        b.ccx(parity_hist, sign, add_ctrl);
+        b.free(sub_ctrl);
+        b.free(add_ctrl);
+    }
+
+    fn emit_scaled_by_centered_signed_microstep_inverse_live_parity_for_test(
+        b: &mut super::super::B,
+        r: &[super::super::QubitId],
+        s: &[super::super::QubitId],
+        odd_ctrl: super::super::QubitId,
+        a_ctrl: super::super::QubitId,
+        parity_hist: super::super::QubitId,
+        p: U256,
+    ) {
+        emit_signed_redundant_unhalve_centered_with_parity_for_test(b, s, parity_hist, p);
+        emit_signed_controlled_sub_for_test(b, s, r, odd_ctrl);
+        emit_twos_complement_cneg_for_test(b, s, a_ctrl);
+        for i in 0..r.len() {
+            super::super::cswap(b, a_ctrl, r[i], s[i]);
+        }
     }
 
     fn emit_scaled_by_controlled_microstep_for_test(
@@ -6076,6 +6162,127 @@ mod tests {
         assert_eq!(mismatches, 0, "centered range parity recovery formula failed");
     }
 
+    fn sw_highbits_outside_center_for_test(x: SignedWideForTest) -> bool {
+        x.mag.bit(255)
+    }
+
+    #[test]
+    fn centered_parity_highbits_recovery_is_too_approximate_without_boundary_fix() {
+        // Tempting shortcut: exact centered recovery tests |E|>p/2, and p/2 is
+        // close to 2^255, so maybe testing only signed-255 overflow is enough.
+        // It is not: actual centered BY states hit the boundary band often
+        // enough to exceed the user's 1% approximate-failure tolerance. Any
+        // cheap range recovery needs an exact/special boundary correction, not
+        // just high bits.
+        let p = SECP256K1_P;
+        let p512 = u256_to_u512_for_by_tests(p);
+        let samples = 2_000usize;
+        let mut sx = Sampler::new(b"by-centered-highbits-parity-x-v1", p);
+        let mut sy = Sampler::new(b"by-centered-highbits-parity-y-v1", p);
+        let mut mismatches = 0usize;
+        let mut checks = 0usize;
+        for _ in 0..samples {
+            let x = sx.next();
+            let y = sy.next();
+            let mut delta = 1i64;
+            let mut f = SInt::from_u(p);
+            let mut g = SInt::from_u(x);
+            let mut r = sw_zero_for_test();
+            let mut s = sw_centered_from_u256_for_test(addm(y, x, p), p);
+            for _ in 0..560 {
+                let odd = g.bit0();
+                let a = delta > 0 && odd;
+                if a {
+                    let old_r = r;
+                    let old_s = s;
+                    let t = sw_sub_for_test(old_s, old_r);
+                    let par = t.mag.bit(0);
+                    let ns = sw_half_modp_centered_for_test(t, p512);
+                    let even_preimage = sw_sub_for_test(old_s, SignedWideForTest { neg: ns.neg, mag: ns.mag << 1usize });
+                    let rec = sw_highbits_outside_center_for_test(even_preimage);
+                    if rec != par { mismatches += 1; }
+                    r = old_s;
+                    s = ns;
+                } else if odd {
+                    let t = sw_add_for_test(s, r);
+                    let par = t.mag.bit(0);
+                    let ns = sw_half_modp_centered_for_test(t, p512);
+                    let even_preimage = sw_sub_for_test(SignedWideForTest { neg: ns.neg, mag: ns.mag << 1usize }, r);
+                    let rec = sw_highbits_outside_center_for_test(even_preimage);
+                    if rec != par { mismatches += 1; }
+                    s = ns;
+                } else {
+                    let par = s.mag.bit(0);
+                    let ns = sw_half_modp_centered_for_test(s, p512);
+                    let even_preimage = SignedWideForTest { neg: ns.neg, mag: ns.mag << 1usize };
+                    let rec = sw_highbits_outside_center_for_test(even_preimage);
+                    if rec != par { mismatches += 1; }
+                    s = ns;
+                }
+                checks += 1;
+                divstep_sint_state(&mut delta, &mut f, &mut g);
+            }
+        }
+        let fail_rate = mismatches as f64 / checks as f64;
+        eprintln!(
+            "BY centered parity highbits recovery dead end: mismatches={mismatches}/{checks} ({fail_rate:.6})"
+        );
+        assert!(fail_rate > 0.01, "high-bit shortcut might satisfy approximate tolerance; revisit");
+    }
+
+    fn emit_highbits_outside_center_into_for_test(
+        b: &mut super::super::B,
+        v: &[super::super::QubitId],
+        flag: super::super::QubitId,
+    ) {
+        let sign = v[v.len() - 1];
+        let scratch = b.alloc_qubits(v.len() - 1 - 255);
+        for (j, i) in (255..v.len() - 1).enumerate() {
+            b.cx(v[i], scratch[j]);
+            b.cx(sign, scratch[j]);
+        }
+        super::super::cmp_neq_zero_into(b, &scratch, flag);
+        for (j, i) in (255..v.len() - 1).enumerate().rev() {
+            b.cx(sign, scratch[j]);
+            b.cx(v[i], scratch[j]);
+        }
+        b.free_vec(&scratch);
+    }
+
+    fn emit_centered_b_parity_highbits_recovery_for_cost(
+        b: &mut super::super::B,
+        r_out: &[super::super::QubitId],
+        s_out: &[super::super::QubitId],
+        flag: super::super::QubitId,
+    ) {
+        let n = s_out.len();
+        let tmp = b.alloc_qubits(n);
+        for i in 0..n - 1 { b.cx(s_out[i], tmp[i + 1]); }
+        super::super::sub_nbit_qq_fast(b, r_out, &tmp);
+        emit_highbits_outside_center_into_for_test(b, &tmp, flag);
+        super::super::add_nbit_qq_fast(b, r_out, &tmp);
+        for i in (0..n - 1).rev() { b.cx(s_out[i], tmp[i + 1]); }
+        b.free_vec(&tmp);
+    }
+
+    #[test]
+    fn highbits_centered_parity_recovery_cost_is_plausible_if_folded() {
+        const WIDE: usize = 260;
+        let mut b = super::super::B::new();
+        let r = b.alloc_qubits(WIDE);
+        let s = b.alloc_qubits(WIDE);
+        let flag = b.alloc_qubit();
+        let start = b.ops.len();
+        emit_centered_b_parity_highbits_recovery_for_cost(&mut b, &r, &s, flag);
+        let ccx = count_ccx(&b.ops[start..]);
+        let cleanup560 = ccx as f64 * 560.0;
+        eprintln!(
+            "BY highbits centered parity recovery: ccx_per_Bflag={ccx}, cleanup560_worst≈{cleanup560:.0}, peak={}q",
+            b.peak_qubits
+        );
+        assert!(ccx < 600, "high-bit parity recovery no better than full range comparator");
+    }
+
     fn emit_centered_b_parity_recovery_for_cost(
         b: &mut super::super::B,
         r_out: &[super::super::QubitId],
@@ -6250,6 +6457,90 @@ mod tests {
         assert!(ccx < 900_000, "centered signed scaffold lost sub-million replay target");
         assert!(peak < 2_800, "centered signed scaffold exceeds current cap");
         assert_eq!(sim.global_phase() & 1, 0, "centered signed scaffold phase garbage");
+    }
+
+    #[test]
+    fn centered_signed_inverse_560_product_clean_scaffold_matches_forward_cost() {
+        const WIDE: usize = 260;
+        let p = SECP256K1_P;
+        let p512 = u256_to_u512_for_by_tests(p);
+        let mut sx = Sampler::new(b"by-centered-inv-560-x-v1", p);
+        let mut sq = Sampler::new(b"by-centered-inv-560-q-v1", p);
+        let (x, q, controls, parity_hist, f_final, final_r, final_s, start_s) = loop {
+            let x = sx.next();
+            let q = sq.next();
+            let start_s = sw_centered_from_u256_for_test(mulm(q, x, p), p);
+            let mut delta = 1i64;
+            let mut f = SInt::from_u(p);
+            let mut g = SInt::from_u(x);
+            let mut controls = Vec::with_capacity(560);
+            let mut parity_hist = Vec::with_capacity(560);
+            let mut r = sw_zero_for_test();
+            let mut s = start_s;
+            for _ in 0..560 {
+                let odd = g.bit0();
+                let a = delta > 0 && odd;
+                controls.push((odd, a));
+                if a {
+                    let nr = s;
+                    let t = sw_sub_for_test(s, r);
+                    parity_hist.push(t.mag.bit(0));
+                    s = sw_half_modp_centered_for_test(t, p512);
+                    r = nr;
+                } else if odd {
+                    let t = sw_add_for_test(s, r);
+                    parity_hist.push(t.mag.bit(0));
+                    s = sw_half_modp_centered_for_test(t, p512);
+                } else {
+                    parity_hist.push(s.mag.bit(0));
+                    s = sw_half_modp_centered_for_test(s, p512);
+                }
+                divstep_sint_state(&mut delta, &mut f, &mut g);
+            }
+            if g.is_zero() && (f.is_one_pos() || f.is_one_neg()) {
+                break (x, q, controls, parity_hist, f, r, s, start_s);
+            }
+        };
+        assert_eq!(sw_mod_p_for_test(final_s, p), U256::ZERO, "forward centered final s not zero");
+        let r_mod = sw_mod_p_for_test(final_r, p);
+        let recovered_q = if f_final.is_one_pos() { r_mod } else { negm(r_mod, p) };
+        assert_eq!(recovered_q, q, "forward centered q frame mismatch before inverse test");
+
+        let mut b = super::super::B::new();
+        let odd = b.alloc_qubits(560);
+        let a_ctrl = b.alloc_qubits(560);
+        let parity = b.alloc_qubits(560);
+        let r = b.alloc_qubits(WIDE);
+        let s = b.alloc_qubits(WIDE);
+        for i in (0..560).rev() {
+            emit_scaled_by_centered_signed_microstep_inverse_live_parity_for_test(&mut b, &r, &s, odd[i], a_ctrl[i], parity[i], p);
+        }
+        let ccx = count_ccx(&b.ops);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let mut hasher = sha3::Shake128::default();
+        hasher.update(b"by-centered-inv-560-sim-v1");
+        let mut xof = hasher.finalize_xof();
+        let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+        for (i, &(odd_v, a_v)) in controls.iter().enumerate() {
+            if odd_v { *sim.qubit_mut(odd[i]) |= 1; }
+            if a_v { *sim.qubit_mut(a_ctrl[i]) |= 1; }
+            if parity_hist[i] { *sim.qubit_mut(parity[i]) |= 1; }
+        }
+        set_slice_u512_by(&mut sim, &r, sw_twos_for_width_for_test(final_r, WIDE));
+        set_slice_u512_by(&mut sim, &s, sw_twos_for_width_for_test(final_s, WIDE));
+        sim.apply(&ops);
+        assert_eq!(get_slice_u512_by(&sim, &r), U512::ZERO, "inverse centered r not zero");
+        assert_eq!(get_slice_u512_by(&sim, &s), sw_twos_for_width_for_test(start_s, WIDE), "inverse centered product mismatch");
+        assert_eq!(sw_mod_p_for_test(start_s, p), mulm(q, x, p), "start product frame mismatch");
+        eprintln!(
+            "BY centered signed inverse 560 scaffold: ccx={ccx}, peak={peak}q"
+        );
+        assert!(ccx < 900_000, "centered inverse scaffold lost sub-million target");
+        assert!(peak < 2_800, "centered inverse scaffold exceeds current cap");
+        assert_eq!(sim.global_phase() & 1, 0, "centered inverse scaffold phase garbage");
     }
 
     #[test]

@@ -789,12 +789,35 @@ A: parity = !(r_out - 2*s_out is centered)
 C: parity = !(2*s_out is centered)
 ```
 
-Naively synthesizing that range test is too expensive:
-`naive_centered_parity_recovery_cost_would_erase_redundant_replay_win` measures
-about `1,296 CCX/flag`, or `≈725,760` CCX just to clean 560 parity bits. So the
-parity problem is now precise: **fold this centered-range recovery into the
-inverse/window arithmetic instead of doing it as a separate post-hoc cleanup**.
+The inverse/product-clean direction has also been synthesized with the same
+cost:
 
+```text
+centered signed inverse 560 scaffold = 873,600 CCX
+peak                                 = 2,722q
+```
+
+Naively synthesizing the range test is too expensive:
+`naive_centered_parity_recovery_cost_would_erase_redundant_replay_win` measures
+about `1,296 CCX/flag`, or `≈725,760` CCX just to clean 560 parity bits. A cheap
+high-bit-only approximation is not acceptable either:
+`centered_parity_highbits_recovery_is_too_approximate_without_boundary_fix`
+finds `65,709/1,120,000 = 5.87%` mismatches, above the user's 1% tolerance.
+It is cheaper (`≈524 CCX/B-flag`) but needs an exact boundary correction.
+
+With the current centered replay body and selected/tapered denominator target,
+the folded-cleanup budget is SOTA-shaped:
+
+```text
+non-BY scaffold after deletions      ≈   285,766
+2× centered signed replay            ≈ 1,747,200
+2× selected/tapered denominator      ≈   607,656
+projected if parity folded           ≈ 2,640,622
+naive parity cleanup projection      ≈ 4,092,142
+```
+
+So the parity problem is now precise: **fold centered-range recovery into the
+inverse/window arithmetic instead of doing it as a separate post-hoc cleanup**.
 The moonshot replay problem has therefore split into two concrete options:
 clean/absorb 560 red flags at ~1.00M replay, or move to centered signed
 representatives and solve centered-range parity cleanup around an `873,600` CCX
