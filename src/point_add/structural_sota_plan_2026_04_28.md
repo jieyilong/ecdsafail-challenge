@@ -1571,3 +1571,13 @@ current primitives**.  Do not wire it using existing Kaliski/BY product-clean
 machinery; it only becomes SOTA-shaped if we invent a genuinely new phase-clean
 in-place variable multiply/divide primitive at roughly schoolbook cost and
 without raw inverse/history storage.
+
+First primitive attempt after this decision: destructive Montgomery IMUL.  The
+idea was to scan the old multiplier bits into a Montgomery add-and-halve
+accumulator, zeroing the multiplier as we go and leaving a product accumulator.
+Forward algebra works (`t=x*y*2^-n mod p`), but local reversibility fails.
+`destructive_montgomery_product_is_algebraically_promising_but_not_locally_reversible`
+finds a concrete small-prime reachable window with 512 valid predecessors for
+the same post-accumulator.  Therefore consumed multiplier bits cannot be cleared
+from the accumulator alone; the circuit would need history/checkpoints or a
+nonlocal inverse, i.e. the same product-clean obstruction.  Kill this primitive.

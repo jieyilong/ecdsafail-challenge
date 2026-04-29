@@ -628,3 +628,33 @@ multiply/divide primitive exists, roughly schoolbook-cost, phase-clean, and
 without a raw inverse/history bank.  That primitive is more general than BY and
 would also solve the earlier pair2 cleanup obstruction; without it, there is no
 point wiring another affine scaffold around existing product-clean machinery.
+
+### Attempt E1: destructive Montgomery IMUL
+
+Next candidate for the missing primitive: destructively scan the multiplier bits
+through a Montgomery add-and-halve accumulator:
+
+```text
+t = 0
+for bit b_i of y:
+    t += b_i * x
+    if t odd: t += p
+    t >>= 1
+```
+
+Forward algebra is good: after `n` steps, `t = x*y*2^-n mod p` up to one final
+canonical subtraction.  If the consumed `y` bits were recoverable locally from
+the post-window accumulator, this would give a product-clean multiply with only
+one accumulator register and schoolbook-like cost.
+
+`destructive_montgomery_product_is_algebraically_promising_but_not_locally_reversible`
+now kills that hope on a small exact instance.  For `p=251`, `a=173`, and an
+8-bit consumed window, the reachable poststate `t=223` has **512** valid
+`(old_t, consumed_bits)` predecessors.  Thus the window cannot clear the
+consumed multiplier bits from the accumulator alone.  A reversible circuit must
+keep history/checkpoints or compute a nonlocal inverse of the multiplication,
+which is exactly the product-clean obstruction we were trying to avoid.
+
+Decision: destructive Montgomery is a useful failed primitive, not a route to
+Strategy E.  A viable IMUL must use a different idea than local recovery from a
+Montgomery accumulator.

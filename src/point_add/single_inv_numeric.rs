@@ -670,6 +670,60 @@ mod tests {
         assert!(current_known_total > 2_700_000.0, "known product-clean primitive would already be SOTA-shaped; wire Strategy E");
         assert!(target_if_new_mul < 2_100_000.0, "even a schoolbook-cost in-place variable multiply would not make Strategy E worthwhile");
     }
+
+    fn destructive_montgomery_step(t: u64, a: u64, bit: u64, p: u64) -> u64 {
+        let mut u = t + bit * a;
+        if (u & 1) != 0 {
+            u += p;
+        }
+        u >> 1
+    }
+
+    fn destructive_montgomery_block(mut t: u64, a: u64, bits_lsb_first: u64, k: usize, p: u64) -> u64 {
+        for i in 0..k {
+            t = destructive_montgomery_step(t, a, (bits_lsb_first >> i) & 1, p);
+        }
+        t
+    }
+
+    #[test]
+    fn destructive_montgomery_product_is_algebraically_promising_but_not_locally_reversible() {
+        // Attempt after Strategy E: make the missing in-place multiply by
+        // destructively scanning the multiplier bits through a Montgomery
+        // add-and-halve accumulator.  Forward algebra is promising: for an
+        // n-bit prime p, n steps output a*b*2^-n (mod p), up to a final p
+        // subtraction.  If consumed multiplier bits were recoverable from the
+        // accumulator, this would be a schoolbook-like product-clean primitive.
+        let p = 251u64;
+        let n = 8usize;
+        let a = 173u64;
+        let b = 123u64;
+        let t = destructive_montgomery_block(0, a, b, n, p);
+        let r_inv = U256::from(1u64 << n).inv_mod(U256::from(p)).unwrap();
+        let expected = U256::from(a)
+            .mul_mod(U256::from(b), U256::from(p))
+            .mul_mod(r_inv, U256::from(p));
+        assert_eq!(U256::from(t % p), expected);
+
+        // Fast invalidation: after an 8-bit destructive window, the post-window
+        // accumulator does NOT determine the consumed input bits and prior
+        // accumulator.  For this concrete reachable poststate there are 512
+        // valid (old_t, consumed_bits) predecessors.  Therefore a reversible
+        // circuit must keep history/checkpoints or compute a nonlocal inverse;
+        // the hoped-for local bit clearing is dead.
+        let post = destructive_montgomery_block(0, a, 0b1011_0110, n, p);
+        let mut preimages = 0usize;
+        for old_t in 0..(2 * p) {
+            for bits in 0..(1u64 << n) {
+                if destructive_montgomery_block(old_t, a, bits, n, p) == post {
+                    preimages += 1;
+                }
+            }
+        }
+        eprintln!("destructive Montgomery window post={post}, preimages={preimages}");
+        assert_eq!(post, 223);
+        assert_eq!(preimages, 512);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────
