@@ -419,6 +419,22 @@ So a forward-only self-cleaning Kaliski cannot simply uncompute each branch by
 looking at the live post-state.  It needs explicit history, a different state
 invariant, or an approximate exceptional-set argument.
 
+Recomputing branch history directly from the preserved initial `x` is also not
+a tiny oracle.  `initial_x_to_branch_history_oracle_is_dense_on_toy_kaliski`
+looks at a sparse parity of branch bits as a Boolean function of `x`:
+
+```text
+n=4  degree=3/4   density=12/16
+n=6  degree=6/6   density=32/64
+n=8  degree=8/8   density=116/256
+n=10 degree=10/10 density=520/1024
+n=12 degree=11/12 density=1976/4096
+```
+
+So while the whole history is information-theoretically determined by `x`, an
+on-demand branch oracle is basically another Kaliski-like computation, not a
+small phase/lookup gadget.
+
 ### Jumped Kaliski matrix route hard gate
 
 A separate two-inversion route was Kaliski windowing: store short matrix hints

@@ -298,6 +298,58 @@ fn toy_a_coefficient_phase_anf_stats(n: usize, p: u64, mask: u64) -> (usize, usi
     (degree, density)
 }
 
+fn toy_branch_history_phase_anf_stats(n: usize, p: u64) -> (usize, usize) {
+    let size = 1usize << n;
+    let mut anf = vec![0u8; size];
+    for x in 0..size {
+        let val = if x > 0 && (x as u64) < p {
+            toy_branch_sequence_for_a_coeff(x as u64, p, 2 * n - 1)
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| i % 3 == 0)
+                .fold(0u8, |acc, (_, br)| acc ^ (br.a_swap as u8))
+        } else {
+            0
+        };
+        anf[x] = val;
+    }
+    for bit in 0..n {
+        for idx in 0..size {
+            if (idx & (1usize << bit)) != 0 {
+                anf[idx] ^= anf[idx ^ (1usize << bit)];
+            }
+        }
+    }
+    let density = anf.iter().filter(|&&c| c != 0).count();
+    let degree = anf
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &c)| if c != 0 { Some(i.count_ones() as usize) } else { None })
+        .max()
+        .unwrap_or(0);
+    (degree, density)
+}
+
+#[test]
+fn initial_x_to_branch_history_oracle_is_dense_on_toy_kaliski() {
+    // Compressing m/a history down to the initial denominator x is
+    // information-theoretically possible (history is deterministic from x), but
+    // it is not a cheap direct oracle.  A sparse parity of branch bits, viewed
+    // as a function of the initial x, is already full-degree/dense on toy
+    // Kaliski.  So on-the-fly branch regeneration from x is equivalent to
+    // rerunning a Kaliski-like computation, not a tiny lookup/phase gadget.
+    let cases = [(4usize, 13u64), (6, 61), (8, 251), (10, 1021), (12, 4093)];
+    for &(n, p) in &cases {
+        let (degree, density) = toy_branch_history_phase_anf_stats(n, p);
+        let table = 1usize << n;
+        eprintln!(
+            "toy Kaliski branch-history phase from x: n={n}, p={p}, degree={degree}, density={density}/{table}"
+        );
+        assert!(degree + 1 >= n);
+        assert!(density > table / 4);
+    }
+}
+
 #[test]
 fn a_coefficient_cancellation_is_dense_on_toy_kaliski() {
     // The constant-tag test above leaves one theoretical escape: preserve x in
