@@ -477,6 +477,21 @@ history, but it cannot become a ~64-bit or ~100-bit miracle.  History-only
 compression is not enough unless the rest of the Kaliski state is also
 fundamentally folded.
 
+A literature-inspired Kim/unconditional-Kaliski escape was checked too.  The
+wide postponed-reduction algorithm remains algebraically valid, but
+`kim_unconditional_poststate_does_not_recover_branch_flags` shows it is not a
+self-cleaning low-history primitive: exact local inverse enumeration on reached
+secp poststates gives
+
+```text
+hist=[0, 5062, 5178, 0, 0]
+ambiguous=5178/10240
+frac=0.505664
+```
+
+So Kim removes the terminal flag but not the need for substantial per-round
+branch information (`swap`/`both_odd`) unless a new invariant is introduced.
+
 `coefficient_transform_history_floor_misses_low_qubit_budget` combines this with
 the remaining coefficient-transform layouts.  Before flags/carries/comparators:
 

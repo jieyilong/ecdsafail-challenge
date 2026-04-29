@@ -58,9 +58,10 @@ rewrite of `with_kal_inv_raw` and friends. Multi-week effort.
    - and the low 256-bit residue of the final wide `r` is indeed `±x^{-1}·2^{2n}`.
 
 Interpretation:
-- Kim 2a **survives** as a real formulation path, but only with a widened `r,s` model and postponed reduction.
+- Kim 2a **survives algebraically** as a real formulation path, but only with a widened `r,s` model and postponed reduction.
 - Therefore it is **not** a low-risk tweak to our present Kaliski scaffold.
 - Real import path is probably "Kim 2a + Kim 2b together" (unconditional execution plus postponed reduction), not 2a alone.
+- New blocker: `kim_unconditional_poststate_does_not_recover_branch_flags` enumerates exact local inverse branches on reached secp poststates and finds ambiguity in `5178/10240 = 50.6%` of steps.  So a low-qubit Kim import cannot simply omit `swap`/`both_odd` histories and recover them from the poststate; exact Kim still needs substantial branch history or a different invariant.
 
 Paper `/tmp/kim_2026.pdf`. Two linked tricks, Section 3.3.1:
 

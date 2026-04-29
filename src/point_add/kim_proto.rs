@@ -236,6 +236,108 @@ mod tests {
         }
     }
 
+    fn kim_round_wide_with_branch(mut st: St) -> (St, bool, bool) {
+        if st.v.is_zero() {
+            st.r <<= 1;
+            return (st, false, false);
+        }
+        let swap = !st.u.bit(0) || (st.u.bit(0) && st.v.bit(0) && st.u > st.v);
+        if swap {
+            core::mem::swap(&mut st.u, &mut st.v);
+            core::mem::swap(&mut st.r, &mut st.s);
+        }
+        let both_odd = st.u.bit(0) && st.v.bit(0);
+        if both_odd {
+            st.v = st.v.wrapping_sub(st.u);
+            st.s = st.s + st.r;
+        }
+        st.v >>= 1;
+        st.r <<= 1;
+        if swap {
+            core::mem::swap(&mut st.u, &mut st.v);
+            core::mem::swap(&mut st.r, &mut st.s);
+        }
+        (st, swap, both_odd)
+    }
+
+    fn kim_local_predecessor_branch_count(post: &St) -> usize {
+        use std::collections::BTreeSet;
+        let mut branches = BTreeSet::new();
+        for swap in [false, true] {
+            for both_odd in [false, true] {
+                let (u_after_shift, v_after_shift, r_after_shift, s_after_add) = if swap {
+                    (post.v, post.u, post.s, post.r)
+                } else {
+                    (post.u, post.v, post.r, post.s)
+                };
+                if r_after_shift.bit(0) {
+                    continue;
+                }
+                let r_before_shift = r_after_shift >> 1;
+                let v_before_shift = v_after_shift << 1usize;
+                let (v_before_add, s_before_add) = if both_odd {
+                    if s_after_add < r_before_shift {
+                        continue;
+                    }
+                    (v_before_shift.wrapping_add(u_after_shift), s_after_add - r_before_shift)
+                } else {
+                    (v_before_shift, s_after_add)
+                };
+                let pre = if swap {
+                    St { u: v_before_add, v: u_after_shift, r: s_before_add, s: r_before_shift }
+                } else {
+                    St { u: u_after_shift, v: v_before_add, r: r_before_shift, s: s_before_add }
+                };
+                let (roundtrip, got_swap, got_both_odd) = kim_round_wide_with_branch(pre.clone());
+                if got_swap == swap
+                    && got_both_odd == both_odd
+                    && roundtrip.u == post.u
+                    && roundtrip.v == post.v
+                    && roundtrip.r == post.r
+                    && roundtrip.s == post.s
+                {
+                    branches.insert((swap, both_odd));
+                }
+            }
+        }
+        branches.len()
+    }
+
+    #[test]
+    fn kim_unconditional_poststate_does_not_recover_branch_flags() {
+        // Kim's wide unconditional Kaliski removes the terminal flag, but a
+        // low-qubit version would also need to avoid storing per-round `swap`
+        // and `both_odd` histories.  Exact local reverse enumeration shows the
+        // poststate does not determine those flags: about half of reached secp
+        // poststates have two locally valid predecessor branches.
+        let mut rng = 0xfeed_d15c_a11ce5u64;
+        let mut hist = [0usize; 5];
+        let mut ambiguous = 0usize;
+        let mut total = 0usize;
+        for _ in 0..20 {
+            let mut x = rand_u256(&mut rng);
+            while x.is_zero() {
+                x = rand_u256(&mut rng);
+            }
+            let mut st = St { u: SECP256K1_P, v: x, r: U512::ZERO, s: U512::from(1u64) };
+            for _ in 0..512 {
+                let (next, _, _) = kim_round_wide_with_branch(st);
+                st = next;
+                let count = kim_local_predecessor_branch_count(&st);
+                hist[count] += 1;
+                if count > 1 {
+                    ambiguous += 1;
+                }
+                total += 1;
+            }
+        }
+        let frac = ambiguous as f64 / total as f64;
+        eprintln!(
+            "Kim wide poststate predecessor branch counts: hist={hist:?}, ambiguous={ambiguous}/{total}, frac={frac:.6}"
+        );
+        assert!(frac > 0.45, "Kim poststate ambiguity unexpectedly rare: frac={frac}");
+    }
+
     #[test]
     fn wide_conditional_k_range_is_tight() {
         let mut rng = 0xabcdef0123456789u64;

@@ -261,9 +261,7 @@ The right first code milestone is a **fresh point-add scaffold file/branch** who
 - while still satisfying `src/main.rs` exact reversible contract.
 
 ## Priority-3 moonshot: Kim 2026 unconditional Kaliski
-Eliminates m_hist (-409q). Case computed from state each iter, not stored.
-- Cost: +9-28% Toffoli per literature.
-- Net 2718 → ~2310 qubits. Insufficient alone, but stacks with other moves.
+Algebraic wide/postponed-reduction Kim still works, but the hoped-for no-history low-qubit import is blocked. `kim_unconditional_poststate_does_not_recover_branch_flags` enumerates exact local inverse branches on reached secp poststates and finds ambiguity in 5178/10240 = 50.6% of steps (`hist=[0,5062,5178,0,0]`). Kim removes the terminal flag, not the need for per-round `swap`/`both_odd` history. Only revisit with Luo-style register sharing or a new invariant that makes branch cleanup local.
 
 ## Known dead ends (don't re-attempt)
 - **Montgomery batched inversion** (`c = dx·N` trick): cleanup requires 2nd Kaliski, net zero savings. Proven.

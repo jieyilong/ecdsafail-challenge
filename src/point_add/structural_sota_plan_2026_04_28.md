@@ -1646,6 +1646,12 @@ adder workspace, versus Google's low-qubit allowance of 663q beyond `tx,ty`.
 So branch cleanup cannot simply inspect live post-state, use a tiny x-oracle,
 compress to ~64 bits, fit exact coefficient-transform history into low-qubit,
 or ignore a negligible poststate-collision tail; it needs a different invariant.
+Kim-style unconditional Kaliski was checked through the same lens:
+`kim_unconditional_poststate_does_not_recover_branch_flags` keeps the wide
+postponed-reduction arithmetic but enumerates exact local inverse branches for
+`swap`/`both_odd`, finding `5178/10240 = 50.6%` ambiguous reached secp
+poststates.  Thus Kim removes the terminal flag but does not by itself remove
+branch history.
 
 Coefficient-transform refinement checked: a single Kaliski coefficient pair
 cannot both preserve `x` and expose `y/x` by just using a constant tag.  If
