@@ -140,7 +140,11 @@ still a possible research object, but the naive two-lane 2-adic tag is not a
 600-scratch solution.  The natural one-lane linear/eigenvector compression is
 also closed: `one_lane_linear_sidecar_has_no_closed_update_for_all_kaliski_branches`
 finds zero common one-dimensional linear sidecar updates modulo `2^1..2^8` for
-all four reachable branch matrices.
+all four reachable branch matrices.  Sparse rank coding has the same issue in a
+different form: `curve_collision_event_oracle_is_dense_in_natural_input_frame`
+shows the natural full-domain predicate for whether an input trajectory hits a
+curve-supported ambiguous poststate is already degree `19/20`, density
+`487716/1048576` at toy `n=10`.
 
 ### Strategy C re-estimate at the current baseline
 

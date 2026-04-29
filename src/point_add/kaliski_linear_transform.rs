@@ -870,6 +870,76 @@ fn toy_sidecar_left_coefficients(alpha: u64, beta: u64, br: Branch, mask: u64) -
     (coeff_r, coeff_s)
 }
 
+type ToyPostKey = (usize, u64, u64, u64, u64, u8);
+
+fn toy_curve_restricted_ambiguous_poststates(n: usize, p: u64) -> std::collections::HashSet<ToyPostKey> {
+    use std::collections::HashMap;
+    let q = toy_first_curve_point(p);
+    let roots = toy_sqrt_buckets(p);
+    let mut seen: HashMap<ToyPostKey, u8> = HashMap::new();
+    for px in 0..p {
+        let rhs = toy_curve_rhs(px, p);
+        for &py in &roots[rhs as usize] {
+            let dx = (px + p - q.0) % p;
+            let dy = (py + p - q.1) % p;
+            if dx == 0 { continue; }
+            let tag = (dy + dx) % p;
+            if tag == 0 { continue; }
+            let mut st = ToyLinState { u: p, v: dx, r: 0, s: tag, f: 1 };
+            for iter in 0..(2 * n - 1) {
+                let br = toy_step_linear_canonical(&mut st, p);
+                let key = (iter, st.u, st.v, st.r, st.s, st.f);
+                let bit = 1u8 << ((br.a_swap as usize) * 2 + br.add as usize);
+                *seen.entry(key).or_insert(0) |= bit;
+            }
+        }
+    }
+    seen.into_iter()
+        .filter_map(|(key, mask)| if mask.count_ones() > 1 { Some(key) } else { None })
+        .collect()
+}
+
+fn toy_curve_collision_event_anf_stats(n: usize, p: u64) -> (usize, usize, usize) {
+    assert!(n <= 10, "truth table kept small");
+    let ambiguous = toy_curve_restricted_ambiguous_poststates(n, p);
+    let vars = 2 * n;
+    let size = 1usize << vars;
+    let limb_mask = (1u64 << n) - 1;
+    let mut anf = vec![0u8; size];
+    for idx in 0..size {
+        let dx = (idx as u64) & limb_mask;
+        let dy = ((idx >> n) as u64) & limb_mask;
+        if dx == 0 || dx >= p || dy >= p { continue; }
+        let tag = (dx + dy) % p;
+        if tag == 0 { continue; }
+        let mut st = ToyLinState { u: p, v: dx, r: 0, s: tag, f: 1 };
+        let mut hit = 0u8;
+        for iter in 0..(2 * n - 1) {
+            toy_step_linear_canonical(&mut st, p);
+            if ambiguous.contains(&(iter, st.u, st.v, st.r, st.s, st.f)) {
+                hit = 1;
+                break;
+            }
+        }
+        anf[idx] = hit;
+    }
+    for bit in 0..vars {
+        for idx in 0..size {
+            if (idx & (1usize << bit)) != 0 {
+                anf[idx] ^= anf[idx ^ (1usize << bit)];
+            }
+        }
+    }
+    let density = anf.iter().filter(|&&c| c != 0).count();
+    let degree = anf
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &c)| if c != 0 { Some(i.count_ones() as usize) } else { None })
+        .max()
+        .unwrap_or(0);
+    (degree, density, ambiguous.len())
+}
+
 fn toy_one_lane_common_linear_sidecar_count(bits: usize) -> usize {
     let modulus = 1u64 << bits;
     let mask = modulus - 1;
@@ -1136,6 +1206,32 @@ fn curve_restricted_tagged_kaliski_poststate_ambiguity_is_small_but_not_exact() 
         last_frac = frac;
     }
     assert!(last_frac < 0.005);
+}
+
+#[test]
+fn curve_collision_event_oracle_is_dense_in_natural_input_frame() {
+    // The curve-supported ambiguous states are globally rare and one-bit rank
+    // would distinguish each collision on toys.  But a reversible circuit still
+    // needs to know when to write/use that rank bit.  The natural detector
+    // "does tagged Kaliski on (dx,dy) ever hit a curve-supported ambiguous
+    // poststate?" is already a dense full-domain boolean function, so the
+    // sparse-rank story does not automatically produce a cheap local sidecar.
+    // (As usual, a clever low-degree extension only on curve support is not
+    // excluded, but it would be a new invariant rather than this detector.)
+    for &(n, p) in &[(8usize, 251u64), (10, 1021)] {
+        let (degree, density, ambiguous_keys) = toy_curve_collision_event_anf_stats(n, p);
+        let table = 1usize << (2 * n);
+        eprintln!(
+            "curve-collision event detector: n={n}, p={p}, ambiguous_keys={ambiguous_keys}, degree={degree}, density={density}/{table}"
+        );
+        if n == 10 {
+            println!("METRIC curve_collision_event_degree_n10={degree}");
+            println!("METRIC curve_collision_event_density_n10={density}");
+            println!("METRIC curve_collision_event_ambiguous_keys_n10={ambiguous_keys}");
+        }
+        assert!(degree + 1 >= 2 * n);
+        assert!(density > table / 4);
+    }
 }
 
 #[test]

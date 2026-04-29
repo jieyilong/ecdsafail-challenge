@@ -796,8 +796,13 @@ linear pair extrapolation of 192 bits at secp256k1, above the 88-bit slack.
 Trying to collapse that pair to a single linear lane also fails algebraically:
 `one_lane_linear_sidecar_has_no_closed_update_for_all_kaliski_branches` finds no
 common one-dimensional linear quotient modulo `2^1..2^8` for the four reachable
-swap/add/double branch matrices.  Keep this route only if a nonlinear
-finite-state/entropy-coded sidecar or a cheap curve invariant appears.
+swap/add/double branch matrices.  The sparse-rank variant also has a detector
+problem: even though each curve-supported toy trajectory hits at most one
+ambiguous poststate, `curve_collision_event_oracle_is_dense_in_natural_input_frame`
+shows the natural full-domain event predicate has degree `19/20` and density
+`487716/1048576` at `n=10`.  Keep this route only if a nonlinear finite-state /
+entropy-coded sidecar has a cheap detector/update rule, or if a cheap curve
+invariant appears.
 
 ## 11. Fast invalidation tasks still open
 

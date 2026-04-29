@@ -356,4 +356,6 @@ mod-`2^b` two-lane sidecar needs lane widths `2,3,5,6,6` at toy
 `n=8,10,12,14,16`, which linearly projects to 192 sidecar qubits at secp256k1
 versus the 88-bit folded-Kaliski slack.  A one-lane linear compression is not
 closed under the Kaliski branch matrices either: there are no common
-one-dimensional sidecar eigenvectors modulo `2^1..2^8`.
+one-dimensional sidecar eigenvectors modulo `2^1..2^8`.  Sparse rank coding
+would still need to detect the unique collision event; the natural full-domain
+event predicate is dense (`n=10` degree `19/20`, density `487716/1048576`).
