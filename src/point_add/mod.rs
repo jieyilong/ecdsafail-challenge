@@ -4053,7 +4053,14 @@ fn bulk_prefix_safe_iters() -> usize {
         || std::env::var("BY_CENTERED_LIVE_NUM_BENCH").ok().as_deref() == Some("1")
         || std::env::var("BY_CENTERED_PAIR1_REPLACE").ok().as_deref() == Some("1")
         || std::env::var("BY_CENTERED_PAIR2_REPLACE").ok().as_deref() == Some("1");
-    let default = if centered_roundtrip_hook {
+    let centered_q_payload_hook = std::env::var("BY_CENTERED_WINDOW_Q_DENOM_REPLACE").ok().as_deref() == Some("1");
+    let default = if centered_q_payload_hook {
+        // The narrower q-payload history changes the circuit shape enough that
+        // the old 370 centered-hook Kaliski prefix hits an altseed phase cliff.
+        // This env path is an ugly integration probe; use a conservative prefix
+        // rather than letting the remaining Kaliski scaffold dominate the test.
+        360
+    } else if centered_roundtrip_hook {
         // The huge centered roundtrip hooks change the circuit hash / RNG stream
         // enough that the aggressively tuned 375 bulk-prefix setting can hit a
         // rare phase cliff in the old Kaliski scaffold. Use the previously
@@ -4645,14 +4652,18 @@ fn by_signed_lowword_window_xor_controls_for_bench(
         b.cx(a_tmp[j], a_hist[start + j]);
     }
     if let Some((q0_hist, q1_hist)) = q_hist {
-        let q_start = (start / W) * QBITS;
-        assert!(q0_hist.len() >= q_start + QBITS);
-        assert!(q1_hist.len() >= q_start + QBITS);
+        let windows = odd_hist.len() / W;
+        assert_eq!(q0_hist.len(), q1_hist.len());
+        assert_eq!(q0_hist.len() % windows, 0);
+        let qhist_bits = q0_hist.len() / windows;
+        assert!(qhist_bits <= QBITS);
+        let q_start = (start / W) * qhist_bits;
         // After the local signed divsteps, these narrow rows are exactly the
-        // lowword quotient corrections q=(P·low)/2^16.  Persist them now so a
-        // later fixed-matrix denominator update can consume the q payload.  The
-        // same helper is called in reverse to xor the payload clean again.
-        for i in 0..QBITS {
+        // lowword quotient corrections q=(P·low)/2^16.  Persist only the
+        // bounded signed payload bits (18); the local simulator still uses 34
+        // bits to make the signed divsteps reversible.  The same helper is
+        // called in reverse to xor the payload clean again.
+        for i in 0..qhist_bits {
             b.cx(f[i], q0_hist[q_start + i]);
             b.cx(g[i], q1_hist[q_start + i]);
         }
@@ -5032,7 +5043,10 @@ fn compute_pair1_lam_with_centered_by_bench(b: &mut B, tx: &[QubitId], ty: &[Qub
     const STEPS: usize = 576;
     const DBITS: usize = 12;
     const WIDE: usize = N + 4;
-    const WINDOW_QBITS: usize = 34;
+    // Lowword q corrections are bounded below 2^17 in the sampled window
+    // algebra, so 18 signed bits are enough for the raw payload history. The
+    // local simulator remains 34 bits wide for reversible signed divsteps.
+    const WINDOW_QBITS: usize = 18;
     b.set_phase("pair1_by_centered_alloc");
     let f = b.alloc_qubits(STEPS);
     let g = b.alloc_qubits(STEPS);
@@ -5132,7 +5146,7 @@ fn add_neg_quotient_into_acc_with_centered_by_bench(
     const STEPS: usize = 576;
     const DBITS: usize = 12;
     const WIDE: usize = N + 4;
-    const WINDOW_QBITS: usize = 34;
+    const WINDOW_QBITS: usize = 18;
     b.set_phase("by_centered_accquot_alloc");
     let f = b.alloc_qubits(STEPS);
     let g = b.alloc_qubits(STEPS);
