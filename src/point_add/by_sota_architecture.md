@@ -139,9 +139,30 @@ fixed per-step slack schedule worst deficit = 50 bits
 So a `512-bit` magnitude pair plus a `50-bit` sidecar can carry all raw branch
 history in the sampled traces, even with a fixed schedule based on per-step
 worst observed bitlengths.  With two sign bits this is roughly
-`512 + 2 + 50 = 564` selector/history bits, inside the low-qubit ~600-bit target
-and with only linear shift/add divstep updates (no ratio inverse).  This is now
-the most promising selector architecture.
+`512 + 2 + 50 = 564` selector/history bits, inside the low-qubit ~600-bit target.
+
+Important invalidation: this is a **state result only**.  Driving the compact
+pair by raw tapered per-bit divsteps is not SOTA-shaped:
+
+```text
+tapered direct denominator compute       = 1,004,080 CCX
+compute + uncompute                      = 2,008,160 CCX
+projected total with one replay+scaffold ≈ 3,793,920 CCX
+peak of direct tapered model             = 3372q
+```
+
+So the compact pair/history sink only remains viable if paired with a selected
+fixed-matrix/window denominator update.  The current optimistic window budget is:
+
+```text
+selected fixed-matrix denominator compute mean  ≈ 303,828 CCX
+compute + uncompute                            ≈ 607,657 CCX
+current cost-model peak (not production tuned) = 3424q
+```
+
+Hard gate: do not wire another full BY point-add unless a **single-window**
+prototype demonstrates the selected fixed-matrix update plus history allocation
+under the SOTA-shaped budget.  Raw per-bit BY denominator replay is dead.
 
 Open implementation questions:
 
