@@ -730,11 +730,17 @@ KAL_PRESCALE_PAIR1_MIXED=1
 avg_toffoli = 4,223,465
 qubits      = 2,972
 clean       = yes
+
+KAL_PRESCALE_PAIR2_MIXED=1
+avg_toffoli = 4,220,405
+qubits      = 2,969
+clean       = yes
 ```
 
-This is only ~111k above the default exact path and ~563k below the all-exact
-prescaler, proving the fast modular shifts are phase-safe here and the earlier
-fast version failed because of the fast q-q add/sub in the constant multiplier:
+These are only ~108-112k above the default exact path and ~550k below the
+all-exact prescaler, proving the fast modular shifts are phase-safe here and the
+earlier fast version failed because of the fast q-q add/sub in the constant
+multiplier:
 
 ```text
 KAL_PRESCALE_PAIR1=1

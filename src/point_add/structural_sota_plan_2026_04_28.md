@@ -1609,16 +1609,16 @@ The all-exact prescaler makes the path much worse than default, but the
 algebraic lever is real.  A fast version using the existing measurement-based
 constant multiplier was classically correct but phase-unsafe
 (`altseed_phase_batches=1`).  The mixed diagnostic variant
-`KAL_PRESCALE_PAIR1_MIXED=1` uses exact q-q add/sub but fast modular
-shifts and is clean:
+`KAL_PRESCALE_PAIR1_MIXED=1` / `KAL_PRESCALE_PAIR2_MIXED=1` use exact q-q
+add/sub but fast modular shifts and are clean:
 
 ```text
-avg_toffoli=4,223,465
-qubits=2,972
+pair1 mixed: avg_toffoli=4,223,465  qubits=2,972
+pair2 mixed: avg_toffoli=4,220,405  qubits=2,969
 ```
 
 So the phase culprit is the fast q-q add/sub in constant multiplication, not the
-fast double/halve scale walk.  This mixed prescaler is still ~111k above the
+fast double/halve scale walk.  The mixed prescaler is still ~108-112k above the
 true default path, but it is close enough to sharpen the target.
 
 Decision: keep this as a narrow future primitive target only.  A useful

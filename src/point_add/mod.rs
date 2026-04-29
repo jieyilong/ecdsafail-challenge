@@ -8025,6 +8025,7 @@ fn build_standard_point_add(
     let prescale_pair1 = std::env::var("KAL_PRESCALE_PAIR1_SAFE").ok().as_deref() == Some("1");
     let prescale_pair1_mixed = std::env::var("KAL_PRESCALE_PAIR1_MIXED").ok().as_deref() == Some("1");
     let prescale_pair2 = std::env::var("KAL_PRESCALE_PAIR2_SAFE").ok().as_deref() == Some("1");
+    let prescale_pair2_mixed = std::env::var("KAL_PRESCALE_PAIR2_MIXED").ok().as_deref() == Some("1");
     let by_pair1_centered = std::env::var("BY_CENTERED_PAIR1_REPLACE").ok().as_deref() == Some("1");
     let by_pair2_centered = std::env::var("BY_CENTERED_PAIR2_REPLACE").ok().as_deref() == Some("1");
     let by_pair2_scaled_product = std::env::var("BY_SCALED_PAIR2_PRODUCT_REPLACE").ok().as_deref() == Some("1");
@@ -8285,13 +8286,17 @@ fn build_standard_point_add(
             b.set_phase("pair2_branch_inv_cleanup");
             mod_sub_qb(b, &ty, &oy, p);
         });
-    } else if prescale_pair2 {
+    } else if prescale_pair2 || prescale_pair2_mixed {
         // Pair2 scale absorption: feed `2^iters * (Rx-Qx)` so the raw inverse
         // is exact and the lam-doubling correction loop disappears.
         let scaled_tx = b.alloc_qubits(N);
         let scale = pow_mod_2_k(p, pair2_iters);
         b.set_phase("pair2_prescale_den_safe");
-        mul_by_const_acc_phase_clean(b, &tx, scale, &scaled_tx, p, false);
+        if prescale_pair2_mixed {
+            mul_by_const_acc_exact_adds_fast_shifts(b, &tx, scale, &scaled_tx, p, false);
+        } else {
+            mul_by_const_acc_phase_clean(b, &tx, scale, &scaled_tx, p, false);
+        }
         with_kal_inv_raw(b, &scaled_tx, p, pair2_iters, |b, inv_raw| {
             b.set_phase("pair2_prescale_mul");
             mod_mul_add_into_acc_schoolbook(b, &lam, inv_raw, &ty, p);
@@ -8300,7 +8305,11 @@ fn build_standard_point_add(
             b.set_phase("pair2_kaliski_backward_prescaled_safe");
         });
         b.set_phase("pair2_unprescale_den_safe");
-        mul_by_const_acc_phase_clean(b, &tx, scale, &scaled_tx, p, true);
+        if prescale_pair2_mixed {
+            mul_by_const_acc_exact_adds_fast_shifts(b, &tx, scale, &scaled_tx, p, true);
+        } else {
+            mul_by_const_acc_phase_clean(b, &tx, scale, &scaled_tx, p, true);
+        }
         b.free_vec(&scaled_tx);
     } else {
         with_kal_inv_raw(b, &tx, p, pair2_iters, |b, inv_raw| {
