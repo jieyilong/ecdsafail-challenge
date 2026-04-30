@@ -3705,6 +3705,61 @@ mod tests {
     }
 
     #[test]
+    fn plusminus_active_chain_controls_shift_roundtrip_circuit_is_clean() {
+        // Compose the two new primitives in the way the parser needs them:
+        // generate unary active-chain controls from d, use them to apply a
+        // variable left shift to a signed lane, then rerun the generator to
+        // clear the history.  This is a small self-contained reversible circuit
+        // and catches exactly the kind of phase/ancilla issue that pure cost
+        // models miss.
+        use sha3::digest::{ExtendableOutput, Update};
+        const W: usize = 16;
+        let mut b = super::super::B::new();
+        let d = b.alloc_qubits(W);
+        let lane = b.alloc_qubits(W);
+        let active = b.alloc_qubits(W + 1);
+        let hist = b.alloc_qubits(W);
+        let spill = b.alloc_qubit();
+        let start = b.ops.len();
+        emit_trailing_zero_active_chain_history_for_plusminus(&mut b, &d, &active, &hist);
+        for &h in &hist {
+            emit_controlled_left_shift_nooverflow_for_plusminus(&mut b, &lane, h, spill);
+        }
+        emit_trailing_zero_active_chain_history_for_plusminus(&mut b, &d, &active, &hist);
+        let ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let mask = (1i64 << W) - 1;
+        for dval in 1u64..128u64 {
+            let k = dval.trailing_zeros() as usize;
+            for x in -64i64..64i64 {
+                let raw = (x & mask) as u64;
+                let expected = ((x << k) & mask) as u64;
+                let mut hasher = sha3::Shake128::default();
+                hasher.update(b"plusminus-active-chain-shift-roundtrip-v1");
+                let mut xof = hasher.finalize_xof();
+                let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+                set_slice_u512_pm(&mut sim, &d, U512::from(dval));
+                set_slice_u512_pm(&mut sim, &lane, U512::from(raw));
+                sim.apply(&ops);
+                assert_eq!(get_slice_u512_pm(&sim, &lane).as_limbs()[0] & ((1u64 << W) - 1), expected, "lane mismatch d={dval} k={k} x={x}");
+                assert_eq!(get_slice_u512_pm(&sim, &d).as_limbs()[0] & ((1u64 << W) - 1), dval, "d changed");
+                assert_eq!(get_slice_u512_pm(&sim, &active), U512::ZERO, "active not clean");
+                assert_eq!(get_slice_u512_pm(&sim, &hist), U512::ZERO, "history not clean");
+                assert_eq!(sim.qubit(spill) & 1, 0, "spill not clean");
+                assert_eq!(sim.global_phase() & 1, 0, "unexpected phase");
+            }
+        }
+        eprintln!("plus-minus active-chain controlled shift roundtrip: width={W}, ccx={ccx}, peak={peak}");
+        println!("METRIC plusminus_active_shift_roundtrip_width={W}");
+        println!("METRIC plusminus_active_shift_roundtrip_ccx={ccx}");
+        println!("METRIC plusminus_active_shift_roundtrip_peak_q={peak}");
+        assert!(ccx > 0 && peak > 0);
+    }
+
+    #[test]
     fn plusminus_nooverflow_controlled_shift_circuit_is_clean() {
         // First actual reversible circuit skeleton for the scaled-integer route.
         // It validates the promised no-overflow controlled left shift used by
