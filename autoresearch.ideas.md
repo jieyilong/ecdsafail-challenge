@@ -1,5 +1,7 @@
 # Autoresearch Ideas Backlog
 
+- **In-place variable multiply via measuring the old multiplier is just dense division.** `in_place_variable_multiply_cleanup_is_division_dense` models a hoped-for Strategy-E primitive: compute `t=a*b`, swap/keep `(a,t)`, then MBUC old `b`. The phase correction is `b=t/a`, and toy ANF is nearly full: `inplace_mul_cleanup_degree_n10=18/20`, `density=521064/1048576`. So a schoolbook-cost IMUL still needs a real quotient cleanup primitive; generic MBUC does not provide it.
+
 - **Curve membership itself is a dense oracle.** `curve_membership_oracle_itself_is_dense` measures the ANF of the x-support predicate `x^3+7 is a square`; toy secp-shaped fields give `curve_x_membership_degree_n14=14`, `density=8190/16384`. Therefore using "which predecessor is still on the curve?" as a Kaliski/old-point branch decoder needs a Legendre-symbol-like dense computation, not a free support check.
 
 - **Curve x-coordinate support does not make reciprocal/Kaliski garbage low-degree.** `curve_x_support_does_not_make_inverse_low_degree` restricts the denominator to actual toy secp-shaped x-coordinates (`y^2=x^3+7`) and asks for the lowest-degree Boolean phase extension of `1/(x-Qx)`. The threshold still grows as `n/2`: `n=8,10,12,14 -> degree 4,5,6,7` (`curve_x_support_inv_min_degree_n14=7`). So the fact that point-add denominators come from curve x-support is not enough to make inverse/quotient MBUC local.

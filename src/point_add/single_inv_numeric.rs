@@ -1676,6 +1676,38 @@ mod tests {
         })
     }
 
+    fn variable_mul_old_multiplier_cleanup_anf_stats(n: usize, p: u16, phase_mask: u16) -> (usize, usize) {
+        // Phase for X-measuring the old multiplier b after a hypothetical
+        // in-place variable multiply has kept (a, t=a*b).  Cleaning b needs
+        // b=t/a mod p, i.e. modular division in the output frame.
+        let vars = 2 * n;
+        let size = 1usize << vars;
+        let mut anf = vec![0u8; size];
+        for a in 1..p {
+            let inv_a = inv_mod_u16_for_phase_test(a, p);
+            for t in 0..p {
+                let old_b = mul_mod_u16_for_phase_test(t, inv_a, p);
+                let idx = (a as usize) | ((t as usize) << n);
+                anf[idx] = ((old_b & phase_mask).count_ones() & 1) as u8;
+            }
+        }
+        for bit in 0..vars {
+            for idx in 0..size {
+                if (idx & (1usize << bit)) != 0 {
+                    anf[idx] ^= anf[idx ^ (1usize << bit)];
+                }
+            }
+        }
+        let density = anf.iter().filter(|&&v| v != 0).count();
+        let degree = anf
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &v)| if v != 0 { Some(i.count_ones() as usize) } else { None })
+            .max()
+            .unwrap_or(0);
+        (degree, density)
+    }
+
     fn curve_x_membership_anf_stats(n: usize, p: u16) -> (usize, usize) {
         let size = 1usize << n;
         let mut quadratic_residue = vec![false; p as usize];
@@ -1744,6 +1776,34 @@ mod tests {
             .max()
             .unwrap_or(0);
         (degree, density, supported_slopes)
+    }
+
+    #[test]
+    fn in_place_variable_multiply_cleanup_is_division_dense() {
+        // Strategy E and several local-IMUL fantasies need an in-place variable
+        // multiply near the cost of schoolbook multiplication.  If an
+        // out-of-place product t=a*b is swapped into b and the old b is
+        // X-measured, the phase correction from surviving (a,t) is exactly
+        // b=t/a.  Toy ANFs show this cleanup is an ordinary dense modular
+        // division, not a cheap kickmix side effect.
+        let cases = [
+            (6usize, 61u16, 0b10_1010u16),
+            (8usize, 251u16, 0b1010_0101u16),
+            (10usize, 1021u16, 0b10_1001_0101u16),
+        ];
+        for &(n, p, mask) in &cases {
+            let (degree, density) = variable_mul_old_multiplier_cleanup_anf_stats(n, p, mask);
+            let table = 1usize << (2 * n);
+            eprintln!(
+                "In-place variable-mul old-b cleanup ANF: n={n}, p={p}, degree={degree}, density={density}/{table}"
+            );
+            if n == 10 {
+                println!("METRIC inplace_mul_cleanup_degree_n10={degree}");
+                println!("METRIC inplace_mul_cleanup_density_n10={density}");
+            }
+            assert!(degree + 2 >= 2 * n);
+            assert!(density > table / 4);
+        }
     }
 
     #[test]
