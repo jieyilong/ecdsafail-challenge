@@ -2498,6 +2498,81 @@ mod tests {
         out
     }
 
+    fn plusminus_kseq_dirs_for_toy(x: u16, p: u16) -> (Vec<usize>, Vec<u8>) {
+        let mut u = p as u32;
+        let mut v = (x as u32) >> x.trailing_zeros();
+        let mut ks = vec![x.trailing_zeros() as usize];
+        let mut dirs = Vec::new();
+        if u < v {
+            core::mem::swap(&mut u, &mut v);
+        }
+        while u != v {
+            let diff = u - v;
+            let k = diff.trailing_zeros();
+            let d = diff >> k;
+            ks.push(k as usize);
+            dirs.push(if v >= d { 1u8 } else { 0u8 });
+            if v >= d {
+                u = v;
+                v = d;
+            } else {
+                u = d;
+            }
+        }
+        (ks, dirs)
+    }
+
+    fn plusminus_raw_k_bits_for_toy(ks: &[usize]) -> String {
+        let mut out = String::new();
+        for &k in ks {
+            if k == 0 {
+                out.push('0');
+            } else {
+                out.push_str(&format!("{k:b}"));
+            }
+        }
+        out
+    }
+
+    fn plusminus_raw_k_rank_anf_stats(n: usize, p: u16) -> (usize, usize, usize) {
+        use std::collections::{BTreeMap, BTreeSet};
+        let size = 1usize << n;
+        let mut by_raw: BTreeMap<String, BTreeSet<(Vec<usize>, Vec<u8>)>> = BTreeMap::new();
+        let mut data = Vec::new();
+        for x in 1..p {
+            let (ks, dirs) = plusminus_kseq_dirs_for_toy(x, p);
+            let raw = plusminus_raw_k_bits_for_toy(&ks);
+            by_raw.entry(raw.clone()).or_default().insert((ks.clone(), dirs.clone()));
+            data.push((x as usize, raw, ks, dirs));
+        }
+        let max_multiplicity = by_raw.values().map(|v| v.len()).max().unwrap_or(1);
+        let ranked: BTreeMap<String, Vec<(Vec<usize>, Vec<u8>)>> = by_raw
+            .into_iter()
+            .map(|(raw, set)| (raw, set.into_iter().collect()))
+            .collect();
+        let mut anf = vec![0u8; size];
+        for (x, raw, ks, dirs) in data {
+            let entries = ranked.get(&raw).unwrap();
+            let rank = entries.iter().position(|entry| entry.0 == ks && entry.1 == dirs).unwrap();
+            anf[x] = (rank & 1) as u8;
+        }
+        for bit in 0..n {
+            for idx in 0..size {
+                if (idx & (1usize << bit)) != 0 {
+                    anf[idx] ^= anf[idx ^ (1usize << bit)];
+                }
+            }
+        }
+        let density = anf.iter().filter(|&&v| v != 0).count();
+        let degree = anf
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &v)| if v != 0 { Some(i.count_ones() as usize) } else { None })
+            .max()
+            .unwrap_or(0);
+        (degree, density, max_multiplicity)
+    }
+
     fn plusminus_kseq_direction_sidecar_bits_for_toy(p: u16) -> (usize, usize) {
         use std::collections::{BTreeMap, BTreeSet};
         let mut by_kseq: BTreeMap<Vec<usize>, BTreeSet<Vec<u8>>> = BTreeMap::new();
@@ -2897,6 +2972,32 @@ mod tests {
         assert!(boundary_scratch_p99 > 740, "explicit k boundaries should miss scratch");
         assert!(unary_scratch_p99 > 630, "unary/self-delimiting shifts should miss scratch");
         assert!(entropy_scratch_p99 > 630.0, "empirical entropy-coded k parser should still miss scratch");
+    }
+
+    #[test]
+    fn plusminus_raw_k_rank_decoder_is_dense() {
+        // The clever rescue for plus-minus is to concatenate raw binary k values
+        // and store only a tiny rank among the valid parses.  Information-wise
+        // this is tempting: toy max multiplicity is tiny and secp scratch would
+        // fit if the rank decoder were local.  But the rank bit is a global
+        // parsing function of x; its ANF is already maximal/half-dense on toy
+        // fields.  This mirrors the rolling-hash Kaliski lesson: compressed
+        // history without a cheap branch-pop decoder is not a reversible DIV.
+        let cases = [(8usize, 251u16), (10, 1021), (12, 4093), (14, 16381)];
+        for &(n, p) in &cases {
+            let (degree, density, max_mult) = plusminus_raw_k_rank_anf_stats(n, p);
+            let table = 1usize << n;
+            eprintln!(
+                "plus-minus raw-k rank ANF: n={n}, degree={degree}, density={density}/{table}, max_multiplicity={max_mult}"
+            );
+            if n == 14 {
+                println!("METRIC plusminus_rawk_rank_degree_n14={degree}");
+                println!("METRIC plusminus_rawk_rank_density_n14={density}");
+                println!("METRIC plusminus_rawk_rank_max_multiplicity_n14={max_mult}");
+            }
+            assert!(degree + 1 >= n);
+            assert!(density > table / 3);
+        }
     }
 
     #[test]
