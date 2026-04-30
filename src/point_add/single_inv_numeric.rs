@@ -3643,6 +3643,19 @@ mod tests {
         b.ccx(ctrl, v[v.len() - 1], spill);
     }
 
+    fn emit_controlled_left_shift_nooverflow_inverse_for_plusminus(
+        b: &mut super::super::B,
+        v: &[super::super::QubitId],
+        ctrl: super::super::QubitId,
+        spill: super::super::QubitId,
+    ) {
+        b.ccx(ctrl, v[v.len() - 1], spill);
+        for i in 0..v.len() {
+            let lo = if i == 0 { spill } else { v[i - 1] };
+            local_cswap_for_plusminus_cost(b, ctrl, lo, v[i]);
+        }
+    }
+
     fn controlled_left_shift_cost_for_plusminus(width: usize) -> usize {
         let mut b = super::super::B::new();
         let v = b.alloc_qubits(width);
@@ -3769,6 +3782,88 @@ mod tests {
         println!("METRIC plusminus_active_chain_circuit_ccx={ccx}");
         println!("METRIC plusminus_active_chain_circuit_peak_q={peak}");
         assert_eq!(ccx, 2 * W, "active-chain generator should cost 2W CCX");
+    }
+
+    #[test]
+    fn plusminus_one_step_bennett_skeleton_is_phase_clean() {
+        // Integration-risk test: compose the actual pieces used in one scaled
+        // plus-minus step in a Bennett compute/uncompute shell.  It computes
+        // d=u-v, derives active-chain k history from d, computes cv<<k and
+        // cd=cu-cv, then reverses everything.  This is not the production
+        // in-place update, but it exercises the real MBU add/sub, active-chain
+        // controls, controlled shifts, and inverse shifts together.
+        use sha3::digest::{ExtendableOutput, Update};
+        const W: usize = 16;
+        let mut b = super::super::B::new();
+        let u = b.alloc_qubits(W);
+        let v = b.alloc_qubits(W);
+        let cu = b.alloc_qubits(W);
+        let cv = b.alloc_qubits(W);
+        let d = b.alloc_qubits(W);
+        let cd = b.alloc_qubits(W);
+        let cvs = b.alloc_qubits(W);
+        let active = b.alloc_qubits(W + 1);
+        let hist = b.alloc_qubits(W);
+        let spill = b.alloc_qubit();
+        let one = b.alloc_qubit();
+        let start = b.ops.len();
+        b.x(one);
+        for i in 0..W { b.cx(u[i], d[i]); }
+        super::super::sub_nbit_qq_fast(&mut b, &v, &d);
+        emit_trailing_zero_active_chain_history_for_plusminus(&mut b, &d, &active, &hist);
+        for i in 0..W { b.cx(cv[i], cvs[i]); }
+        for &h in &hist {
+            emit_controlled_left_shift_nooverflow_for_plusminus(&mut b, &cvs, h, spill);
+        }
+        for i in 0..W { b.cx(cu[i], cd[i]); }
+        emit_controlled_integer_add_for_plusminus(&mut b, &cd, &cv, one, true);
+        emit_controlled_integer_add_for_plusminus(&mut b, &cd, &cv, one, false);
+        for i in (0..W).rev() { b.cx(cu[i], cd[i]); }
+        for &h in hist.iter().rev() {
+            emit_controlled_left_shift_nooverflow_inverse_for_plusminus(&mut b, &cvs, h, spill);
+        }
+        for i in (0..W).rev() { b.cx(cv[i], cvs[i]); }
+        emit_trailing_zero_active_chain_history_for_plusminus(&mut b, &d, &active, &hist);
+        super::super::add_nbit_qq_fast(&mut b, &v, &d);
+        for i in (0..W).rev() { b.cx(u[i], d[i]); }
+        b.x(one);
+        let ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let mask = (1u64 << W) - 1;
+        let cases = [(37u64, 5u64), (91, 27), (128, 64), (255, 127), (409, 137)];
+        for &(uval, vval) in &cases {
+            for cuv in [0u64, 1, 7, 123, 0x7fffu64] {
+                for cvv in [0u64, 3, 11, 77, 0x003fu64] {
+                    let mut hasher = sha3::Shake128::default();
+                    hasher.update(b"plusminus-one-step-bennett-skeleton-v1");
+                    let mut xof = hasher.finalize_xof();
+                    let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+                    set_slice_u512_pm(&mut sim, &u, U512::from(uval));
+                    set_slice_u512_pm(&mut sim, &v, U512::from(vval));
+                    set_slice_u512_pm(&mut sim, &cu, U512::from(cuv));
+                    set_slice_u512_pm(&mut sim, &cv, U512::from(cvv));
+                    sim.apply(&ops);
+                    assert_eq!(get_slice_u512_pm(&sim, &u).as_limbs()[0] & mask, uval & mask, "u changed");
+                    assert_eq!(get_slice_u512_pm(&sim, &v).as_limbs()[0] & mask, vval & mask, "v changed");
+                    assert_eq!(get_slice_u512_pm(&sim, &cu).as_limbs()[0] & mask, cuv & mask, "cu changed");
+                    assert_eq!(get_slice_u512_pm(&sim, &cv).as_limbs()[0] & mask, cvv & mask, "cv changed");
+                    for (name, reg) in [("d", &d), ("cd", &cd), ("cvs", &cvs), ("active", &active), ("hist", &hist)] {
+                        assert_eq!(get_slice_u512_pm(&sim, reg), U512::ZERO, "{name} not clean");
+                    }
+                    assert_eq!(sim.qubit(spill) & 1, 0, "spill not clean");
+                    assert_eq!(sim.qubit(one) & 1, 0, "one not clean");
+                    assert_eq!(sim.global_phase() & 1, 0, "unexpected phase");
+                }
+            }
+        }
+        eprintln!("plus-minus one-step Bennett skeleton: width={W}, ccx={ccx}, peak={peak}");
+        println!("METRIC plusminus_step_skeleton_width={W}");
+        println!("METRIC plusminus_step_skeleton_ccx={ccx}");
+        println!("METRIC plusminus_step_skeleton_peak_q={peak}");
+        assert!(ccx > 0 && peak > 0);
     }
 
     #[test]
