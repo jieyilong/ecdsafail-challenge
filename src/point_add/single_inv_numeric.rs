@@ -3076,7 +3076,7 @@ mod tests {
         // shifts plus unary->binary conversion per step.  Before wiring 257-bit
         // lanes, check whether that physical step budget alone already exceeds
         // the Google low-qubit target.
-        let step_forward_257 = 14_355usize; // from plusminus_barrel_step_extrap257_forward_ccx.
+        let step_forward_257 = 10_243usize; // from plusminus_barrel_step_extrap257_forward_ccx with Clifford k extraction.
         let steps_public = 202usize; // sampled public envelope / active-chain stress scale.
         let two_div_step_only = 2usize * step_forward_257 * steps_public;
         let gap = two_div_step_only as isize - 2_700_000isize;
