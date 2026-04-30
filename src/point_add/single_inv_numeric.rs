@@ -4248,6 +4248,144 @@ mod tests {
     }
 
     #[test]
+    fn plusminus_fixed_bound_packed_active_loop_roundtrip_is_clean() {
+        // Fixed public iteration bound with packed high-bit history slots and
+        // terminal no-ops.  Some cases converge before STEPS, so later history
+        // words must be all zero and the reverse pass must LIFO-clean both real
+        // and inactive steps.
+        use sha3::digest::{ExtendableOutput, Update};
+        const LIVE: usize = 12;
+        const TOTAL: usize = 36;
+        const STEPS: usize = 8;
+        let cases = [(37u64, 5u64), (91, 27), (201, 77), (255, 127), (187, 45), (233, 17), (171, 65), (1001, 33)];
+        let mask = (1u64 << LIVE) - 1;
+
+        let mut bf = super::super::B::new();
+        let fu_lane = bf.alloc_qubits(TOTAL);
+        let fv_lane = bf.alloc_qubits(TOTAL);
+        let fcu_lane = bf.alloc_qubits(TOTAL);
+        let fcv_lane = bf.alloc_qubits(TOTAL);
+        let factive = bf.alloc_qubits(LIVE + 1);
+        let mut fslots = Vec::new();
+        for i in LIVE..TOTAL {
+            fslots.push(fu_lane[i]);
+            fslots.push(fv_lane[i]);
+            fslots.push(fcu_lane[i]);
+            fslots.push(fcv_lane[i]);
+        }
+        assert!(fslots.len() >= STEPS * LIVE);
+        let fhists: Vec<Vec<super::super::QubitId>> = (0..STEPS)
+            .map(|s| fslots[s * LIVE..(s + 1) * LIVE].to_vec())
+            .collect();
+        let fspill = bf.alloc_qubit();
+        let fflag = bf.alloc_qubit();
+        let fstart = bf.ops.len();
+        for step in 0..STEPS {
+            emit_plusminus_inplace_step_forward_konly_active_for_test(&mut bf, &fu_lane[..LIVE], &fv_lane[..LIVE], &fcu_lane[..LIVE], &fcv_lane[..LIVE], &factive, &fhists[step], fspill, fflag);
+        }
+        let f_ccx = local_count_ccx_for_plusminus_cost(&bf.ops[fstart..]);
+        let f_peak = bf.peak_qubits;
+        let f_num_qubits = bf.next_qubit as usize;
+        let f_num_bits = bf.next_bit as usize;
+        let f_ops = bf.ops;
+        for &(uval, vval) in &cases {
+            let (mut eu, mut ev, mut ecu, mut ecv) = (uval, vval, 0u64, 1u64);
+            let mut expected_hists = [0u64; STEPS];
+            for h in expected_hists.iter_mut() {
+                if eu != ev {
+                    let k = (eu - ev).trailing_zeros() as usize;
+                    *h = (1u64 << k) - 1;
+                    plusminus_classical_step_mod_width_for_test(&mut eu, &mut ev, &mut ecu, &mut ecv, LIVE);
+                }
+            }
+            let mut hasher = sha3::Shake128::default();
+            hasher.update(b"plusminus-fixed-bound-packed-active-forward-v1");
+            let mut xof = hasher.finalize_xof();
+            let mut sim = crate::sim::Simulator::new(f_num_qubits, f_num_bits, &mut xof);
+            set_slice_u512_pm(&mut sim, &fu_lane[..LIVE], U512::from(uval));
+            set_slice_u512_pm(&mut sim, &fv_lane[..LIVE], U512::from(vval));
+            set_slice_u512_pm(&mut sim, &fcu_lane[..LIVE], U512::ZERO);
+            set_slice_u512_pm(&mut sim, &fcv_lane[..LIVE], U512::from(1u64));
+            sim.apply(&f_ops);
+            assert_eq!(get_slice_u512_pm(&sim, &fu_lane[..LIVE]).as_limbs()[0] & mask, eu & mask, "forward u mismatch case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &fv_lane[..LIVE]).as_limbs()[0] & mask, ev & mask, "forward v mismatch case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &fcu_lane[..LIVE]).as_limbs()[0] & mask, ecu & mask, "forward cu mismatch case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &fcv_lane[..LIVE]).as_limbs()[0] & mask, ecv & mask, "forward cv mismatch case=({uval},{vval})");
+            for (i, hist) in fhists.iter().enumerate() {
+                assert_eq!(get_slice_u512_pm(&sim, hist).as_limbs()[0] & mask, expected_hists[i], "forward packed hist {i} mismatch case=({uval},{vval})");
+            }
+            assert_eq!(get_slice_u512_pm(&sim, &factive), U512::ZERO, "forward active dirty case=({uval},{vval})");
+            assert_eq!(sim.qubit(fspill) & 1, 0, "forward spill dirty case=({uval},{vval})");
+            assert_eq!(sim.qubit(fflag) & 1, 0, "forward flag dirty case=({uval},{vval})");
+            assert_eq!(sim.global_phase() & 1, 0, "forward unexpected phase case=({uval},{vval})");
+        }
+
+        let mut b = super::super::B::new();
+        let u_lane = b.alloc_qubits(TOTAL);
+        let v_lane = b.alloc_qubits(TOTAL);
+        let cu_lane = b.alloc_qubits(TOTAL);
+        let cv_lane = b.alloc_qubits(TOTAL);
+        let active = b.alloc_qubits(LIVE + 1);
+        let mut slots = Vec::new();
+        for i in LIVE..TOTAL {
+            slots.push(u_lane[i]);
+            slots.push(v_lane[i]);
+            slots.push(cu_lane[i]);
+            slots.push(cv_lane[i]);
+        }
+        let hists: Vec<Vec<super::super::QubitId>> = (0..STEPS)
+            .map(|s| slots[s * LIVE..(s + 1) * LIVE].to_vec())
+            .collect();
+        let spill = b.alloc_qubit();
+        let flag = b.alloc_qubit();
+        let start = b.ops.len();
+        for step in 0..STEPS {
+            emit_plusminus_inplace_step_forward_konly_active_for_test(&mut b, &u_lane[..LIVE], &v_lane[..LIVE], &cu_lane[..LIVE], &cv_lane[..LIVE], &active, &hists[step], spill, flag);
+        }
+        for step in (0..STEPS).rev() {
+            emit_plusminus_inplace_step_inverse_konly_active_for_test(&mut b, &u_lane[..LIVE], &v_lane[..LIVE], &cu_lane[..LIVE], &cv_lane[..LIVE], &active, &hists[step], spill, flag);
+        }
+        let ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        for &(uval, vval) in &cases {
+            let mut hasher = sha3::Shake128::default();
+            hasher.update(b"plusminus-fixed-bound-packed-active-roundtrip-v1");
+            let mut xof = hasher.finalize_xof();
+            let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+            set_slice_u512_pm(&mut sim, &u_lane[..LIVE], U512::from(uval));
+            set_slice_u512_pm(&mut sim, &v_lane[..LIVE], U512::from(vval));
+            set_slice_u512_pm(&mut sim, &cu_lane[..LIVE], U512::ZERO);
+            set_slice_u512_pm(&mut sim, &cv_lane[..LIVE], U512::from(1u64));
+            sim.apply(&ops);
+            assert_eq!(get_slice_u512_pm(&sim, &u_lane[..LIVE]).as_limbs()[0] & mask, uval & mask, "u changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &v_lane[..LIVE]).as_limbs()[0] & mask, vval & mask, "v changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &cu_lane[..LIVE]).as_limbs()[0] & mask, 0, "cu changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &cv_lane[..LIVE]).as_limbs()[0] & mask, 1, "cv changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &active), U512::ZERO, "active not clean case=({uval},{vval})");
+            for (i, &slot) in slots.iter().enumerate() {
+                assert_eq!(sim.qubit(slot) & 1, 0, "packed slot {i} not clean case=({uval},{vval})");
+            }
+            assert_eq!(sim.qubit(spill) & 1, 0, "spill not clean case=({uval},{vval})");
+            assert_eq!(sim.qubit(flag) & 1, 0, "flag not clean case=({uval},{vval})");
+            assert_eq!(sim.global_phase() & 1, 0, "unexpected phase case=({uval},{vval})");
+        }
+        let packed_slots = STEPS * LIVE;
+        eprintln!("plus-minus fixed-bound packed active loop: live={LIVE}, total={TOTAL}, steps={STEPS}, packed_slots={packed_slots}, forward_ccx={f_ccx}, forward_peak={f_peak}, roundtrip_ccx={ccx}, peak={peak}");
+        println!("METRIC plusminus_fixed_bound_live_width={LIVE}");
+        println!("METRIC plusminus_fixed_bound_total_width={TOTAL}");
+        println!("METRIC plusminus_fixed_bound_steps={STEPS}");
+        println!("METRIC plusminus_fixed_bound_packed_slots={packed_slots}");
+        println!("METRIC plusminus_fixed_bound_forward_ccx={f_ccx}");
+        println!("METRIC plusminus_fixed_bound_forward_peak_q={f_peak}");
+        println!("METRIC plusminus_fixed_bound_roundtrip_ccx={ccx}");
+        println!("METRIC plusminus_fixed_bound_roundtrip_peak_q={peak}");
+        assert!(ccx > 0 && peak > 0);
+    }
+
+    #[test]
     fn plusminus_inplace_three_step_konly_roundtrip_is_clean() {
         // Multi-step smoke test with no persistent direction flags.  The flag
         // is cleared after every forward step by coefficient divisibility and
