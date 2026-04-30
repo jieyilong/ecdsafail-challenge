@@ -3628,6 +3628,48 @@ mod tests {
         assert!(over_google_max > 0, "plus-minus scaled state would fit without history fusion; revisit architecture");
     }
 
+    fn plusminus_scaled_used_history_trace_for_divisor(x: U256, p: U256) -> Vec<(usize, usize)> {
+        let mut u = u512_from_u256_for_halfgcd_test(p);
+        let mut v = u512_from_u256_for_halfgcd_test(x);
+        let initial_twos = x.trailing_zeros() as usize;
+        v >>= initial_twos;
+        let mut cu = smag_for_halfgcd_test(false, U512::ZERO);
+        let mut cv = smag_for_halfgcd_test(false, U512::from(1u64));
+        let mut history = initial_twos;
+        let coeff_bits = |z: SignedMagU512ForHalfGcdTest| -> usize {
+            if z.mag.is_zero() { 1 } else { 1 + u512_bit_len_for_halfgcd_test(z.mag) }
+        };
+        let mut out = Vec::new();
+        if u < v {
+            core::mem::swap(&mut u, &mut v);
+            core::mem::swap(&mut cu, &mut cv);
+        }
+        while u != v {
+            let mut d = u - v;
+            let k = d.trailing_zeros() as usize;
+            d >>= k;
+            let cd = signed_add_for_halfgcd_test(cu, signed_neg_for_halfgcd_test(cv));
+            let cv_scaled = smag_for_halfgcd_test(cv.neg, cv.mag << k);
+            history += k;
+            if v >= d {
+                u = v;
+                v = d;
+                cu = cv_scaled;
+                cv = cd;
+            } else {
+                u = d;
+                cu = cd;
+                cv = cv_scaled;
+            }
+            let used = u512_bit_len_for_halfgcd_test(u)
+                + u512_bit_len_for_halfgcd_test(v)
+                + coeff_bits(cu)
+                + coeff_bits(cv);
+            out.push((used, history));
+        }
+        out
+    }
+
     #[test]
     fn plusminus_scaled_state_slack_may_pack_unary_history() {
         // Try the obvious fusion escape for the 914q naive state: the four live
@@ -3670,6 +3712,58 @@ mod tests {
         println!("METRIC plusminus_scaled_slack_used_max={used_max}");
         println!("METRIC plusminus_scaled_slack_over_google_max_bits={over_google_max}");
         assert!(scratch_p99 <= 663, "slack-packed plus-minus misses even p99 Google scratch");
+    }
+
+    #[test]
+    fn plusminus_scaled_slack_has_public_step_envelope() {
+        // The previous slack model used per-sample live bitlengths.  A circuit
+        // cannot cheaply know arbitrary bitlength boundaries, so try a stronger
+        // public schedule: for each step index, reserve enough live width for
+        // the worst sampled state at that index, and ask whether the consumed
+        // unary history still fits in the remaining high bits.  If this holds,
+        // slack packing may be scheduled by loop index rather than by a dense
+        // bitlength oracle.
+        let p = SECP256K1_P;
+        let samples = 8192usize;
+        let mut rng = 0x57ee_6635_5ced_5eedu64;
+        let mut max_used_by_step: Vec<usize> = Vec::new();
+        let mut max_hist_by_step: Vec<usize> = Vec::new();
+        for _ in 0..samples {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() { x = U256::from(1u64); }
+            for (i, (used, hist)) in plusminus_scaled_used_history_trace_for_divisor(x, p).into_iter().enumerate() {
+                if i == max_used_by_step.len() {
+                    max_used_by_step.push(0);
+                    max_hist_by_step.push(0);
+                }
+                max_used_by_step[i] = max_used_by_step[i].max(used);
+                max_hist_by_step[i] = max_hist_by_step[i].max(hist);
+            }
+        }
+        let mut max_deficit = 0isize;
+        let mut worst_step = 0usize;
+        for i in 0..max_used_by_step.len() {
+            let slack = 4isize * 256isize - max_used_by_step[i] as isize;
+            let deficit = max_hist_by_step[i] as isize - slack;
+            if deficit > max_deficit {
+                max_deficit = deficit;
+                worst_step = i;
+            }
+        }
+        let max_deficit_u = max_deficit.max(0) as usize;
+        let scratch = 512 + max_deficit_u;
+        let over_google = scratch as isize - 663isize;
+        let max_steps = max_used_by_step.len();
+        eprintln!(
+            "plus-minus public-step slack envelope: max_steps={max_steps}, worst_step={worst_step}, deficit={max_deficit_u}, scratch={scratch}, over_google={over_google}, used_at_worst={}, hist_at_worst={} ",
+            max_used_by_step[worst_step], max_hist_by_step[worst_step]
+        );
+        println!("METRIC plusminus_scaled_public_slack_max_steps={max_steps}");
+        println!("METRIC plusminus_scaled_public_slack_worst_step={worst_step}");
+        println!("METRIC plusminus_scaled_public_slack_deficit={max_deficit_u}");
+        println!("METRIC plusminus_scaled_public_slack_scratch={scratch}");
+        println!("METRIC plusminus_scaled_public_slack_over_google_bits={over_google}");
+        assert!(scratch <= 663, "public step-index slack envelope misses Google scratch");
     }
 
     fn smag_to_twos_for_plusminus_test(x: SignedMagU512ForHalfGcdTest, width: usize) -> U512 {
