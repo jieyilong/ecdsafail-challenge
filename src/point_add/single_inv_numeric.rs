@@ -3799,6 +3799,110 @@ mod tests {
         assert_eq!(ccx, 2 * W, "active-chain generator should cost 2W CCX");
     }
 
+    fn emit_plusminus_inplace_step_forward_for_test(
+        b: &mut super::super::B,
+        u: &[super::super::QubitId],
+        v: &[super::super::QubitId],
+        cu: &[super::super::QubitId],
+        cv: &[super::super::QubitId],
+        active: &[super::super::QubitId],
+        hist: &[super::super::QubitId],
+        spill: super::super::QubitId,
+        flag: super::super::QubitId,
+        one: super::super::QubitId,
+    ) {
+        // In-place productive plus-minus step on the promised domain u>=v and
+        // d=u-v nonzero. Leaves unary k history in `hist` and ordering history
+        // in `flag`; all other work clean.
+        b.x(one);
+        super::super::sub_nbit_qq_fast(b, v, u); // u=d
+        emit_trailing_zero_active_chain_history_for_plusminus(b, u, active, hist);
+        for &h in hist {
+            emit_controlled_right_shift_exact_for_plusminus(b, u, h, spill); // u=d>>k
+        }
+        emit_controlled_integer_add_for_plusminus(b, cu, cv, one, true); // cu=cu-cv
+        for &h in hist {
+            emit_controlled_left_shift_nooverflow_for_plusminus(b, cv, h, spill); // cv=cv<<k
+        }
+        super::super::cmp_lt_into(b, u, v, flag);
+        for i in 0..u.len() {
+            local_cswap_for_plusminus_cost(b, flag, u[i], v[i]);
+            local_cswap_for_plusminus_cost(b, flag, cu[i], cv[i]);
+        }
+        b.x(one);
+    }
+
+    #[test]
+    fn plusminus_inplace_one_step_forward_matches_classical() {
+        // First genuinely low-scratch productive step: mutate (u,v,cu,cv) in
+        // place and leave unary k plus one direction bit as history. This is
+        // the shape that can actually be wired; no fresh output lanes coexist
+        // with old state.
+        use sha3::digest::{ExtendableOutput, Update};
+        const W: usize = 16;
+        let mut b = super::super::B::new();
+        let u = b.alloc_qubits(W);
+        let v = b.alloc_qubits(W);
+        let cu = b.alloc_qubits(W);
+        let cv = b.alloc_qubits(W);
+        let active = b.alloc_qubits(W + 1);
+        let hist = b.alloc_qubits(W);
+        let spill = b.alloc_qubit();
+        let flag = b.alloc_qubit();
+        let one = b.alloc_qubit();
+        let start = b.ops.len();
+        emit_plusminus_inplace_step_forward_for_test(&mut b, &u, &v, &cu, &cv, &active, &hist, spill, flag, one);
+        let ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let mask = (1u64 << W) - 1;
+        let cases = [(37u64, 5u64), (91, 27), (128, 64), (201, 77), (255, 127)];
+        for &(uval, vval) in &cases {
+            for cuv in [0u64, 1, 7, 123] {
+                for cvv in [0u64, 3, 11, 15] {
+                    let diff = uval - vval;
+                    let k = diff.trailing_zeros() as usize;
+                    let d_class = diff >> k;
+                    let cd_class = cuv.wrapping_sub(cvv) & mask;
+                    let cvs_class = (cvv << k) & mask;
+                    let dir = d_class < vval;
+                    let (enu, env, encu, encv) = if dir {
+                        (vval, d_class, cvs_class, cd_class)
+                    } else {
+                        (d_class, vval, cd_class, cvs_class)
+                    };
+                    let expected_hist = if k >= W { (1u64 << W) - 1 } else { (1u64 << k) - 1 };
+                    let mut hasher = sha3::Shake128::default();
+                    hasher.update(b"plusminus-inplace-one-step-forward-v1");
+                    let mut xof = hasher.finalize_xof();
+                    let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+                    set_slice_u512_pm(&mut sim, &u, U512::from(uval));
+                    set_slice_u512_pm(&mut sim, &v, U512::from(vval));
+                    set_slice_u512_pm(&mut sim, &cu, U512::from(cuv));
+                    set_slice_u512_pm(&mut sim, &cv, U512::from(cvv));
+                    sim.apply(&ops);
+                    assert_eq!(get_slice_u512_pm(&sim, &u).as_limbs()[0] & mask, enu & mask, "u mismatch");
+                    assert_eq!(get_slice_u512_pm(&sim, &v).as_limbs()[0] & mask, env & mask, "v mismatch");
+                    assert_eq!(get_slice_u512_pm(&sim, &cu).as_limbs()[0] & mask, encu & mask, "cu mismatch");
+                    assert_eq!(get_slice_u512_pm(&sim, &cv).as_limbs()[0] & mask, encv & mask, "cv mismatch");
+                    assert_eq!(get_slice_u512_pm(&sim, &hist).as_limbs()[0] & mask, expected_hist, "hist mismatch");
+                    assert_eq!(get_slice_u512_pm(&sim, &active), U512::ZERO, "active not clean");
+                    assert_eq!(sim.qubit(spill) & 1, 0, "spill not clean");
+                    assert_eq!((sim.qubit(flag) & 1) != 0, dir, "direction flag mismatch");
+                    assert_eq!(sim.qubit(one) & 1, 0, "one not clean");
+                    assert_eq!(sim.global_phase() & 1, 0, "unexpected phase");
+                }
+            }
+        }
+        eprintln!("plus-minus in-place one-step forward: width={W}, ccx={ccx}, peak={peak}");
+        println!("METRIC plusminus_inplace_step_width={W}");
+        println!("METRIC plusminus_inplace_step_ccx={ccx}");
+        println!("METRIC plusminus_inplace_step_peak_q={peak}");
+        assert!(ccx > 0 && peak > 0);
+    }
+
     #[test]
     fn plusminus_one_step_output_skeleton_matches_classical() {
         // Productive one-step skeleton: compute the ordered next denominator
