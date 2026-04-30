@@ -3415,6 +3415,35 @@ mod tests {
     }
 
     #[test]
+    fn plusminus_offset_norm_optimistic_budget_still_misses_full_target() {
+        // Best-case stitched model after recent invalidations: coefficient
+        // offsets delete signed coefficient barrels; denominator offsets are
+        // periodically normalized by a magic exact width oracle and a 5-bit
+        // barrel shift only on the p99 normalization count.  This is generous:
+        // it does not charge the width/amount oracle, cleanup, scale correction,
+        // or public-envelope control complexity.
+        let base_step_without_den_barrel = 5_794usize; // 10_243 - 2_393 - 2_056.
+        let steps_public = 202usize;
+        let den_norm_count_p99 = 89usize;
+        let den_norm_barrel_cost = 257usize * 5usize; // chunk max <=20 -> five k bits.
+        let one_div_step_norm = steps_public * base_step_without_den_barrel
+            + den_norm_count_p99 * den_norm_barrel_cost;
+        let two_div_step_norm = 2usize * one_div_step_norm;
+        let scaffold_after_div = 642_716usize;
+        let optimistic_total_before_scale = scaffold_after_div + two_div_step_norm;
+        let gap_before_scale = optimistic_total_before_scale as isize - 2_700_000isize;
+        eprintln!("plus-minus optimistic coeff-offset/den-normalization budget: one_div={one_div_step_norm}, two_div={two_div_step_norm}, total_before_scale={optimistic_total_before_scale}, gap_before_scale={gap_before_scale}");
+        println!("METRIC plusminus_offset_norm_base_step_ccx={base_step_without_den_barrel}");
+        println!("METRIC plusminus_offset_norm_den_norm_count_p99={den_norm_count_p99}");
+        println!("METRIC plusminus_offset_norm_den_norm_barrel_ccx={den_norm_barrel_cost}");
+        println!("METRIC plusminus_offset_norm_one_div_step_ccx={one_div_step_norm}");
+        println!("METRIC plusminus_offset_norm_two_div_step_ccx={two_div_step_norm}");
+        println!("METRIC plusminus_offset_norm_total_before_scale={optimistic_total_before_scale}");
+        println!("METRIC plusminus_offset_norm_gap_before_scale_to_2700k={gap_before_scale}");
+        assert!(gap_before_scale > 0, "even optimistic normalization would fit before scale; revisit plusminus physical budget");
+    }
+
+    #[test]
     fn plusminus_coeff_offset_den_barrel_budget_still_tight() {
         // If coefficient offsets delete the signed coefficient barrel shift but
         // denominators still physically barrel-shift, the step budget improves
