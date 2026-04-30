@@ -3527,6 +3527,44 @@ mod tests {
     }
 
     #[test]
+    fn plusminus_scaled_integer_state_accounting_needs_history_fusion() {
+        // Correct the optimistic state accounting for the scaled-integer route.
+        // tx/ty can host one denominator and one coefficient, but an extended
+        // plus-minus replay still appears to need the other denominator, the
+        // other coefficient, and the unary k history unless history is consumed
+        // online or packed into shrinking state.  This is the scratch analogue
+        // of the direction/parser blocker.
+        let p = SECP256K1_P;
+        let samples = 8192usize;
+        let mut rng = 0xacc0_6635_7a7e_5eedu64;
+        let mut unary_payloads = Vec::with_capacity(samples);
+        for _ in 0..samples {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() { x = U256::from(1u64); }
+            let ks = plusminus_k_sequence_for_divisor(x, p);
+            unary_payloads.push(ks.iter().sum::<usize>());
+        }
+        unary_payloads.sort_unstable();
+        let p99 = samples * 99 / 100;
+        let unary_p99 = unary_payloads[p99];
+        let unary_max = *unary_payloads.last().unwrap();
+        let second_denominator = 256usize;
+        let second_coefficient = 256usize;
+        let scratch_p99 = second_denominator + second_coefficient + unary_p99;
+        let scratch_max = second_denominator + second_coefficient + unary_max;
+        let over_google_max = scratch_max as isize - 663isize;
+        eprintln!(
+            "plus-minus scaled integer state accounting: unary_p99={unary_p99}, unary_max={unary_max}, scratch_p99={scratch_p99}, scratch_max={scratch_max}, over_google_max={over_google_max}"
+        );
+        println!("METRIC plusminus_scaled_state_unary_p99={unary_p99}");
+        println!("METRIC plusminus_scaled_state_unary_max={unary_max}");
+        println!("METRIC plusminus_scaled_state_scratch_p99={scratch_p99}");
+        println!("METRIC plusminus_scaled_state_scratch_max={scratch_max}");
+        println!("METRIC plusminus_scaled_state_over_google_max_bits={over_google_max}");
+        assert!(over_google_max > 0, "plus-minus scaled state would fit without history fusion; revisit architecture");
+    }
+
+    #[test]
     fn plusminus_raw_k_live_x_parser_recompute_is_gate_dead() {
         // Last live-parser objection for the plus-minus stream: if raw k bits
         // fit only without delimiters, maybe a parser recomputes the odd-GCD
