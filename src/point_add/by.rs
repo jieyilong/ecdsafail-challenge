@@ -4075,6 +4075,72 @@ mod tests {
     }
 
     #[test]
+    fn streamed_mask_controlled_qoffset_fits_scratch_but_misses_gate_target() {
+        // Real version of the mask-streaming idea: keep only a one-qubit
+        // ctrl&offset[k] mask at a time, while using an independent dirty bank.
+        // It retains the low scratch of the naive controlled dirty adder, but
+        // the repeated mask compute/uncompute lands near the linear tradeoff
+        // model instead of the full-mask gate count.
+        let n = 8usize;
+        let maskv = (1u64 << n) - 1;
+        let mut b = super::super::B::new();
+        let ctrl = b.alloc_qubit();
+        let target = b.alloc_qubits(n);
+        let offset = b.alloc_qubits(n);
+        let dirty = b.alloc_qubits(n - 2);
+        let clean2 = [b.alloc_qubit(), b.alloc_qubit()];
+        let mask = b.alloc_qubit();
+        super::super::venting::ciadd_dirty_3clean_qoffset_stream_mask(&mut b, &target, &dirty, &clean2, mask, &offset, ctrl);
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        for ctrl_v in [false, true] {
+            for target_v in [0x00u64, 0x35, 0xf1] {
+                for offset_v in [0x00u64, 0x17, 0x80] {
+                    let dirty_v = 0x2du64 & ((1u64 << (n - 2)) - 1);
+                    let mut hasher = sha3::Shake128::default();
+                    hasher.update(b"by-stream-mask-qoffset-small-v1");
+                    let mut xof = hasher.finalize_xof();
+                    let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+                    if ctrl_v { *sim.qubit_mut(ctrl) |= 1; }
+                    set_slice_u512_by(&mut sim, &target, U512::from(target_v));
+                    set_slice_u512_by(&mut sim, &offset, U512::from(offset_v));
+                    set_slice_u512_by(&mut sim, &dirty, U512::from(dirty_v));
+                    sim.apply(&ops);
+                    let expected = if ctrl_v { target_v.wrapping_add(offset_v) & maskv } else { target_v & maskv };
+                    assert_eq!(get_slice_u512_by(&sim, &target).to::<u64>() & maskv, expected, "target mismatch ctrl={ctrl_v} target={target_v:x} offset={offset_v:x}");
+                    assert_eq!(get_slice_u512_by(&sim, &offset).to::<u64>() & maskv, offset_v & maskv, "offset changed");
+                    assert_eq!(get_slice_u512_by(&sim, &dirty).to::<u64>() & ((1u64 << (n - 2)) - 1), dirty_v, "dirty changed");
+                    assert_eq!(sim.qubit(mask) & 1, 0, "mask dirty");
+                    assert_eq!(sim.global_phase() & 1, 0, "phase changed");
+                }
+            }
+        }
+        let mut b = super::super::B::new();
+        let ctrl = b.alloc_qubit();
+        let target = b.alloc_qubits(256);
+        let offset = b.alloc_qubits(256);
+        let dirty = b.alloc_qubits(254);
+        let clean2 = [b.alloc_qubit(), b.alloc_qubit()];
+        let mask = b.alloc_qubit();
+        super::super::venting::ciadd_dirty_3clean_qoffset_stream_mask(&mut b, &target, &dirty, &clean2, mask, &offset, ctrl);
+        let ccx = count_ccx(&b.ops);
+        let peak = b.peak_qubits as usize;
+        let scaled_microstep_with_this_add = ccx + 256 + 255 + 255;
+        let div560 = scaled_microstep_with_this_add as f64 * 560.0;
+        let scratch_with_history = 481usize + 26 + 3;
+        eprintln!(
+            "streamed-mask controlled qoffset: ccx={ccx}, peak={peak}q, div560≈{div560:.0}, scratch_with_history≈{scratch_with_history}q"
+        );
+        println!("METRIC streamed_mask_qoffset_ccx={ccx}");
+        println!("METRIC streamed_mask_qoffset_peak={peak}");
+        println!("METRIC streamed_mask_qoffset_div560={div560:.0}");
+        println!("METRIC streamed_mask_qoffset_scratch_with_history={scratch_with_history}");
+        assert!(ccx > 2_700, "streamed-mask qoffset unexpectedly beat the linear tradeoff; revisit BY integration");
+        assert!(scratch_with_history < 600, "streamed-mask qoffset does not fit 600q scratch model");
+    }
+
+    #[test]
     fn partial_mask_controlled_qoffset_linear_tradeoff_just_misses_600q_target() {
         // First-order model after the masked-borrow primitive: full mask gives
         // good gates but 766q scratch with compressed history; no mask gives

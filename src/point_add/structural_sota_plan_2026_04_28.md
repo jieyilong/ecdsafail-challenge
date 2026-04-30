@@ -1315,10 +1315,12 @@ user's ~600-scratch cap by ~166q when added to compressed pattern history. A
 linear partial-mask interpolation is slightly short of the target:
 `partial_mask_controlled_qoffset_linear_tradeoff_just_misses_600q_target` leaves
 90 mask bits under the 600q cap, estimates add≈2755 CCX, replay560≈1,971,760,
-and point-add≈2,764,476 with scaffold+branch margin.  The next implementation
-problem is not raw Toffoli anymore; it is streaming or overlapping that mask
-with history/decoder workspace **better than linearly** without losing phase
-cleanliness.
+and point-add≈2,764,476 with scaffold+branch margin.  The direct streaming implementation was tried:
+`streamed_mask_controlled_qoffset_fits_scratch_but_misses_gate_target` keeps one
+mask bit, passes basis/phase checks, and fits scratch (`scratch_with_history≈510q`),
+but costs `2796` CCX with `div560≈1,994,720`.  So the next implementation
+problem is not raw correctness; it is overlapping/sharing mask and carry work
+**better than linearly**.  Plain one-bit streaming is a dead end.
 
 This is the first coherent selected BY replay model in the right Toffoli band.
 It is not yet a complete DIV: branch-history compression/cleanup still need

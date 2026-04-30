@@ -1246,6 +1246,164 @@ fn c_xor_right_shifted_carries_into_qoffset(
     }
 }
 
+fn c_add_vented_2clean_qoffset_stream_mask(
+    b: &mut B,
+    q_target: &[QubitId],
+    q_clean2: &[QubitId; 2],
+    q_mask: QubitId,
+    q_offset: &[QubitId],
+    ctrl: QubitId,
+    vent_keys: &[BitId],
+    carry_xor_target: Option<&[Option<QubitId>]>,
+) {
+    let n = q_target.len();
+    let get_carry_qubit = |k: usize| -> Option<QubitId> {
+        if k == 0 { None } else if k == n - 1 { Some(q_target[n - 1]) } else { Some(q_clean2[k % 2]) }
+    };
+    for k in 0..n - 1 {
+        b.ccx(ctrl, q_offset[k], q_mask);
+        b.cx(q_mask, q_target[k]);
+        if k < n - 2 {
+            if let Some(q) = get_carry_qubit(k + 1) {
+                let mut op = Op::empty();
+                op.kind = OperationType::R;
+                op.q_target = q;
+                b.ops.push(op);
+            }
+        }
+        if k == 0 {
+            if let Some(next_q) = get_carry_qubit(1) { b.ccx(q_target[0], q_mask, next_q); }
+        } else {
+            let cur = get_carry_qubit(k).expect("non-boundary carry");
+            let next = get_carry_qubit(k + 1).expect("non-boundary next carry");
+            b.cx(q_mask, cur);
+            b.ccx(q_target[k], cur, next);
+            b.cx(q_mask, cur);
+        }
+        if k > 0 {
+            let cur = get_carry_qubit(k).expect("non-boundary carry");
+            b.cx(cur, q_target[k]);
+        }
+        if let Some(cxt) = carry_xor_target {
+            if k < cxt.len() {
+                if let Some(dst) = cxt[k] {
+                    if k > 0 {
+                        let cur = get_carry_qubit(k).expect("non-boundary carry");
+                        b.cx(cur, dst);
+                    }
+                }
+            }
+        }
+        if k > 0 {
+            let cur = get_carry_qubit(k).expect("non-boundary carry");
+            b.hmr(cur, vent_keys[k]);
+        }
+        if let Some(q) = get_carry_qubit(k + 1) { b.cx(q_mask, q); }
+        b.ccx(ctrl, q_offset[k], q_mask);
+    }
+    let k = n - 1;
+    b.ccx(ctrl, q_offset[k], q_mask);
+    b.cx(q_mask, q_target[k]);
+    b.ccx(ctrl, q_offset[k], q_mask);
+}
+
+fn c_xor_right_shifted_carries_into_qoffset_stream_mask(
+    b: &mut B,
+    q_src: &[QubitId],
+    q_offset: &[QubitId],
+    q_dst: &[QubitId],
+    ctrl: QubitId,
+    q_mask: QubitId,
+) {
+    let n = q_dst.len();
+    assert!(n <= q_src.len() && q_src.len() <= n + 1, "len mismatch");
+    if n == 0 { return; }
+    for k in (1..n).rev() {
+        b.ccx(ctrl, q_offset[k], q_mask);
+        b.cx(q_mask, q_src[k]);
+        b.ccx(q_src[k], q_dst[k - 1], q_dst[k]);
+        b.cx(q_mask, q_src[k]);
+        b.ccx(ctrl, q_offset[k], q_mask);
+    }
+    for k in 0..n {
+        b.ccx(ctrl, q_offset[k], q_mask);
+        b.cx(q_mask, q_dst[k]);
+        b.ccx(ctrl, q_offset[k], q_mask);
+    }
+    b.ccx(ctrl, q_offset[0], q_mask);
+    b.cx(q_mask, q_src[0]);
+    b.ccx(q_src[0], q_mask, q_dst[0]);
+    b.cx(q_mask, q_src[0]);
+    b.ccx(ctrl, q_offset[0], q_mask);
+    for k in 1..n {
+        b.ccx(ctrl, q_offset[k], q_mask);
+        b.cx(q_mask, q_src[k]);
+        b.cx(q_mask, q_dst[k - 1]);
+        b.ccx(q_src[k], q_dst[k - 1], q_dst[k]);
+        b.cx(q_mask, q_dst[k - 1]);
+        b.cx(q_mask, q_src[k]);
+        b.ccx(ctrl, q_offset[k], q_mask);
+    }
+}
+
+/// Controlled quantum-offset dirty add using a streamed one-qubit mask. If
+/// `ctrl`, `q_target += q_offset`; otherwise identity. Uses 3 clean qubits
+/// (2 streaming carries + 1 mask temp) and n-2 dirty qubits.
+pub fn ciadd_dirty_3clean_qoffset_stream_mask(
+    b: &mut B,
+    q_target: &[QubitId],
+    q_dirty: &[QubitId],
+    q_clean2: &[QubitId; 2],
+    q_mask: QubitId,
+    q_offset: &[QubitId],
+    ctrl: QubitId,
+) {
+    let n = q_target.len();
+    assert_eq!(q_offset.len(), n);
+    if n == 0 { return; }
+    if n <= 4 { panic!("ciadd_dirty_3clean_qoffset_stream_mask: n<=4 not supported yet"); }
+    assert!(q_dirty.len() >= n - 2, "need n-2 dirty qubits");
+    let q_dirty = &q_dirty[..n - 2];
+    let vent_keys: Vec<BitId> = (0..n).map(|_| b.alloc_bit()).collect();
+    let cxt: Vec<Option<QubitId>> = (0..n)
+        .map(|k| if k == 0 { None } else { q_dirty.get(k - 1).copied() })
+        .collect();
+    c_add_vented_2clean_qoffset_stream_mask(
+        b,
+        q_target,
+        q_clean2,
+        q_mask,
+        q_offset,
+        ctrl,
+        &vent_keys,
+        Some(&cxt),
+    );
+    for k in 0..n { b.x(q_target[k]); }
+    for k in 0..n - 2 {
+        let mut op = Op::empty();
+        op.kind = OperationType::Z;
+        op.q_target = q_dirty[k];
+        op.c_condition = vent_keys[k + 1];
+        b.ops.push(op);
+    }
+    c_xor_right_shifted_carries_into_qoffset_stream_mask(
+        b,
+        &q_target[..n - 1],
+        q_offset,
+        q_dirty,
+        ctrl,
+        q_mask,
+    );
+    for k in 0..n - 2 {
+        let mut op = Op::empty();
+        op.kind = OperationType::Z;
+        op.q_target = q_dirty[k];
+        op.c_condition = vent_keys[k + 1];
+        b.ops.push(op);
+    }
+    for k in 0..n { b.x(q_target[k]); }
+}
+
 /// Controlled quantum-offset dirty add: if `ctrl`, `q_target += q_offset`.
 /// Uses 3 clean qubits (2 streaming carries + 1 temporary for CCCX) and n-2 dirty qubits.
 pub fn ciadd_dirty_3clean_qoffset(

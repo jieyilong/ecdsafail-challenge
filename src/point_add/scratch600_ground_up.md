@@ -829,9 +829,13 @@ it above the user's ~600-scratch cap.  A linear partial-mask tradeoff just
 misses: with 481 history bits + 26 decoder bits + small clean controls, only 90
 mask bits remain; `partial_mask_controlled_qoffset_linear_tradeoff_just_misses_600q_target`
 interpolates to add≈2755 CCX, replay560≈1,971,760, and point-add≈2,764,476
-after scaffold+branch margin.  A BY revival under 600 scratch needs mask
-streaming/overlap that beats this linear tradeoff, not another generic
-controlled-adder wrapper.
+after scaffold+branch margin.  The direct one-bit streaming implementation was tested next:
+`streamed_mask_controlled_qoffset_fits_scratch_but_misses_gate_target` keeps only
+one clean mask bit and is phase-clean, with `scratch_with_history≈510q`, but it
+costs `2796` CCX and `div560≈1,994,720`.  Thus naive streaming fits scratch but
+misses the gate target almost exactly as predicted.  A BY revival under 600
+scratch needs a nontrivial carry/mask sharing trick that beats this linear
+tradeoff, not another generic controlled-adder wrapper.
 
 ## 12. Fast invalidation tasks still open
 
