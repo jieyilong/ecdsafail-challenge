@@ -3716,6 +3716,94 @@ mod tests {
         assert!(gap_p99 > 0, "post-hoc variable scale correction unexpectedly still fits SOTA");
     }
 
+    fn solinas_history_carry_scale_dp_for_plusminus(max_len: usize) -> (Vec<usize>, Vec<usize>) {
+        let mut cost_by_k = vec![0usize; 23];
+        for k in 1..=22 {
+            let (_cur, no_threshold, _exact, _threshold) =
+                super::super::primitive_costs::direct_solinas_multihalve_chunk_cost_split(k);
+            cost_by_k[k] = no_threshold;
+        }
+        let inf = usize::MAX / 4;
+        let mut dp = vec![inf; max_len + 1];
+        let mut chunks = vec![0usize; max_len + 1];
+        dp[0] = 0;
+        for i in 1..=max_len {
+            for k in 1..=22.min(i) {
+                let cand = dp[i - k].saturating_add(cost_by_k[k]);
+                if cand < dp[i] {
+                    dp[i] = cand;
+                    chunks[i] = chunks[i - k] + 1;
+                }
+            }
+        }
+        (dp, chunks)
+    }
+
+    #[test]
+    fn plusminus_scale_correction_with_solinas_history_carry_fits_margin() {
+        // Replace post-hoc controlled halves by the direct Solinas multihalve
+        // history-carry primitive costed earlier.  This is still a model: it
+        // assumes the one-bit residual per chunk can be packed with the unary
+        // history and that variable-S chunk selection is driven by the same
+        // public/slack-packed history.  It decides whether the scale problem is
+        // worth a real circuit skeleton.
+        let p = SECP256K1_P;
+        let samples = 4096usize;
+        let mut rng = 0x5011_6635_ca11_2026u64;
+        let mut traces = Vec::with_capacity(samples);
+        let mut max_scale = 0usize;
+        for _ in 0..samples {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() { x = U256::from(1u64); }
+            let ks = plusminus_k_sequence_for_divisor(x, p);
+            let unary: usize = ks.iter().sum();
+            let steps = ks.len();
+            max_scale = max_scale.max(unary);
+            traces.push((unary, steps));
+        }
+        let (scale_dp, chunk_dp) = solinas_history_carry_scale_dp_for_plusminus(max_scale);
+        let cmp_ccx = compare_cost_for_plusminus(256);
+        let cswap_ccx = cswap_lanes_cost_for_plusminus(&[256, 257]);
+        let gen_ccx = trailing_zero_unary_generator_cost_for_plusminus(256);
+        let cint_add_ccx = controlled_integer_add_cost_for_plusminus(257);
+        let cshift_ccx = controlled_left_shift_cost_for_plusminus(257);
+        let mut one_div = Vec::with_capacity(samples);
+        let mut scale_costs = Vec::with_capacity(samples);
+        let mut scale_chunks = Vec::with_capacity(samples);
+        for (unary, steps) in traces {
+            let step_tax = gen_ccx + cmp_ccx + cswap_ccx;
+            let core = 2 * (steps * cint_add_ccx + unary * cshift_ccx) + steps * step_tax;
+            one_div.push(core + scale_dp[unary]);
+            scale_costs.push(scale_dp[unary]);
+            scale_chunks.push(chunk_dp[unary]);
+        }
+        one_div.sort_unstable();
+        scale_costs.sort_unstable();
+        scale_chunks.sort_unstable();
+        let p99 = samples * 99 / 100;
+        let one_div_p99 = one_div[p99];
+        let one_div_max = *one_div.last().unwrap();
+        let scale_p99 = scale_costs[p99];
+        let scale_max = *scale_costs.last().unwrap();
+        let chunks_max = *scale_chunks.last().unwrap();
+        let two_div_p99 = 2 * one_div_p99;
+        let projected_p99 = 642_716usize + two_div_p99;
+        let gap_p99 = projected_p99 as isize - 2_700_000isize;
+        eprintln!(
+            "plus-minus Solinas history-carry scale: max_scale={max_scale}, scale_p99={scale_p99}, scale_max={scale_max}, chunks_max={chunks_max}, one_div_p99={one_div_p99}, projected_p99={projected_p99}, gap_p99={gap_p99}"
+        );
+        println!("METRIC plusminus_solinas_scale_max_bits={max_scale}");
+        println!("METRIC plusminus_solinas_scale_cost_p99_ccx={scale_p99}");
+        println!("METRIC plusminus_solinas_scale_cost_max_ccx={scale_max}");
+        println!("METRIC plusminus_solinas_scale_chunks_max={chunks_max}");
+        println!("METRIC plusminus_solinas_scale_one_div_p99_ccx={one_div_p99}");
+        println!("METRIC plusminus_solinas_scale_one_div_max_ccx={one_div_max}");
+        println!("METRIC plusminus_solinas_scale_two_div_p99_ccx={two_div_p99}");
+        println!("METRIC plusminus_solinas_scale_projected_p99_toffoli={projected_p99}");
+        println!("METRIC plusminus_solinas_scale_gap_p99_to_2700k={gap_p99}");
+        assert!(gap_p99 < 0, "Solinas history-carry scale correction does not preserve plus-minus margin");
+    }
+
     fn smag_shl_for_plusminus_test(x: SignedMagU512ForHalfGcdTest, k: usize) -> SignedMagU512ForHalfGcdTest {
         smag_for_halfgcd_test(x.neg, x.mag << k)
     }

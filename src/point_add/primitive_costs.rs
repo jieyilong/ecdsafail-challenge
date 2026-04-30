@@ -265,7 +265,7 @@ fn direct_solinas_multihalve_chunk_cost(k: usize) -> (usize, usize, usize, usize
     (current, candidate_without_corr, candidate_exact, threshold_ccx)
 }
 
-fn direct_solinas_multihalve_chunk_cost_split(k: usize) -> (usize, usize, usize, usize) {
+pub(super) fn direct_solinas_multihalve_chunk_cost_split(k: usize) -> (usize, usize, usize, usize) {
     let n = N;
     let p = SECP256K1_P;
     let c_low = 977u64;
