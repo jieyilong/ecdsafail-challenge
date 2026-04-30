@@ -3671,6 +3671,23 @@ mod tests {
         }
     }
 
+    fn emit_controlled_left_shift_unsigned_exact_for_plusminus(
+        b: &mut super::super::B,
+        v: &[super::super::QubitId],
+        ctrl: super::super::QubitId,
+        spill: super::super::QubitId,
+    ) {
+        // Controlled logical left shift for unsigned denominator lanes.  The
+        // shifted-out top bit lands in spill; valid inverse traces satisfy
+        // (v << 1) < 2^W on every active shift, so that bit is zero.  This is
+        // deliberately different from the signed coefficient no-overflow shift,
+        // whose cleanup checks sign-bit preservation.
+        for i in (0..v.len()).rev() {
+            let lo = if i == 0 { spill } else { v[i - 1] };
+            local_cswap_for_plusminus_cost(b, ctrl, lo, v[i]);
+        }
+    }
+
     fn controlled_left_shift_cost_for_plusminus(width: usize) -> usize {
         let mut b = super::super::B::new();
         let v = b.alloc_qubits(width);
@@ -3856,7 +3873,7 @@ mod tests {
         }
         emit_controlled_integer_add_for_plusminus(b, cu, cv, one, false); // cu=cd+cv=old cu
         for &h in hist.iter().rev() {
-            emit_controlled_left_shift_nooverflow_for_plusminus(b, u, h, spill); // u=d
+            emit_controlled_left_shift_unsigned_exact_for_plusminus(b, u, h, spill); // u=d
         }
         emit_trailing_zero_active_chain_history_for_plusminus(b, u, active, hist); // clear hist
         super::super::add_nbit_qq_fast(b, v, u); // u=old u
@@ -4064,6 +4081,77 @@ mod tests {
         println!("METRIC plusminus_konly_three_step_forward_peak_q={f_peak}");
         println!("METRIC plusminus_konly_three_step_ccx={ccx}");
         println!("METRIC plusminus_konly_three_step_peak_q={peak}");
+        assert!(ccx > 0 && peak > 0);
+    }
+
+    #[test]
+    fn plusminus_inplace_width32_eight_step_konly_roundtrip_is_clean() {
+        // Wider/longer k-only stress smoke test.  This exercises unsigned
+        // denominator left-shift restoration near the top of the word, signed
+        // coefficient shifts, repeated direction recovery, and LIFO k-history
+        // cleanup beyond the single-step happy path.
+        use sha3::digest::{ExtendableOutput, Update};
+        const W: usize = 32;
+        const STEPS: usize = 8;
+        let mut b = super::super::B::new();
+        let u = b.alloc_qubits(W);
+        let v = b.alloc_qubits(W);
+        let cu = b.alloc_qubits(W);
+        let cv = b.alloc_qubits(W);
+        let active = b.alloc_qubits(W + 1);
+        let hists: Vec<Vec<super::super::QubitId>> = (0..STEPS).map(|_| b.alloc_qubits(W)).collect();
+        let spill = b.alloc_qubit();
+        let flag = b.alloc_qubit();
+        let one = b.alloc_qubit();
+        let start = b.ops.len();
+        for step in 0..STEPS {
+            emit_plusminus_inplace_step_forward_konly_for_test(&mut b, &u, &v, &cu, &cv, &active, &hists[step], spill, flag, one);
+        }
+        for step in (0..STEPS).rev() {
+            emit_plusminus_inplace_step_inverse_konly_for_test(&mut b, &u, &v, &cu, &cv, &active, &hists[step], spill, flag, one);
+        }
+        let ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let mask = (1u64 << W) - 1;
+        let cases = [
+            (123456789u64, 98765u64),
+            (400000001, 1234567),
+            (0xfffffff1, 12345),
+            (65537, 17),
+            (987654321, 123456789),
+            (2147483647, 1),
+        ];
+        for &(uval, vval) in &cases {
+            let mut hasher = sha3::Shake128::default();
+            hasher.update(b"plusminus-inplace-width32-eight-step-konly-v2");
+            let mut xof = hasher.finalize_xof();
+            let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+            set_slice_u512_pm(&mut sim, &u, U512::from(uval));
+            set_slice_u512_pm(&mut sim, &v, U512::from(vval));
+            set_slice_u512_pm(&mut sim, &cu, U512::ZERO);
+            set_slice_u512_pm(&mut sim, &cv, U512::from(1u64));
+            sim.apply(&ops);
+            assert_eq!(get_slice_u512_pm(&sim, &u).as_limbs()[0] & mask, uval & mask, "u changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &v).as_limbs()[0] & mask, vval & mask, "v changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &cu).as_limbs()[0] & mask, 0, "cu changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &cv).as_limbs()[0] & mask, 1, "cv changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &active), U512::ZERO, "active not clean case=({uval},{vval})");
+            for (i, hist) in hists.iter().enumerate() {
+                assert_eq!(get_slice_u512_pm(&sim, hist), U512::ZERO, "hist {i} not clean case=({uval},{vval})");
+            }
+            assert_eq!(sim.qubit(spill) & 1, 0, "spill not clean case=({uval},{vval})");
+            assert_eq!(sim.qubit(flag) & 1, 0, "direction recovery flag not clean case=({uval},{vval})");
+            assert_eq!(sim.qubit(one) & 1, 0, "one not clean case=({uval},{vval})");
+            assert_eq!(sim.global_phase() & 1, 0, "unexpected phase case=({uval},{vval})");
+        }
+        eprintln!("plus-minus width32 eight-step k-only roundtrip: width={W}, steps={STEPS}, ccx={ccx}, peak={peak}");
+        println!("METRIC plusminus_konly_w32_steps8_width={W}");
+        println!("METRIC plusminus_konly_w32_steps8_steps={STEPS}");
+        println!("METRIC plusminus_konly_w32_steps8_ccx={ccx}");
+        println!("METRIC plusminus_konly_w32_steps8_peak_q={peak}");
         assert!(ccx > 0 && peak > 0);
     }
 
@@ -4332,7 +4420,7 @@ mod tests {
         }
         for i in (0..W).rev() { b.cx(cv[i], cvs[i]); }
         for &h in hist.iter().rev() {
-            emit_controlled_left_shift_nooverflow_for_plusminus(&mut b, &dsh, h, spill);
+            emit_controlled_left_shift_unsigned_exact_for_plusminus(&mut b, &dsh, h, spill);
         }
         for i in (0..W).rev() { b.cx(d[i], dsh[i]); }
         emit_trailing_zero_active_chain_history_for_plusminus(&mut b, &d, &active, &hist);
