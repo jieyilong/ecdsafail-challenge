@@ -2956,6 +2956,42 @@ mod tests {
     }
 
     #[test]
+    fn first16_tail_selector_lowgate_toffoli_margin_is_tight() {
+        // Go/no-go budget for the only BY streaming-selector variant that
+        // currently fits a Google memory regime: first-16 pattern history plus
+        // the 528-bit tail carry core fits the 1425q low-gate scratch allowance
+        // but misses the 1175q low-qubit allowance.  The low-gate Toffoli
+        // target is stricter, so the selector generator must be almost free.
+        // Use measured local oracles from prior tests:
+        //   lowword pattern oracle:       5,952 CCX / 16-step window
+        //   lowword pattern+q oracle:     9,408 CCX / 16-step window
+        // and the fast scaled-BY whole-point budget from the scratch model:
+        //   scaffold_after_div + fast BY body ~= 1,938,476 CCX
+        let google_low_gate = 2_100_000isize;
+        let fast_scaled_by_projected = 1_938_476isize;
+        let margin = google_low_gate - fast_scaled_by_projected;
+        let first16_windows = 16isize;
+        let pattern_oracle_per_window = 5_952isize;
+        let pattern_q_oracle_per_window = 9_408isize;
+        let one_pass_pattern = first16_windows * pattern_oracle_per_window;
+        let compute_uncompute_pattern = 2 * one_pass_pattern;
+        let one_pass_pattern_q = first16_windows * pattern_q_oracle_per_window;
+        let rem_after_pattern = margin - one_pass_pattern;
+        let rem_after_pattern_q = margin - one_pass_pattern_q;
+        let gap_after_pattern_compute_uncompute = compute_uncompute_pattern - margin;
+        eprintln!("BY first16/tail low-gate budget: margin={margin}, one_pass_pattern={one_pass_pattern}, rem_after_pattern={rem_after_pattern}, one_pass_pattern_q={one_pass_pattern_q}, rem_after_pattern_q={rem_after_pattern_q}, cu_pattern_gap={gap_after_pattern_compute_uncompute}");
+        println!("METRIC by_first16_lowgate_margin_ccx={margin}");
+        println!("METRIC by_first16_pattern_onepass_ccx={one_pass_pattern}");
+        println!("METRIC by_first16_pattern_remaining_ccx={rem_after_pattern}");
+        println!("METRIC by_first16_pattern_q_onepass_ccx={one_pass_pattern_q}");
+        println!("METRIC by_first16_pattern_q_remaining_ccx={rem_after_pattern_q}");
+        println!("METRIC by_first16_pattern_compute_uncompute_gap_ccx={gap_after_pattern_compute_uncompute}");
+        assert!(rem_after_pattern > 0, "even one-pass first16 pattern generation misses low-gate budget");
+        assert!(rem_after_pattern_q > 0, "pattern+q first16 oracle would already miss low-gate budget");
+        assert!(gap_after_pattern_compute_uncompute > 0, "compute+uncompute pattern unexpectedly fits low-gate margin");
+    }
+
+    #[test]
     fn projective_normalized_streaming_selector_loses_high_bits() {
         // Tempting compression: since BY branch choices are invariant under a
         // common odd scale, normalize the folded selector so c0=1 and keep only
