@@ -7977,6 +7977,91 @@ mod tests {
     }
 
     #[test]
+    fn centered_euclid_relaxed_2800q_has_same_packed_extractor_risk() {
+        // Centered quotients improve the ordinary quotient-stream shape for the
+        // relaxed 3M/current-qubit target.  This remains speculative because a
+        // fixed scan is still dead, but unlike ordinary Euclid the packed
+        // extractor has several thousand CCX/quotient left for alignment.
+        let p = SECP256K1_P;
+        let samples = 4096usize;
+        let mut rng = 0x2800_ce0c_11d6_0002u64;
+        let mut payload_bits = Vec::with_capacity(samples);
+        let mut one_boundary_bits = Vec::with_capacity(samples);
+        let mut counts = Vec::with_capacity(samples);
+        let mut weighted_trials = Vec::with_capacity(samples);
+        let mut fixed_scan_trials = Vec::with_capacity(samples);
+        for _ in 0..samples {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() { x = U256::from(1u64); }
+            let mut u = smag_for_halfgcd_test(false, u512_from_u256_for_halfgcd_test(p));
+            let mut v = smag_for_halfgcd_test(false, u512_from_u256_for_halfgcd_test(x));
+            let mut payload = 0usize;
+            let mut count = 0usize;
+            let mut weighted = 0usize;
+            while !v.mag.is_zero() {
+                let numerator = (u.mag << 1usize) + v.mag;
+                let denominator = v.mag << 1usize;
+                let q = numerator / denominator;
+                let q_bits = u512_bit_len_for_halfgcd_test(q).max(1);
+                payload += q_bits;
+                count += 1;
+                weighted += q_bits * u512_bit_len_for_halfgcd_test(u.mag).max(u512_bit_len_for_halfgcd_test(v.mag));
+                let q_neg = u.neg ^ v.neg;
+                let qv = signed_mul_mag_for_halfgcd_test(v, q_neg, q);
+                let r = signed_add_for_halfgcd_test(u, signed_neg_for_halfgcd_test(qv));
+                u = v;
+                v = r;
+            }
+            assert_eq!(u.mag, U512::from(1u64));
+            payload_bits.push(payload);
+            one_boundary_bits.push(payload + count);
+            counts.push(count);
+            weighted_trials.push(weighted);
+            fixed_scan_trials.push(count * 256usize * 256usize);
+        }
+        payload_bits.sort_unstable();
+        one_boundary_bits.sort_unstable();
+        counts.sort_unstable();
+        weighted_trials.sort_unstable();
+        fixed_scan_trials.sort_unstable();
+        let p99 = samples * 99 / 100;
+        let payload_p99 = payload_bits[p99];
+        let payload_max = *payload_bits.last().unwrap();
+        let count_p99 = counts[p99];
+        let one_boundary_scratch_p99 = 256 + one_boundary_bits[p99];
+        let weighted_p99 = weighted_trials[p99];
+        let fixed_scan_p99 = fixed_scan_trials[p99];
+        let per_qbit_replay_ccx = 587usize;
+        let coeff_replay_per_div = payload_p99 * per_qbit_replay_ccx;
+        let scaffold_after_div = 642_716isize;
+        let one_div_weighted = coeff_replay_per_div + 2 * weighted_p99 * 8usize;
+        let pointadd_weighted = scaffold_after_div + 2 * one_div_weighted as isize;
+        let weighted_gap = pointadd_weighted - 3_000_000isize;
+        let fixed_scan_gap = scaffold_after_div + 2 * (coeff_replay_per_div as isize + 2 * fixed_scan_p99 as isize) - 3_000_000isize;
+        let extraction_oneway_budget = ((3_000_000isize - scaffold_after_div) / 2) as isize
+            - coeff_replay_per_div as isize;
+        let payload_floor = payload_p99 * 3usize * 256usize;
+        let leading_scan_floor = count_p99 * 256usize;
+        let align_remaining = extraction_oneway_budget - payload_floor as isize - leading_scan_floor as isize;
+        let align_budget_per_q = align_remaining as f64 / count_p99 as f64;
+        println!("METRIC centered_2800_payload_p99_bits={payload_p99}");
+        println!("METRIC centered_2800_payload_max_bits={payload_max}");
+        println!("METRIC centered_2800_count_p99={count_p99}");
+        println!("METRIC centered_2800_one_boundary_scratch_p99={one_boundary_scratch_p99}");
+        println!("METRIC centered_2800_weighted_trials_p99={weighted_p99}");
+        println!("METRIC centered_2800_projected_gap_to_3m_ccx={weighted_gap}");
+        println!("METRIC centered_2800_fixedscan_gap_to_3m_at_1ccx={fixed_scan_gap}");
+        println!("METRIC centered_2800_alignment_budget_per_quotient_ccx={align_budget_per_q:.3}");
+        eprintln!(
+            "Centered Euclid relaxed ledger: payload_p99={payload_p99}, count_p99={count_p99}, scratch={one_boundary_scratch_p99}, weighted_p99={weighted_p99}, gap3m={weighted_gap}, fixed_gap={fixed_scan_gap}, align_budget_per_q={align_budget_per_q:.1}"
+        );
+        assert!(weighted_gap < 0, "centered weighted ledger misses relaxed 3M; demote it too");
+        assert!(one_boundary_scratch_p99 > 663, "centered parser unexpectedly fits Google scratch");
+        assert!(fixed_scan_gap > 20_000_000, "fixed scan is not dead for centered Euclid; revisit");
+        assert!(align_budget_per_q > 3_000.0, "centered packed extractor has too little alignment budget");
+    }
+
+    #[test]
     fn euclid_quotient_stream_entropy_also_exceeds_scratch600() {
         // Follow-up to the raw-payload quotient-stream DIV test.  The tempting
         // objection is that a clever prefix/arithmetic code could pack the

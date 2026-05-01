@@ -12,6 +12,14 @@
 
 ## Active low-scratch / relaxed-2800q filter (2026-04-29)
 
+### Go/no-go note: centered Euclid quotient stream for relaxed 3M / current-qubit target (2026-04-29)
+
+- **Premise:** centered/nearest quotients were previously the best raw quotient-stream shape for the Google scratch target but failed once parser boundaries/rank decoding were charged. Under the relaxed `3M` / current-qubit question, explicit parser boundaries may be affordable.
+- **State gate:** sampled centered quotient payload p99/max is `336/341` bits, count p99 `118`, one-boundary parser scratch p99 is `710` bits beyond tx/ty. This is still above Google low-qubit (`710 > 663`) but comfortably below the current `2800q` project cap with normal workspaces.
+- **Toffoli lower-bound ledger:** with schoolbook per-qbit replay cost `587` CCX, weighted extraction p99 `43,935`, and optimistic `8` CCX per weighted trial, point-add projects `2,443,100` (`-556,900` to 3M), slightly better than ordinary Euclid.
+- **Hard missing piece:** a fixed scan over all shifts is still dead (`+28,970,172` to 3M even at 1 CCX/static trial), but a packed extractor has more room than ordinary Euclid: after compare/subtract and leading-scan floors, alignment budget is about `5,874` CCX/quotient. This is enough for a nontrivial offset/metadata shifted comparator prototype, but not a solved circuit.
+- **Promotion condition:** build a toy reversible centered quotient extractor/replayer with explicit boundaries, signed-q handling from residual signs, offset/metadata alignment, denominator reverse, and phase-clean parser cleanup. No point-add integration until measured static Toffoli scales with packed payload rather than fixed-scan shifts.
+
 ### Go/no-go note: stored Euclid quotient stream for relaxed 3M / current-qubit target (2026-04-29)
 
 - **Premise:** the ordinary Euclidean quotient stream was previously demoted for the Google ~600-scratch regime because raw/boundary/entropy parser state is `>700` bits. For the user's relaxed question — can we get near `3M` while staying under the project/current qubit cap — that parser state may fit.
