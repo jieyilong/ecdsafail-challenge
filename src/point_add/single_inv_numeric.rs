@@ -7939,6 +7939,44 @@ mod tests {
     }
 
     #[test]
+    fn euclid_packed_extractor_has_only_small_alignment_budget() {
+        // If the fixed scan is dead, the only remaining quotient-stream hope is
+        // a packed extractor that iterates over quotient payload bits.  This
+        // ledger estimates the budget for the missing alignment mechanism.  It
+        // is tight: after paying one compare/subtract per payload bit and one
+        // leading-bit scan per quotient, only about 1k CCX/quotient remains for
+        // aligning v<<shift.  A generic log-depth quantum barrel shift would
+        // consume that margin; a metadata/offset comparator would be needed.
+        let payload_p99 = 349usize;
+        let count_p99 = 173usize;
+        let scaffold_after_div = 642_716isize;
+        let per_qbit_replay_ccx = 587usize;
+        let coeff_replay_per_div = payload_p99 * per_qbit_replay_ccx;
+        let extraction_roundtrip_budget_per_div = ((3_000_000isize - scaffold_after_div) / 2) as isize
+            - coeff_replay_per_div as isize;
+        let extraction_oneway_budget = extraction_roundtrip_budget_per_div / 2;
+        let n = 256usize;
+        let compare_sub_per_payload_bit = 3 * n; // compare + masked subtract, optimistic.
+        let payload_floor = payload_p99 * compare_sub_per_payload_bit;
+        let leading_scan_floor = count_p99 * n;
+        let remaining_alignment_oneway = extraction_oneway_budget - payload_floor as isize - leading_scan_floor as isize;
+        let alignment_budget_per_quotient = remaining_alignment_oneway as f64 / count_p99 as f64;
+        let log_barrel_per_quotient = n * 8; // one Toffoli/bit/layer toy floor for a generic barrel.
+        let log_barrel_gap_oneway = (log_barrel_per_quotient * count_p99) as isize - remaining_alignment_oneway;
+        let log_barrel_pointadd_gap = 2 * 2 * log_barrel_gap_oneway;
+        println!("METRIC euclid_packed_extraction_oneway_budget_ccx={extraction_oneway_budget}");
+        println!("METRIC euclid_packed_payload_floor_ccx={payload_floor}");
+        println!("METRIC euclid_packed_leading_scan_floor_ccx={leading_scan_floor}");
+        println!("METRIC euclid_packed_alignment_budget_per_quotient_ccx={alignment_budget_per_quotient:.3}");
+        println!("METRIC euclid_packed_log_barrel_gap_pointadd_ccx={log_barrel_pointadd_gap}");
+        eprintln!(
+            "Euclid packed extractor alignment budget: one_way_budget={extraction_oneway_budget}, payload_floor={payload_floor}, leading_floor={leading_scan_floor}, align_budget_per_q={alignment_budget_per_quotient:.1}, log_barrel_pointadd_gap={log_barrel_pointadd_gap}"
+        );
+        assert!(alignment_budget_per_quotient > 500.0, "no room even for metadata alignment; quotient stream dead");
+        assert!(alignment_budget_per_quotient < log_barrel_per_quotient as f64, "generic barrel alignment might fit; build it");
+    }
+
+    #[test]
     fn euclid_quotient_stream_entropy_also_exceeds_scratch600() {
         // Follow-up to the raw-payload quotient-stream DIV test.  The tempting
         // objection is that a clever prefix/arithmetic code could pack the
