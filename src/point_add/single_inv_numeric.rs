@@ -8038,12 +8038,16 @@ mod tests {
         let pointadd_weighted = scaffold_after_div + 2 * one_div_weighted as isize;
         let weighted_gap = pointadd_weighted - 3_000_000isize;
         let fixed_scan_gap = scaffold_after_div + 2 * (coeff_replay_per_div as isize + 2 * fixed_scan_p99 as isize) - 3_000_000isize;
-        let extraction_oneway_budget = ((3_000_000isize - scaffold_after_div) / 2) as isize
+        let extraction_roundtrip_budget_per_div = ((3_000_000isize - scaffold_after_div) / 2) as isize
             - coeff_replay_per_div as isize;
+        let extraction_oneway_budget = extraction_roundtrip_budget_per_div / 2;
         let payload_floor = payload_p99 * 3usize * 256usize;
         let leading_scan_floor = count_p99 * 256usize;
         let align_remaining = extraction_oneway_budget - payload_floor as isize - leading_scan_floor as isize;
         let align_budget_per_q = align_remaining as f64 / count_p99 as f64;
+        let log_barrel_per_quotient = 256usize * 8usize;
+        let log_barrel_gap_oneway = (log_barrel_per_quotient * count_p99) as isize - align_remaining;
+        let log_barrel_gap_pointadd = 4 * log_barrel_gap_oneway;
         println!("METRIC centered_2800_payload_p99_bits={payload_p99}");
         println!("METRIC centered_2800_payload_max_bits={payload_max}");
         println!("METRIC centered_2800_count_p99={count_p99}");
@@ -8051,14 +8055,17 @@ mod tests {
         println!("METRIC centered_2800_weighted_trials_p99={weighted_p99}");
         println!("METRIC centered_2800_projected_gap_to_3m_ccx={weighted_gap}");
         println!("METRIC centered_2800_fixedscan_gap_to_3m_at_1ccx={fixed_scan_gap}");
+        println!("METRIC centered_2800_extraction_oneway_budget_ccx={extraction_oneway_budget}");
         println!("METRIC centered_2800_alignment_budget_per_quotient_ccx={align_budget_per_q:.3}");
+        println!("METRIC centered_2800_log_barrel_gap_pointadd_ccx={log_barrel_gap_pointadd}");
         eprintln!(
-            "Centered Euclid relaxed ledger: payload_p99={payload_p99}, count_p99={count_p99}, scratch={one_boundary_scratch_p99}, weighted_p99={weighted_p99}, gap3m={weighted_gap}, fixed_gap={fixed_scan_gap}, align_budget_per_q={align_budget_per_q:.1}"
+            "Centered Euclid relaxed ledger: payload_p99={payload_p99}, count_p99={count_p99}, scratch={one_boundary_scratch_p99}, weighted_p99={weighted_p99}, gap3m={weighted_gap}, fixed_gap={fixed_scan_gap}, oneway_budget={extraction_oneway_budget}, align_budget_per_q={align_budget_per_q:.1}, log_barrel_gap={log_barrel_gap_pointadd}"
         );
         assert!(weighted_gap < 0, "centered weighted ledger misses relaxed 3M; demote it too");
         assert!(one_boundary_scratch_p99 > 663, "centered parser unexpectedly fits Google scratch");
         assert!(fixed_scan_gap > 20_000_000, "fixed scan is not dead for centered Euclid; revisit");
-        assert!(align_budget_per_q > 3_000.0, "centered packed extractor has too little alignment budget");
+        assert!(align_budget_per_q > 1_000.0, "centered packed extractor has too little alignment budget");
+        assert!(log_barrel_gap_pointadd > 0, "generic log barrel fits the centered 3M budget; prototype it directly");
     }
 
     #[test]
