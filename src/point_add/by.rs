@@ -8426,6 +8426,105 @@ mod tests {
     }
 
     #[test]
+    fn tiny_lowword_selector_windows_still_cannot_fund_fixed_matrix_update() {
+        // The w=4 selector oracle alone gets under 2.7M, but only by 14,964
+        // CCX and without updating the full denominator state.  Check the even
+        // smaller w=1,2 subwindows: if their selector slack still cannot pay
+        // for the optimistic fixed-matrix denominator replacement, the simple
+        // "smaller window" selector escape hatch is closed.
+        const DBITS: usize = 10;
+        const WIDTH: usize = 274;
+        const GOOGLE_LOW_QUBIT_TOFFOLI: usize = 2_700_000;
+        let streamed_projected_with_allowance = 2_645_196usize;
+        let selector_allowance = 150_000usize;
+        let mut rows = Vec::new();
+        for &w in &[1usize, 2, 4] {
+            assert_eq!(560 % w, 0);
+            let mut b = super::super::B::new();
+            let f = b.alloc_qubits(w);
+            let g = b.alloc_qubits(w);
+            let delta = b.alloc_qubits(DBITS);
+            let pattern_tmp = b.alloc_qubits(w);
+            let a_tmp = b.alloc_qubits(w);
+            let pattern_hist = b.alloc_qubits(w);
+            for i in 0..w {
+                emit_2adic_by_branch_step_for_test(&mut b, &f, &g, &delta, pattern_tmp[i], a_tmp[i]);
+            }
+            for i in 0..w {
+                b.cx(pattern_tmp[i], pattern_hist[i]);
+            }
+            for i in (0..w).rev() {
+                emit_2adic_by_branch_step_reverse_for_test(&mut b, &f, &g, &delta, pattern_tmp[i], a_tmp[i]);
+            }
+            let oracle_ccx = count_ccx(&b.ops);
+
+            let mut b = super::super::B::new();
+            let pattern = b.alloc_qubits(w);
+            let delta = b.alloc_qubits(DBITS);
+            let a_bits = b.alloc_qubits(w);
+            emit_pattern_delta_decode_window_for_test(&mut b, &pattern, &delta, &a_bits);
+            let decode_ccx = count_ccx(&b.ops);
+
+            let windows = 560 / w;
+            let selector_total = (oracle_ccx + decode_ccx) * windows;
+            let projected = streamed_projected_with_allowance - selector_allowance + selector_total;
+            let selector_slack = GOOGLE_LOW_QUBIT_TOFFOLI.saturating_sub(projected);
+
+            let mut sampler = Sampler::new(b"by-tiny-fixed-matrix-update-v1", SECP256K1_P);
+            let mut costs = Vec::new();
+            for _ in 0..2 {
+                let x = sampler.next();
+                let mut delta = 1i64;
+                let mut f = SInt::from_u(SECP256K1_P);
+                let mut g = SInt::from_u(x);
+                for _ in 0..windows {
+                    let f_low = low_signed_sint_for_streaming_test(f, w);
+                    let g_low = low_signed_sint_for_streaming_test(g, w);
+                    let (_, _, _, mtx) = jump_matrix_direct_lowword(w, w, delta, f_low, g_low);
+                    let mut b = super::super::B::new();
+                    emit_scaled_pair_update_with_cleanup_for_cost(&mut b, mtx, WIDTH, w);
+                    costs.push(count_ccx(&b.ops));
+                    for _ in 0..w {
+                        divstep_sint_state(&mut delta, &mut f, &mut g);
+                    }
+                }
+            }
+            let mean_window = costs.iter().sum::<usize>() as f64 / costs.len() as f64;
+            let compute_ccx = (mean_window * windows as f64).round() as usize;
+            let update_excess = compute_ccx as isize - selector_slack as isize;
+            eprintln!(
+                "BY tiny lowword selector w={w}: selector={selector_total}, projected={projected}, selector_slack={selector_slack}, fixed_matrix_compute={compute_ccx}, update_excess={update_excess}"
+            );
+            rows.push((w, selector_total, projected, selector_slack, compute_ccx, update_excess));
+        }
+
+        let best = *rows.iter().min_by_key(|row| row.5).unwrap();
+        println!("METRIC scratch600_tiny_lowword_best_w={}", best.0);
+        println!("METRIC scratch600_tiny_lowword_best_selector_ccx={}", best.1);
+        println!("METRIC scratch600_tiny_lowword_best_projected={}", best.2);
+        println!("METRIC scratch600_tiny_lowword_best_selector_slack={}", best.3);
+        println!("METRIC scratch600_tiny_lowword_best_fixed_matrix_compute={}", best.4);
+        println!("METRIC scratch600_tiny_lowword_best_update_excess={}", best.5);
+        for (w, selector, projected, slack, compute, excess) in rows {
+            if w == 1 {
+                println!("METRIC scratch600_tiny_lowword_w1_selector_ccx={selector}");
+                println!("METRIC scratch600_tiny_lowword_w1_projected={projected}");
+                println!("METRIC scratch600_tiny_lowword_w1_selector_slack={slack}");
+                println!("METRIC scratch600_tiny_lowword_w1_fixed_matrix_compute={compute}");
+                println!("METRIC scratch600_tiny_lowword_w1_update_excess={excess}");
+            }
+            if w == 2 {
+                println!("METRIC scratch600_tiny_lowword_w2_selector_ccx={selector}");
+                println!("METRIC scratch600_tiny_lowword_w2_projected={projected}");
+                println!("METRIC scratch600_tiny_lowword_w2_selector_slack={slack}");
+                println!("METRIC scratch600_tiny_lowword_w2_fixed_matrix_compute={compute}");
+                println!("METRIC scratch600_tiny_lowword_w2_update_excess={excess}");
+            }
+        }
+        assert!(best.5 > 0, "tiny lowword windows create enough slack for fixed-matrix update; revisit BY integration");
+    }
+
+    #[test]
     fn lowword_pattern_and_q_oracle_is_still_cheap_and_clean() {
         // Strengthen the lowword oracle into the consumed-window primitive:
         // sign-extend the W-bit low words into a slightly wider local simulator,

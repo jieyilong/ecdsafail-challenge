@@ -64,6 +64,12 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             blocker: "replay body projects 2645196 but selector is deliberately uncharged",
         },
         Candidate {
+            name: "tiny_lowword_selector_without_den_update",
+            scratch_bits: 510,
+            charged_toffoli: None,
+            blocker: "w1 selector-only model projects 2664876, but the best tiny-window fixed-matrix update is still 304132 CCX over selector slack",
+        },
+        Candidate {
             name: "full_ratio_by_selector_state",
             scratch_bits: 560,
             charged_toffoli: Some(9_952_686),
@@ -141,6 +147,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let streamed_replay_body_projection = 2_645_196usize;
     let streamed_replay_unfunded_selector_budget =
         GOOGLE_LOW_QUBIT_TOFFOLI - streamed_replay_body_projection;
+    let tiny_lowword_w1_selector_projection = 2_664_876usize;
+    let tiny_lowword_w1_selector_slack =
+        GOOGLE_LOW_QUBIT_TOFFOLI - tiny_lowword_w1_selector_projection;
+    let tiny_lowword_best_fixed_update_excess = 304_132usize;
     let partial_prefix32_projection = 2_697_524usize;
     let partial_prefix48_projection = 2_652_404usize;
     let partial_prefix80_projection = 2_562_164usize;
@@ -235,6 +245,9 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_streamed_selector_budget_ccx={streamed_selector_budget}");
     println!("METRIC scratch600_streamed_lowword_selector_ccx={streamed_lowword_selector}");
     println!("METRIC scratch600_streamed_selector_shortfall_ccx={streamed_selector_shortfall}");
+    println!("METRIC scratch600_tiny_lowword_w1_selector_projection={tiny_lowword_w1_selector_projection}");
+    println!("METRIC scratch600_tiny_lowword_w1_selector_slack={tiny_lowword_w1_selector_slack}");
+    println!("METRIC scratch600_tiny_lowword_best_fixed_update_excess={tiny_lowword_best_fixed_update_excess}");
     println!("METRIC scratch600_partial_prefix32_projected_toffoli={partial_prefix32_projection}");
     println!("METRIC scratch600_partial_prefix32_gap_to_2700k={partial_prefix32_gap}");
     println!("METRIC scratch600_partial_prefix48_projected_toffoli={partial_prefix48_projection}");
@@ -301,6 +314,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     assert!(best_state <= STRICT_SCRATCH, "at least some state shapes fit");
     assert!(streamed_gap_to_google > 0, "no fully charged <=600-scratch row should be counted as solved yet");
     assert!(streamed_selector_shortfall > 0, "streamed-mask route still needs a selector breakthrough");
+    assert!(
+        tiny_lowword_w1_selector_slack > 0 && tiny_lowword_best_fixed_update_excess > 250_000,
+        "tiny lowword selector/update tradeoff changed; revisit streamed BY route"
+    );
     assert!(
         by_consumed_high_gap_to_2700k > 1_000_000 && by_consumed_high_max_peak_q > GOOGLE_LOW_QUBIT_SCRATCH,
         "consumed high-state BY selector should stay demoted until a fused low-peak update exists"
