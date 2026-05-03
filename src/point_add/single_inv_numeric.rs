@@ -3441,6 +3441,32 @@ mod tests {
         )
     }
 
+    fn half_gcd_second_column_prefix_residual_only_q_collision_stats(
+        n: usize,
+        p: u16,
+    ) -> (usize, usize, usize, usize) {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut image: BTreeMap<(usize, i128, i128), BTreeSet<i128>> = BTreeMap::new();
+        let mut total_steps = 0usize;
+        for x in 1..p {
+            let mut u = p as i128;
+            let mut v = x as i128;
+            let mut step = 0usize;
+            while v != 0 && ((u as u128).ilog2().max((v as u128).ilog2()) as usize + 1) > n / 2 {
+                let q = u / v;
+                let rem = u - q * v;
+                image.entry((step, v, rem)).or_default().insert(q);
+                total_steps += 1;
+                u = v;
+                v = rem;
+                step += 1;
+            }
+        }
+        let collisions = image.values().filter(|qs| qs.len() > 1).count();
+        let max_mult = image.values().map(|qs| qs.len()).max().unwrap_or(0);
+        (collisions, total_steps, image.len(), max_mult)
+    }
+
     fn half_gcd_second_column_prefix_coeff_decoder_costs_for_test(
         samples: usize,
         mut rng: u64,
@@ -3934,6 +3960,33 @@ mod tests {
             assert_eq!(endpoints, (p - 1) as usize, "expected one endpoint reverse step per denominator");
             assert_eq!(transitions, endpoints + coeff_steps, "reverse formula accounting drifted");
             assert!(coeff_steps > endpoints, "coefficient reverse body unexpectedly small");
+        }
+    }
+
+    #[test]
+    fn half_gcd_second_column_prefix_residual_only_reverse_q_is_ambiguous() {
+        // Before paying the coefficient decoder, check the cheapest cleanup
+        // escape: derive q from only the public prefix step and the adjacent
+        // residual pair `(v, u-qv)`.  Toy fields already have collisions, so a
+        // residual-only inverse is not enough to clean q after each prefix
+        // division step.
+        let cases = [(8usize, 251u16), (10, 1021), (12, 4093), (14, 16381)];
+        for &(n, p) in &cases {
+            let (collisions, total_steps, states, max_mult) =
+                half_gcd_second_column_prefix_residual_only_q_collision_stats(n, p);
+            eprintln!(
+                "half-GCD second-column residual-only reverse q: n={n}, collisions={collisions}, states={states}, total_steps={total_steps}, max_mult={max_mult}"
+            );
+            if n == 14 {
+                println!("METRIC halfgcd_second_col_prefix_residual_q_collisions_n14={collisions}");
+                println!("METRIC halfgcd_second_col_prefix_residual_q_states_n14={states}");
+                println!("METRIC halfgcd_second_col_prefix_residual_q_total_steps_n14={total_steps}");
+                println!("METRIC halfgcd_second_col_prefix_residual_q_max_mult_n14={max_mult}");
+            }
+            assert!(
+                collisions > 0 && max_mult > 1,
+                "residual-only half-GCD prefix reverse unexpectedly recovers q"
+            );
         }
     }
 

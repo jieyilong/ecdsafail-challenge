@@ -139,7 +139,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "halfgcd_second_column_tail_stream",
             scratch_bits: 514,
             charged_toffoli: None,
-            blocker: "second-column live/tail state fits, but coefficient-division q cleanup adds 81879 p99 one-way CCX and pushes exact prefix projection to 2866082",
+            blocker: "second-column live/tail state fits, but residual-only reverse q is ambiguous and coefficient-division q cleanup adds 81879 p99 one-way CCX",
         },
         Candidate {
             name: "folded_kaliski_one_pair_plus_required_sidecar",
@@ -324,6 +324,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let halfgcd_second_col_prefix_local_reverse_max_mult_n14 = 1usize;
     let halfgcd_second_col_prefix_local_reverse_collisions_n14 = 0usize;
     let halfgcd_second_col_prefix_transitions_n14 = 82_028usize;
+    let halfgcd_second_col_prefix_residual_q_collisions_n14 = 2_184usize;
+    let halfgcd_second_col_prefix_residual_q_states_n14 = 77_893usize;
+    let halfgcd_second_col_prefix_residual_q_total_steps_n14 = 82_028usize;
+    let halfgcd_second_col_prefix_residual_q_max_mult_n14 = 53usize;
     let halfgcd_second_col_prefix_reverse_formula_transitions_n14 = 82_028usize;
     let halfgcd_second_col_prefix_reverse_formula_endpoints_n14 = 16_380usize;
     let halfgcd_second_col_prefix_reverse_formula_coeff_steps_n14 = 65_648usize;
@@ -516,6 +520,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_halfgcd_second_col_prefix_local_reverse_max_mult_n14={halfgcd_second_col_prefix_local_reverse_max_mult_n14}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_local_reverse_collisions_n14={halfgcd_second_col_prefix_local_reverse_collisions_n14}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_transitions_n14={halfgcd_second_col_prefix_transitions_n14}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_residual_q_collisions_n14={halfgcd_second_col_prefix_residual_q_collisions_n14}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_residual_q_states_n14={halfgcd_second_col_prefix_residual_q_states_n14}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_residual_q_total_steps_n14={halfgcd_second_col_prefix_residual_q_total_steps_n14}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_residual_q_max_mult_n14={halfgcd_second_col_prefix_residual_q_max_mult_n14}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_reverse_formula_transitions_n14={halfgcd_second_col_prefix_reverse_formula_transitions_n14}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_reverse_formula_endpoints_n14={halfgcd_second_col_prefix_reverse_formula_endpoints_n14}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_reverse_formula_coeff_steps_n14={halfgcd_second_col_prefix_reverse_formula_coeff_steps_n14}");
@@ -693,6 +701,13 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && halfgcd_second_col_prefix_reverse_formula_endpoints_n14 == 16_380
             && halfgcd_second_col_prefix_reverse_formula_coeff_steps_n14 == 65_648,
         "half-GCD second-column tail-stream scratch/parser changed; revisit prefix extraction route"
+    );
+    assert!(
+        halfgcd_second_col_prefix_residual_q_collisions_n14 > 0
+            && halfgcd_second_col_prefix_residual_q_states_n14
+                < halfgcd_second_col_prefix_residual_q_total_steps_n14
+            && halfgcd_second_col_prefix_residual_q_max_mult_n14 > 1,
+        "half-GCD second-column residual-only reverse q is no longer ambiguous"
     );
     assert!(
         halfgcd_second_col_prefix_exact_extraction_p99 < halfgcd_second_col_prefix_oneway_budget_ccx
