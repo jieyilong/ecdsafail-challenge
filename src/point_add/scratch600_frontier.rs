@@ -112,6 +112,12 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             blocker: "raw sign-normalized digits fit, but exact cneg p99 is 2792914; norm signs have dense MBU parity and exact toy reverse collisions",
         },
         Candidate {
+            name: "direct_centered_signnorm_logical_coeff_signs",
+            scratch_bits: 765,
+            charged_toffoli: Some(2_746_960),
+            blocker: "logical coefficient signs reduce exact cneg work, but split p99 is still 46960 over target and normalization-sign scratch remains 765 p99",
+        },
+        Candidate {
             name: "direct_centered_restoring_final_raw_digits",
             scratch_bits: 618,
             charged_toffoli: None,
@@ -207,6 +213,12 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let direct_signnorm_exact_split_p99 = 2_792_914usize;
     let direct_signnorm_exact_split_gap =
         direct_signnorm_exact_split_p99 as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
+    let direct_signnorm_logsign_once_p99 = 2_723_992usize;
+    let direct_signnorm_logsign_split_p99 = 2_746_960usize;
+    let direct_signnorm_logsign_once_gap =
+        direct_signnorm_logsign_once_p99 as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
+    let direct_signnorm_logsign_split_gap =
+        direct_signnorm_logsign_split_p99 as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
     let direct_signnorm_mbu_degree_n14 = 13usize;
     let direct_signnorm_mbu_density_n14 = 8_208usize;
     let direct_signnorm_mbu_max_count_n14 = 8usize;
@@ -418,6 +430,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_direct_signnorm_ambiguous_rank_over_google_bits={direct_signnorm_ambiguous_rank_over_google}");
     println!("METRIC scratch600_direct_signnorm_exact_split_p99={direct_signnorm_exact_split_p99}");
     println!("METRIC scratch600_direct_signnorm_exact_split_gap_to_2700k={direct_signnorm_exact_split_gap}");
+    println!("METRIC scratch600_direct_signnorm_logsign_once_p99={direct_signnorm_logsign_once_p99}");
+    println!("METRIC scratch600_direct_signnorm_logsign_split_p99={direct_signnorm_logsign_split_p99}");
+    println!("METRIC scratch600_direct_signnorm_logsign_once_gap_to_2700k={direct_signnorm_logsign_once_gap}");
+    println!("METRIC scratch600_direct_signnorm_logsign_split_gap_to_2700k={direct_signnorm_logsign_split_gap}");
     println!("METRIC scratch600_direct_signnorm_mbu_degree_n14={direct_signnorm_mbu_degree_n14}");
     println!("METRIC scratch600_direct_signnorm_mbu_density_n14={direct_signnorm_mbu_density_n14}");
     println!("METRIC scratch600_direct_signnorm_mbu_max_count_n14={direct_signnorm_mbu_max_count_n14}");
@@ -587,6 +603,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     assert!(
         direct_signnorm_exact_split_gap > 0,
         "phase-clean exact sign normalization should not be counted as p99 low-qubit solved"
+    );
+    assert!(
+        direct_signnorm_logsign_once_gap > 0 && direct_signnorm_logsign_split_gap > 0,
+        "logical coefficient signs now reach p99 low-qubit target; promote direct sign-normalized route"
     );
     assert!(
         direct_signnorm_mbu_degree_n14 + 1 >= 14
