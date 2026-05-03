@@ -121,7 +121,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "direct_centered_restoring_final_raw_digits",
             scratch_bits: 618,
             charged_toffoli: None,
-            blocker: "restoring-final model is under 2.7M and phase-clean in toy; scan-free select1 lower bound averages 2465688 with p99 2610296, but exact coefficient decode averages 3145482 and alignment MBU is dense",
+            blocker: "restoring-final select1 now has phase-clean toy cleanup and scan-free lower bound averages 2465688 with p99 2610296, but exact coefficient decode averages 3145482 and alignment MBU is dense",
         },
         Candidate {
             name: "direct_centered_signnorm_rank_compressed_signs",
@@ -249,6 +249,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let direct_restoring_final_toy_zero_final_cases = 10_010usize;
     let direct_restoring_final_bennett_fast_inverse_toy_ccx = 632usize;
     let direct_restoring_final_bennett_fast_inverse_toy_peak_q = 104usize;
+    let direct_restoring_final_single_selector_toy_ccx = 298usize;
+    let direct_restoring_final_single_selector_toy_peak_q = 88usize;
+    let direct_restoring_final_single_selector_bennett_toy_ccx = 596usize;
+    let direct_restoring_final_single_selector_bennett_toy_peak_q = 108usize;
     let direct_restoring_final_payload_mbu_degree_n14 = 13usize;
     let direct_restoring_final_payload_mbu_density_n14 = 8_284usize;
     let direct_restoring_final_payload_max_n14 = 26usize;
@@ -528,6 +532,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_direct_restoring_final_toy_zero_final_cases={direct_restoring_final_toy_zero_final_cases}");
     println!("METRIC scratch600_direct_restoring_final_bennett_fast_inverse_toy_ccx={direct_restoring_final_bennett_fast_inverse_toy_ccx}");
     println!("METRIC scratch600_direct_restoring_final_bennett_fast_inverse_toy_peak_q={direct_restoring_final_bennett_fast_inverse_toy_peak_q}");
+    println!("METRIC scratch600_direct_restoring_final_single_selector_toy_ccx={direct_restoring_final_single_selector_toy_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_single_selector_toy_peak_q={direct_restoring_final_single_selector_toy_peak_q}");
+    println!("METRIC scratch600_direct_restoring_final_single_selector_bennett_toy_ccx={direct_restoring_final_single_selector_bennett_toy_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_single_selector_bennett_toy_peak_q={direct_restoring_final_single_selector_bennett_toy_peak_q}");
     println!("METRIC scratch600_direct_restoring_final_payload_mbu_degree_n14={direct_restoring_final_payload_mbu_degree_n14}");
     println!("METRIC scratch600_direct_restoring_final_payload_mbu_density_n14={direct_restoring_final_payload_mbu_density_n14}");
     println!("METRIC scratch600_direct_restoring_final_payload_max_n14={direct_restoring_final_payload_max_n14}");
@@ -768,6 +776,16 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && direct_restoring_final_bennett_fast_inverse_toy_ccx < 700
             && direct_restoring_final_bennett_fast_inverse_toy_peak_q > direct_restoring_final_toy_peak_q,
         "restoring-final fast-inverse cleanup changed; revisit production packing budget"
+    );
+    assert!(
+        direct_restoring_final_single_selector_toy_ccx < direct_restoring_final_toy_ccx
+            && direct_restoring_final_single_selector_toy_peak_q
+                > direct_restoring_final_toy_peak_q
+            && direct_restoring_final_single_selector_bennett_toy_ccx
+                < direct_restoring_final_bennett_fast_inverse_toy_ccx
+            && direct_restoring_final_single_selector_bennett_toy_peak_q
+                > direct_restoring_final_bennett_fast_inverse_toy_peak_q,
+        "restoring-final select1 toy changed; revisit selector-factor ledger"
     );
     assert!(
         direct_restoring_final_payload_mbu_degree_n14 + 1 >= 14
