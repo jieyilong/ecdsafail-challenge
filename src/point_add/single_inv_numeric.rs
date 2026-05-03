@@ -8671,6 +8671,138 @@ mod tests {
     }
 
     #[test]
+    fn direct_centered_nonrestoring_rounding_numerator_reopens_relaxed_margin() {
+        // Repair attempt for the killed non-restoring ledger above: compute the
+        // centered quotient directly as floor((|u| + |v|/2) / |v|).  This
+        // removes the separate nearest-quotient compare/correction channel.
+        // The remaining correction is only the standard non-restoring final
+        // negative-remainder fix, whose control is the final remainder sign.
+        let p = SECP256K1_P;
+        let samples = 4096usize;
+        let mut rng = 0x2800_c5d1_d1ce_0001u64;
+        let mut digit_payloads = Vec::with_capacity(samples);
+        let mut centered_payloads = Vec::with_capacity(samples);
+        let mut counts = Vec::with_capacity(samples);
+        let mut final_negs = Vec::with_capacity(samples);
+        for _ in 0..samples {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() { x = U256::from(1u64); }
+            let mut u = smag_for_halfgcd_test(false, u512_from_u256_for_halfgcd_test(p));
+            let mut v = smag_for_halfgcd_test(false, u512_from_u256_for_halfgcd_test(x));
+            let (mut digit_payload, mut centered_payload, mut count, mut final_count) = (0usize, 0usize, 0usize, 0usize);
+            while !v.mag.is_zero() {
+                let q_floor = u.mag / v.mag;
+                let r_floor = u.mag - q_floor * v.mag;
+                let q_center = if (r_floor << 1usize) >= v.mag {
+                    q_floor + U512::from(1u64)
+                } else {
+                    q_floor
+                };
+                let adjusted = u.mag + (v.mag >> 1usize);
+                let q_direct = adjusted / v.mag;
+                assert_eq!(q_direct, q_center, "rounding numerator did not match centered quotient");
+                let (digits, _rem, final_negative) = nonrestoring_floor_digits_for_centered_test(adjusted, v.mag);
+                digit_payload += digits;
+                centered_payload += u512_bit_len_for_halfgcd_test(q_direct).max(1);
+                final_count += final_negative as usize;
+                count += 1;
+                let q_neg = u.neg ^ v.neg;
+                let qv = signed_mul_mag_for_halfgcd_test(v, q_neg, q_direct);
+                let r = signed_add_for_halfgcd_test(u, signed_neg_for_halfgcd_test(qv));
+                u = v;
+                v = r;
+            }
+            assert_eq!(u.mag, U512::from(1u64));
+            digit_payloads.push(digit_payload);
+            centered_payloads.push(centered_payload);
+            counts.push(count);
+            final_negs.push(final_count);
+        }
+        digit_payloads.sort_unstable();
+        centered_payloads.sort_unstable();
+        counts.sort_unstable();
+        final_negs.sort_unstable();
+        let p99 = samples * 99 / 100;
+        let digit_payload_p99 = digit_payloads[p99];
+        let centered_payload_p99 = centered_payloads[p99];
+        let count_p99 = counts[p99];
+        let final_p99 = final_negs[p99];
+        let final_max = *final_negs.last().unwrap();
+        let n = 256usize;
+        let replay_per_div = (digit_payload_p99 + final_p99) * 587usize;
+        let barrel_and_scan = count_p99 * (n * 8 + n);
+        let final_fix = count_p99 * n;
+        let extraction_oneway = digit_payload_p99 * n + barrel_and_scan + final_fix;
+        let pointadd = 642_716isize + 2 * (replay_per_div + 2 * extraction_oneway) as isize;
+        let gap = pointadd - 3_000_000isize;
+        println!("METRIC centered_direct_round_digit_payload_p99={digit_payload_p99}");
+        println!("METRIC centered_direct_round_binary_payload_p99={centered_payload_p99}");
+        println!("METRIC centered_direct_round_count_p99={count_p99}");
+        println!("METRIC centered_direct_round_final_negative_p99={final_p99}");
+        println!("METRIC centered_direct_round_final_negative_max={final_max}");
+        println!("METRIC centered_direct_round_extraction_oneway_ccx={extraction_oneway}");
+        println!("METRIC centered_direct_round_gap_to_3m_ccx={gap}");
+        eprintln!("Centered direct-rounding non-restoring ledger: digit_payload_p99={digit_payload_p99}, centered_payload_p99={centered_payload_p99}, count_p99={count_p99}, final_p99={final_p99}, extraction={extraction_oneway}, gap={gap}");
+        assert!(gap < 0, "direct-centered non-restoring margin disappeared; keep route demoted");
+    }
+
+    fn emit_sign_controlled_addsub_digit_for_centered_test(
+        b: &mut super::super::B,
+        rem: &[super::super::QubitId],
+        shifted_v: &[super::super::QubitId],
+        sign_hist: super::super::QubitId,
+    ) {
+        assert_eq!(rem.len(), shifted_v.len());
+        let nonnegative = b.alloc_qubit();
+        b.x(nonnegative);
+        b.cx(sign_hist, nonnegative);
+        super::super::cucc_sub_ctrl(b, shifted_v, rem, nonnegative);
+        super::super::cucc_add_ctrl(b, shifted_v, rem, sign_hist);
+        b.cx(sign_hist, nonnegative);
+        b.x(nonnegative);
+        b.free(nonnegative);
+    }
+
+    #[test]
+    fn direct_centered_nonrestoring_current_signed_digit_primitive_kills_margin() {
+        // The reopened direct-rounding ledger assumes each signed quotient
+        // digit costs about one n-bit add/sub.  With the current primitives,
+        // sign-selecting add vs subtract is two generic controlled q-q adders.
+        // Charge that hardest piece before building a parser/extractor.
+        let cost_for = |n: usize| -> (usize, u32) {
+            let mut b = super::super::B::new();
+            let rem = b.alloc_qubits(n + 1);
+            let shifted_v = b.alloc_qubits(n + 1);
+            let sign_hist = b.alloc_qubit();
+            let start = b.ops.len();
+            emit_sign_controlled_addsub_digit_for_centered_test(&mut b, &rem, &shifted_v, sign_hist);
+            (local_count_ccx_for_plusminus_cost(&b.ops[start..]), b.peak_qubits)
+        };
+        let (ccx32, peak32) = cost_for(32);
+        let (ccx64, peak64) = cost_for(64);
+        let per_bit64 = ccx64 as f64 / 65.0;
+        let per_digit_257 = ((per_bit64 * 257.0).ceil()) as usize;
+        let digit_payload_p99 = 397usize;
+        let count_p99 = 118usize;
+        let final_p99 = 69usize;
+        let replay_per_div = (digit_payload_p99 + final_p99) * 587usize;
+        let barrel_and_scan = count_p99 * (256usize * 8usize + 256usize);
+        let final_fix = count_p99 * 256usize;
+        let extraction_oneway = digit_payload_p99 * per_digit_257 + barrel_and_scan + final_fix;
+        let pointadd = 642_716isize + 2 * (replay_per_div + 2 * extraction_oneway) as isize;
+        let gap = pointadd - 3_000_000isize;
+        println!("METRIC centered_direct_round_current_digit_ccx32={ccx32}");
+        println!("METRIC centered_direct_round_current_digit_peak32={peak32}");
+        println!("METRIC centered_direct_round_current_digit_ccx64={ccx64}");
+        println!("METRIC centered_direct_round_current_digit_peak64={peak64}");
+        println!("METRIC centered_direct_round_current_digit_per_bit64={per_bit64:.3}");
+        println!("METRIC centered_direct_round_current_digit_scaled257={per_digit_257}");
+        println!("METRIC centered_direct_round_current_digit_gap_to_3m_ccx={gap}");
+        eprintln!("Centered direct-rounding current digit primitive: ccx32={ccx32}, ccx64={ccx64}, per_bit64={per_bit64:.2}, scaled257={per_digit_257}, gap={gap}");
+        assert!(gap > 0, "current sign-controlled add/sub still fits; build packed extractor next");
+    }
+
+    #[test]
     fn euclid_quotient_stream_entropy_also_exceeds_scratch600() {
         // Follow-up to the raw-payload quotient-stream DIV test.  The tempting
         // objection is that a clever prefix/arithmetic code could pack the

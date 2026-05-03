@@ -1656,6 +1656,54 @@ Immediate next target update after BY invalidation: **Program B only if it
 produces a new primitive-level win before point-add wiring**.  The old Program A
 BY denominator route is no longer a production target with current primitives.
 
+### Relaxed-2800q quotient-stream checkpoint
+
+The centered Euclid quotient stream is still not a Google-low-qubit candidate:
+its parser/boundary state is above the `~600--663q` scratch target.  It remains
+useful as a current-cap (`<=2800q`) fallback only if quotient extraction is
+packed and phase-clean.
+
+The previous non-restoring ledger was demoted after charging two hidden
+corrections: a final negative-remainder fix for the floor extractor and a
+nearest-quotient correction.  `direct_centered_nonrestoring_rounding_numerator_reopens_relaxed_margin`
+tests the direct-centered variant
+
+```text
+q = floor((|u| + |v|/2) / |v|)
+```
+
+so the nearest correction is folded into the numerator before extraction.  On
+4096 secp samples:
+
+```text
+p99 signed-digit payload       = 397 bits
+p99 centered binary payload    = 336 bits
+p99 quotient count             = 118
+p99 final-negative corrections = 69
+one-way extraction ledger      = 403,712 CCX
+projected relaxed point-add    = 2,804,648 CCX
+gap to 3M                      = -195,352 CCX
+```
+
+This reopens only the relaxed-2800q route, not the Google-low-qubit route.  The
+first hard-piece charge then demotes the current primitive set:
+`direct_centered_nonrestoring_current_signed_digit_primitive_kills_margin`
+implements the obvious sign-selected add/sub digit as two generic controlled
+q-q adders.  It measures
+
+```text
+ccx64                         = 516
+scaled 257-bit digit           = 2,041 CCX
+projected relaxed point-add gap = +2,639,228 CCX
+```
+
+So the direct-centered recurrence is only a mathematical opening, not an
+implementation path with today's adders.  Promotion now requires a new fused
+sign-controlled add/sub digit primitive near the original `~n` ledger cost,
+then a toy reversible packed extractor including shifted-divisor alignment,
+final-negative cleanup, denominator reverse, parser/boundary cleanup, and phase
+cleanliness.
+
 ## 6. Post-BY ground-up attempt: Strategy E slope-coordinate map
 
 New non-BY candidate: make the slope the live y-coordinate and avoid an
