@@ -6109,6 +6109,48 @@ mod tests {
     }
 
     #[test]
+    fn plusminus_active_chain_quantum_history_controls_do_not_buy_executed_margin() {
+        // The active-chain/Solinas model is only production-meaningful if the
+        // unary history can gate later work as classical conditions.  Simulator
+        // executed-Toffoli accounting charges CCX under quantum controls even
+        // when those controls are zero, so the actually emitted full-width
+        // step pays for every possible history bit.  Price that skeleton
+        // directly before treating the sampled active-chain model as a route.
+        const W: usize = 257;
+        const STEPS_PUBLIC: usize = 202;
+        const GOOGLE_LOW_QUBIT_TOFFOLI: usize = 2_700_000;
+
+        let mut b = super::super::B::new();
+        let u = b.alloc_qubits(W);
+        let v = b.alloc_qubits(W);
+        let cu = b.alloc_qubits(W);
+        let cv = b.alloc_qubits(W);
+        let active = b.alloc_qubits(W + 1);
+        let hist = b.alloc_qubits(W);
+        let spill = b.alloc_qubit();
+        let flag = b.alloc_qubit();
+        let start = b.ops.len();
+        emit_plusminus_inplace_step_forward_konly_active_for_test(&mut b, &u, &v, &cu, &cv, &active, &hist, spill, flag);
+        let forward_ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+        let peak = b.peak_qubits;
+
+        let two_div_step_only = 2usize * STEPS_PUBLIC * forward_ccx;
+        let gap = two_div_step_only as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
+        eprintln!(
+            "plus-minus active-chain quantum-control emission: width={W}, forward_ccx={forward_ccx}, peak={peak}, two_div_step_only={two_div_step_only}, gap={gap}"
+        );
+        println!("METRIC plusminus_active_quantum_width={W}");
+        println!("METRIC plusminus_active_quantum_forward_ccx={forward_ccx}");
+        println!("METRIC plusminus_active_quantum_forward_peak_q={peak}");
+        println!("METRIC plusminus_active_quantum_two_div_step_only={two_div_step_only}");
+        println!("METRIC plusminus_active_quantum_step_only_gap_to_2700k={gap}");
+        assert!(
+            gap > 0,
+            "quantum-history controlled active-chain shifts would fit under emitted-gate accounting; revisit plus-minus route"
+        );
+    }
+
+    #[test]
     fn plusminus_active_aware_step_noop_and_roundtrip_is_clean() {
         // Fixed-bound loop smoke test: u==v must be a no-op with an all-zero
         // history word, while u!=v must match the ordinary k-only step.  The

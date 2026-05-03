@@ -85,7 +85,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "plusminus_scaled_konly_slack_denominator_blocked",
             scratch_bits: 517,
             charged_toffoli: None,
-            blocker: "scratch/history shell is phase-clean in toys, but the current offset-normalization core is already 141746 CCX over the per-DIV budget before normalization/scale/oracle cleanup",
+            blocker: "sampled active-chain/Solinas model treats quantum k-history as an executed-gate filter; emitted 257-bit active step is 138771 CCX, so two-DIV step-only is 56063484",
         },
         Candidate {
             name: "centered_euclid_raw_q_stream_without_parser",
@@ -177,6 +177,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let plusminus_scaled_slack_scratch_max = 517usize;
     let plusminus_scaled_solinas_projected_max = 2_027_038usize;
     let plusminus_scaled_solinas_gap_max = plusminus_scaled_solinas_projected_max as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
+    let plusminus_active_quantum_forward_ccx = 138_771usize;
+    let plusminus_active_quantum_two_div_step_only = 56_063_484usize;
+    let plusminus_active_quantum_gap_to_2700k =
+        plusminus_active_quantum_two_div_step_only as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
     let halfgcd_matrix_only = 524usize;
     let halfgcd_matrix_tail_raw = 689usize;
     let halfgcd_tail_over_google = halfgcd_matrix_tail_raw - GOOGLE_LOW_QUBIT_SCRATCH;
@@ -263,6 +267,9 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_plusminus_scaled_slack_scratch_max={plusminus_scaled_slack_scratch_max}");
     println!("METRIC scratch600_plusminus_scaled_solinas_projected_max={plusminus_scaled_solinas_projected_max}");
     println!("METRIC scratch600_plusminus_scaled_solinas_gap_max_to_2700k={plusminus_scaled_solinas_gap_max}");
+    println!("METRIC scratch600_plusminus_active_quantum_forward_ccx={plusminus_active_quantum_forward_ccx}");
+    println!("METRIC scratch600_plusminus_active_quantum_two_div_step_only={plusminus_active_quantum_two_div_step_only}");
+    println!("METRIC scratch600_plusminus_active_quantum_gap_to_2700k={plusminus_active_quantum_gap_to_2700k}");
     println!("METRIC scratch600_halfgcd_matrix_only_bits={halfgcd_matrix_only}");
     println!("METRIC scratch600_halfgcd_matrix_tail_raw_bits={halfgcd_matrix_tail_raw}");
     println!("METRIC scratch600_halfgcd_tail_over_google_bits={halfgcd_tail_over_google}");
@@ -299,6 +306,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
         "consumed high-state BY selector should stay demoted until a fused low-peak update exists"
     );
     assert!(centered_parser_over_strict > 0 && plusminus_parser_over_strict > 0, "raw streams must not be counted before parser cost");
+    assert!(
+        plusminus_active_quantum_gap_to_2700k > 50_000_000,
+        "plus-minus active-chain quantum-control blocker changed; revisit physical integration"
+    );
     assert!(
         direct_signnorm_rank_over_google > 0 && direct_signnorm_ambiguous_rank_over_google > 0,
         "sign-normalized direct route should stay blocked until normalization signs fit Google scratch"
