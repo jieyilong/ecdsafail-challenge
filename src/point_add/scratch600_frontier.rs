@@ -127,7 +127,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "halfgcd_second_column_tail_stream",
             scratch_bits: 514,
             charged_toffoli: None,
-            blocker: "second-column live/tail state fits and toy prefix has no history sidecar; reverse q is coefficient division in toys, but full scaled phase-clean extractor/reverse circuit is still unbuilt",
+            blocker: "second-column live/tail state fits, but coefficient-division q cleanup adds 81879 p99 one-way CCX and pushes exact prefix projection to 2866082",
         },
         Candidate {
             name: "folded_kaliski_one_pair_plus_required_sidecar",
@@ -254,6 +254,17 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let halfgcd_second_col_prefix_reverse_formula_coeff_steps_n14 = 65_648usize;
     let halfgcd_second_col_prefix_reverse_formula_max_q_bits_n14 = 14usize;
     let halfgcd_second_col_prefix_reverse_formula_max_coeff_abs_bits_n14 = 14usize;
+    let halfgcd_second_col_prefix_coeff_decoder_exact_p99 = 81_879usize;
+    let halfgcd_second_col_prefix_coeff_decoder_digit_width_p99 = 15_046usize;
+    let halfgcd_second_col_prefix_coeff_decoder_final_fix_p99 = 12_077usize;
+    let halfgcd_second_col_prefix_coeff_decoder_scan_p99 = 54_756usize;
+    let halfgcd_second_col_prefix_coeff_decoder_steps_p99 = 91usize;
+    let halfgcd_second_col_prefix_coeff_decoder_digits_p99 = 224usize;
+    let halfgcd_second_col_prefix_coeff_decoder_final_negative_p99 = 25usize;
+    let halfgcd_second_col_prefix_augmented_extraction_p99 = 397_001usize;
+    let halfgcd_second_col_prefix_augmented_pointadd_p99 = 2_866_082usize;
+    let halfgcd_second_col_prefix_augmented_gap_to_2700k =
+        halfgcd_second_col_prefix_augmented_pointadd_p99 as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
     let halfgcd_second_col_prefix_steps_p99 = 91usize;
     let halfgcd_second_col_prefix_digits_p99 = 221usize;
     let halfgcd_second_col_prefix_final_negative_p99 = 37usize;
@@ -378,6 +389,16 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_halfgcd_second_col_prefix_reverse_formula_coeff_steps_n14={halfgcd_second_col_prefix_reverse_formula_coeff_steps_n14}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_reverse_formula_max_q_bits_n14={halfgcd_second_col_prefix_reverse_formula_max_q_bits_n14}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_reverse_formula_max_coeff_abs_bits_n14={halfgcd_second_col_prefix_reverse_formula_max_coeff_abs_bits_n14}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_coeff_decoder_exact_p99={halfgcd_second_col_prefix_coeff_decoder_exact_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_coeff_decoder_digit_width_p99={halfgcd_second_col_prefix_coeff_decoder_digit_width_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_coeff_decoder_final_fix_p99={halfgcd_second_col_prefix_coeff_decoder_final_fix_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_coeff_decoder_scan_p99={halfgcd_second_col_prefix_coeff_decoder_scan_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_coeff_decoder_steps_p99={halfgcd_second_col_prefix_coeff_decoder_steps_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_coeff_decoder_digits_p99={halfgcd_second_col_prefix_coeff_decoder_digits_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_coeff_decoder_final_negative_p99={halfgcd_second_col_prefix_coeff_decoder_final_negative_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_augmented_extraction_p99={halfgcd_second_col_prefix_augmented_extraction_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_augmented_pointadd_p99={halfgcd_second_col_prefix_augmented_pointadd_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_augmented_gap_to_2700k={halfgcd_second_col_prefix_augmented_gap_to_2700k}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_steps_p99={halfgcd_second_col_prefix_steps_p99}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_digits_p99={halfgcd_second_col_prefix_digits_p99}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_final_negative_p99={halfgcd_second_col_prefix_final_negative_p99}");
@@ -473,5 +494,11 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
         halfgcd_second_col_prefix_exact_extraction_p99 < halfgcd_second_col_prefix_oneway_budget_ccx
             && halfgcd_second_col_prefix_exact_gap_to_2700k < 0,
         "half-GCD second-column optimistic prefix ledger no longer has low-qubit margin"
+    );
+    assert!(
+        halfgcd_second_col_prefix_augmented_extraction_p99
+            > halfgcd_second_col_prefix_oneway_budget_ccx
+            && halfgcd_second_col_prefix_augmented_gap_to_2700k > 0,
+        "half-GCD coefficient q-cleanup no longer blocks the exact-prefix route"
     );
 }

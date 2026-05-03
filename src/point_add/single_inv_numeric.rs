@@ -3441,6 +3441,82 @@ mod tests {
         )
     }
 
+    fn half_gcd_second_column_prefix_coeff_decoder_costs_for_test(
+        samples: usize,
+        mut rng: u64,
+    ) -> Vec<(usize, usize, usize, usize, usize, usize, usize)> {
+        let p = SECP256K1_P;
+        let exact_barrel_bits = 8usize;
+        let mut rows = Vec::with_capacity(samples);
+        for _ in 0..samples {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() { x = U256::from(1u64); }
+            let mut u = p;
+            let mut v = x;
+            let mut b = smag_for_halfgcd_test(false, U512::ZERO);
+            let mut d = smag_for_halfgcd_test(false, U512::from(1u64));
+            let mut digit_width = 0usize;
+            let mut final_fix_width = 0usize;
+            let mut width_sum = 0usize;
+            let mut steps = 0usize;
+            let mut digits_total = 0usize;
+            let mut final_negative_steps = 0usize;
+            while !v.is_zero() && u256_bit_len(u).max(u256_bit_len(v)) > 128 {
+                let q = u / v;
+                let rem = u - q * v;
+                let nb = d;
+                let nd = signed_sub_scaled_for_halfgcd_test(b, q, d);
+                let numer = if b.mag.is_zero() {
+                    nd.mag
+                } else {
+                    nd.mag - U512::from(1u64)
+                };
+                let denom = nb.mag;
+                assert!(!denom.is_zero(), "reverse coefficient denominator vanished");
+                assert_eq!(
+                    numer / denom,
+                    u512_from_u256_for_halfgcd_test(q),
+                    "coefficient reverse quotient formula mismatch"
+                );
+                let (digits, prefinal_rem, prefinal_q) =
+                    nonrestoring_prefinal_signed_digits_for_centered_test(numer, denom);
+                let final_negative = prefinal_rem.neg && !prefinal_rem.mag.is_zero();
+                let floor_q = if final_negative {
+                    prefinal_q - U512::from(1u64)
+                } else {
+                    prefinal_q
+                };
+                assert_eq!(floor_q, u512_from_u256_for_halfgcd_test(q));
+                let width = u512_bit_len_for_halfgcd_test(numer)
+                    .max(u512_bit_len_for_halfgcd_test(denom))
+                    .max(1);
+                digit_width += digits.len() * width.saturating_sub(1);
+                final_fix_width += (2 * width).saturating_sub(1);
+                width_sum += width;
+                steps += 1;
+                digits_total += digits.len();
+                final_negative_steps += final_negative as usize;
+
+                u = v;
+                v = rem;
+                b = nb;
+                d = nd;
+            }
+            let scan_width = width_sum * (exact_barrel_bits + 1);
+            let exact = digit_width + final_fix_width + scan_width;
+            rows.push((
+                exact,
+                digit_width,
+                final_fix_width,
+                scan_width,
+                steps,
+                digits_total,
+                final_negative_steps,
+            ));
+        }
+        rows
+    }
+
     fn u512_popcount_for_halfgcd_test(x: U512) -> usize {
         x.as_limbs().iter().map(|w| w.count_ones() as usize).sum()
     }
@@ -3859,6 +3935,68 @@ mod tests {
             assert_eq!(transitions, endpoints + coeff_steps, "reverse formula accounting drifted");
             assert!(coeff_steps > endpoints, "coefficient reverse body unexpectedly small");
         }
+    }
+
+    #[test]
+    fn half_gcd_second_column_coeff_decoder_cost_kills_exact_prefix_margin() {
+        // The reverse formula is only useful if its coherent cleanup is cheap.
+        // Charge a generous exact-barrel non-restoring decoder for q from the
+        // new second-column coefficients: endpoint steps use abs(d)/abs(b),
+        // body steps use `(abs(d)-1)/abs(b)`.  This is the missing q-cleanup
+        // hard piece for the prefix extractor.  With current primitives it is
+        // larger than the exact ledger's one-way margin, so the row must remain
+        // speculative until a fused cleanup avoids this decoder.
+        const PREVIOUS_ONEWAY_BUDGET: usize = 345_059;
+        const PREVIOUS_EXACT_EXTRACTION_P99: usize = 315_122;
+        const PREVIOUS_EXACT_POINTADD_P99: usize = 2_538_566;
+
+        let samples = 4096usize;
+        let mut rows = half_gcd_second_column_prefix_coeff_decoder_costs_for_test(
+            samples,
+            0x5ec0_0001_dec0_de01u64,
+        );
+        rows.sort_unstable_by_key(|row| row.0);
+        let p99 = samples * 99 / 100;
+        let (
+            decoder_exact_p99,
+            decoder_digit_p99,
+            decoder_final_fix_p99,
+            decoder_scan_p99,
+            decoder_steps_p99,
+            decoder_digits_p99,
+            decoder_final_negative_p99,
+        ) = rows[p99];
+        let augmented_extraction_p99 = PREVIOUS_EXACT_EXTRACTION_P99 + decoder_exact_p99;
+        let augmented_pointadd_p99 = PREVIOUS_EXACT_POINTADD_P99 + 4 * decoder_exact_p99;
+        let augmented_gap = augmented_pointadd_p99 as isize - 2_700_000isize;
+        let prior_margin =
+            PREVIOUS_ONEWAY_BUDGET as isize - PREVIOUS_EXACT_EXTRACTION_P99 as isize;
+        let augmented_margin =
+            PREVIOUS_ONEWAY_BUDGET as isize - augmented_extraction_p99 as isize;
+        println!("METRIC halfgcd_second_col_prefix_coeff_decoder_exact_p99={decoder_exact_p99}");
+        println!("METRIC halfgcd_second_col_prefix_coeff_decoder_digit_width_p99={decoder_digit_p99}");
+        println!("METRIC halfgcd_second_col_prefix_coeff_decoder_final_fix_p99={decoder_final_fix_p99}");
+        println!("METRIC halfgcd_second_col_prefix_coeff_decoder_scan_p99={decoder_scan_p99}");
+        println!("METRIC halfgcd_second_col_prefix_coeff_decoder_steps_p99={decoder_steps_p99}");
+        println!("METRIC halfgcd_second_col_prefix_coeff_decoder_digits_p99={decoder_digits_p99}");
+        println!("METRIC halfgcd_second_col_prefix_coeff_decoder_final_negative_p99={decoder_final_negative_p99}");
+        println!("METRIC halfgcd_second_col_prefix_prior_oneway_margin={prior_margin}");
+        println!("METRIC halfgcd_second_col_prefix_augmented_extraction_p99={augmented_extraction_p99}");
+        println!("METRIC halfgcd_second_col_prefix_augmented_oneway_margin={augmented_margin}");
+        println!("METRIC halfgcd_second_col_prefix_augmented_pointadd_p99={augmented_pointadd_p99}");
+        println!("METRIC halfgcd_second_col_prefix_augmented_gap_to_2700k={augmented_gap}");
+        eprintln!(
+            "half-GCD second-column coeff decoder cost: exact_p99={decoder_exact_p99}, digit_p99={decoder_digit_p99}, final_fix_p99={decoder_final_fix_p99}, scan_p99={decoder_scan_p99}, prior_margin={prior_margin}, augmented_extraction={augmented_extraction_p99}, augmented_gap={augmented_gap}"
+        );
+        assert!(prior_margin > 0, "baseline exact ledger no longer has margin; update test constants");
+        assert!(
+            decoder_exact_p99 as isize > prior_margin,
+            "coefficient reverse decoder now fits the exact margin; promote full prefix cleanup"
+        );
+        assert!(
+            augmented_gap > 0 && augmented_margin < 0,
+            "charged coefficient decoder no longer kills the half-GCD prefix route"
+        );
     }
 
     #[test]
