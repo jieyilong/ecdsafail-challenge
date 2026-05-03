@@ -8771,6 +8771,151 @@ mod tests {
     }
 
     #[test]
+    fn tiny_lowword_consumed_high_update_still_spends_selector_slack() {
+        // The w=1/2 selector oracles leave more target slack than w=4, but the
+        // consumed-lowword escape still has to roll the full high denominator
+        // state.  Charge an optimistic consumed-high update with sampled
+        // matrices, current lowword pattern+q oracle, and the same streamed
+        // replay body.  This is deliberately generous: matrix selection and
+        // q-history cleanup are still not charged.  If it misses here, smaller
+        // lowword windows do not rescue the streamed qoffset row.
+        const TOTAL_BITS: usize = 560;
+        const SAMPLES: usize = 1;
+        let streamed_replay_body_with_allowance = 2_645_196usize;
+        let selector_allowance = 150_000usize;
+        let decoder_total = 62_160usize;
+        let mut rows = Vec::new();
+        for &w in &[1usize, 2, 4] {
+            let windows = TOTAL_BITS / w;
+            let q_update_bits = w + 2;
+            let q_oracle_bits = 2 * w + 2;
+            let mut bq = super::super::B::new();
+            let f = bq.alloc_qubits(q_oracle_bits);
+            let g = bq.alloc_qubits(q_oracle_bits);
+            let delta = bq.alloc_qubits(10);
+            let pattern_tmp = bq.alloc_qubits(w);
+            let a_tmp = bq.alloc_qubits(w);
+            let pattern_hist = bq.alloc_qubits(w);
+            let q0_hist = bq.alloc_qubits(q_oracle_bits);
+            let q1_hist = bq.alloc_qubits(q_oracle_bits);
+            for i in 0..w {
+                emit_signed_by_branch_step_for_test(
+                    &mut bq,
+                    &f,
+                    &g,
+                    &delta,
+                    pattern_tmp[i],
+                    a_tmp[i],
+                );
+            }
+            for i in 0..w {
+                bq.cx(pattern_tmp[i], pattern_hist[i]);
+            }
+            for i in 0..q_oracle_bits {
+                bq.cx(f[i], q0_hist[i]);
+                bq.cx(g[i], q1_hist[i]);
+            }
+            for i in (0..w).rev() {
+                emit_signed_by_branch_step_reverse_for_test(
+                    &mut bq,
+                    &f,
+                    &g,
+                    &delta,
+                    pattern_tmp[i],
+                    a_tmp[i],
+                );
+            }
+            let q_oracle_window = count_ccx(&bq.ops);
+            let q_oracle_total = q_oracle_window * windows;
+
+            let mut sampler = Sampler::new(b"by-tiny-consumed-high-update-v1", SECP256K1_P);
+            let mut sample_costs = Vec::with_capacity(SAMPLES);
+            let mut sample_peaks = Vec::with_capacity(SAMPLES);
+            for _ in 0..SAMPLES {
+                let x = sampler.next();
+                let mut delta = 1i64;
+                let mut f = SInt::from_u(SECP256K1_P);
+                let mut g = SInt::from_u(x);
+                let mut sample_ccx = 0usize;
+                let mut sample_peak = 0usize;
+                for win in 0..windows {
+                    let high_width = TOTAL_BITS - (win + 1) * w;
+                    let f_low = low_signed_sint_for_streaming_test(f, w);
+                    let g_low = low_signed_sint_for_streaming_test(g, w);
+                    let (_, _, _, mtx) = jump_matrix_direct_lowword(w, w, delta, f_low, g_low);
+                    if high_width > 0 {
+                        let mut b = super::super::B::new();
+                        emit_consumed_high_pair_update_with_q_for_cost(
+                            &mut b,
+                            mtx,
+                            high_width,
+                            w,
+                            q_update_bits,
+                        );
+                        sample_ccx += count_ccx(&b.ops);
+                        sample_peak = sample_peak.max(b.peak_qubits as usize);
+                    }
+                    for _ in 0..w {
+                        divstep_sint_state(&mut delta, &mut f, &mut g);
+                    }
+                }
+                sample_costs.push(sample_ccx);
+                sample_peaks.push(sample_peak);
+            }
+            let mean_compute = sample_costs.iter().sum::<usize>() as f64 / SAMPLES as f64;
+            let max_peak = *sample_peaks.iter().max().unwrap();
+            let optimistic_compute_uncompute = (2.0 * mean_compute).round() as usize;
+            let optimistic_pointadd = streamed_replay_body_with_allowance - selector_allowance
+                + decoder_total
+                + q_oracle_total
+                + optimistic_compute_uncompute;
+            let optimistic_gap = optimistic_pointadd as isize - 2_700_000isize;
+            eprintln!(
+                "BY tiny consumed-high w={w}: q_oracle_window={q_oracle_window}, q_oracle_total={q_oracle_total}, compute={mean_compute:.0}, compute_uncompute={optimistic_compute_uncompute}, pointadd={optimistic_pointadd}, gap={optimistic_gap}, peak={max_peak}"
+            );
+            rows.push((
+                w,
+                q_oracle_window,
+                q_oracle_total,
+                mean_compute.round() as usize,
+                optimistic_compute_uncompute,
+                optimistic_pointadd,
+                optimistic_gap,
+                max_peak,
+            ));
+        }
+        let best = *rows.iter().min_by_key(|row| row.6).unwrap();
+        println!("METRIC by_tiny_consumed_high_best_w={}", best.0);
+        println!("METRIC by_tiny_consumed_high_best_q_oracle_window={}", best.1);
+        println!("METRIC by_tiny_consumed_high_best_q_oracle_total={}", best.2);
+        println!("METRIC by_tiny_consumed_high_best_compute_ccx={}", best.3);
+        println!("METRIC by_tiny_consumed_high_best_compute_uncompute_ccx={}", best.4);
+        println!("METRIC by_tiny_consumed_high_best_pointadd={}", best.5);
+        println!("METRIC by_tiny_consumed_high_best_gap_to_2700k={}", best.6);
+        println!("METRIC by_tiny_consumed_high_best_peak_q={}", best.7);
+        for row in rows {
+            if row.0 == 1 {
+                println!("METRIC by_tiny_consumed_high_w1_pointadd={}", row.5);
+                println!("METRIC by_tiny_consumed_high_w1_gap_to_2700k={}", row.6);
+                println!("METRIC by_tiny_consumed_high_w1_peak_q={}", row.7);
+            }
+            if row.0 == 2 {
+                println!("METRIC by_tiny_consumed_high_w2_pointadd={}", row.5);
+                println!("METRIC by_tiny_consumed_high_w2_gap_to_2700k={}", row.6);
+                println!("METRIC by_tiny_consumed_high_w2_peak_q={}", row.7);
+            }
+        }
+        assert!(
+            best.6 > 250_000,
+            "tiny lowword consumed-high update may fit the streamed qoffset selector budget"
+        );
+        assert!(
+            best.7 > 600,
+            "tiny consumed-high update unexpectedly fits the scratch-600 state gate"
+        );
+    }
+
+    #[test]
     fn by_denominator_branch_history_self_cleans_on_reverse() {
         // This is the constructive counterpart to the dead compute/copy/uncompute
         // branch generators: if the denominator state itself is part of the DIV

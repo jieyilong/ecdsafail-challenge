@@ -34,6 +34,12 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             blocker: "consumed lowword q/high-state update projects 1217624 CCX over target before matrix selection and q-history cleanup",
         },
         Candidate {
+            name: "by_tiny_consumed_high_state_selector",
+            scratch_bits: 3_916,
+            charged_toffoli: Some(4_370_270),
+            blocker: "smaller w=1/2/4 lowword windows do not rescue the consumed-high update; best w4 projection is 1670270 CCX over target before matrix selection and q-history cleanup",
+        },
+        Candidate {
             name: "partial_prefix32_qoffset_lowword_model",
             scratch_bits: 542,
             charged_toffoli: None,
@@ -174,6 +180,14 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let by_consumed_high_gap_to_2700k =
         by_consumed_high_optimistic_pointadd as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
     let by_consumed_high_max_peak_q = 3_892usize;
+    let by_tiny_consumed_high_best_w = 4usize;
+    let by_tiny_consumed_high_q_oracle_total_ccx = 168_000usize;
+    let by_tiny_consumed_high_update_compute_ccx = 822_457usize;
+    let by_tiny_consumed_high_update_compute_uncompute_ccx = 1_644_914usize;
+    let by_tiny_consumed_high_optimistic_pointadd = 4_370_270usize;
+    let by_tiny_consumed_high_gap_to_2700k =
+        by_tiny_consumed_high_optimistic_pointadd as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
+    let by_tiny_consumed_high_max_peak_q = 3_916usize;
     let centered_raw_scratch = 592usize;
     let centered_boundary_scratch_p99 = 710usize;
     let centered_parser_over_strict = centered_boundary_scratch_p99 - STRICT_SCRATCH;
@@ -319,6 +333,13 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_by_consumed_high_optimistic_pointadd={by_consumed_high_optimistic_pointadd}");
     println!("METRIC scratch600_by_consumed_high_gap_to_2700k={by_consumed_high_gap_to_2700k}");
     println!("METRIC scratch600_by_consumed_high_max_peak_q={by_consumed_high_max_peak_q}");
+    println!("METRIC scratch600_by_tiny_consumed_high_best_w={by_tiny_consumed_high_best_w}");
+    println!("METRIC scratch600_by_tiny_consumed_high_q_oracle_total_ccx={by_tiny_consumed_high_q_oracle_total_ccx}");
+    println!("METRIC scratch600_by_tiny_consumed_high_update_compute_ccx={by_tiny_consumed_high_update_compute_ccx}");
+    println!("METRIC scratch600_by_tiny_consumed_high_update_compute_uncompute_ccx={by_tiny_consumed_high_update_compute_uncompute_ccx}");
+    println!("METRIC scratch600_by_tiny_consumed_high_optimistic_pointadd={by_tiny_consumed_high_optimistic_pointadd}");
+    println!("METRIC scratch600_by_tiny_consumed_high_gap_to_2700k={by_tiny_consumed_high_gap_to_2700k}");
+    println!("METRIC scratch600_by_tiny_consumed_high_max_peak_q={by_tiny_consumed_high_max_peak_q}");
     println!("METRIC scratch600_centered_raw_scratch_bits={centered_raw_scratch}");
     println!("METRIC scratch600_centered_boundary_scratch_p99={centered_boundary_scratch_p99}");
     println!("METRIC scratch600_centered_parser_over_strict_bits={centered_parser_over_strict}");
@@ -422,6 +443,12 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     assert!(
         by_consumed_high_gap_to_2700k > 1_000_000 && by_consumed_high_max_peak_q > GOOGLE_LOW_QUBIT_SCRATCH,
         "consumed high-state BY selector should stay demoted until a fused low-peak update exists"
+    );
+    assert!(
+        by_tiny_consumed_high_best_w == 4
+            && by_tiny_consumed_high_gap_to_2700k > 1_000_000
+            && by_tiny_consumed_high_max_peak_q > GOOGLE_LOW_QUBIT_SCRATCH,
+        "tiny-window consumed high-state BY selector should stay demoted until a fused low-peak update exists"
     );
     assert!(centered_parser_over_strict > 0 && plusminus_parser_over_strict > 0, "raw streams must not be counted before parser cost");
     assert!(
