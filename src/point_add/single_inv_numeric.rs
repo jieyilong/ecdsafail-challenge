@@ -10530,7 +10530,11 @@ mod tests {
         let mut norm_costs_static = Vec::with_capacity(samples);
         let mut norm_rem_costs = Vec::with_capacity(samples);
         let mut norm_coeff_costs = Vec::with_capacity(samples);
-        for _ in 0..samples {
+        let mut norm_once_sum = 0i128;
+        let mut norm_split_sum = 0i128;
+        let mut norm_once_first64_sum = 0i128;
+        let mut norm_split_first64_sum = 0i128;
+        for sample_idx in 0..samples {
             let mut x = rand_u256(&mut rng);
             if x.is_zero() {
                 x = U256::from(1u64);
@@ -10628,6 +10632,12 @@ mod tests {
                 + 2 * (3 * coeff_width_cost
                     + norm_coeff_cost
                     + 2 * (extraction_oneway + norm_rem_cost)) as isize;
+            norm_once_sum += norm_once as i128;
+            norm_split_sum += norm_split as i128;
+            if sample_idx < 64 {
+                norm_once_first64_sum += norm_once as i128;
+                norm_split_first64_sum += norm_split as i128;
+            }
             base_inline_3x.push(base);
             norm_once_static.push(norm_once);
             norm_split_static.push(norm_split);
@@ -10652,8 +10662,16 @@ mod tests {
         let norm_cost_p99 = norm_costs_static[p99];
         let norm_rem_p99 = norm_rem_costs[p99];
         let norm_coeff_p99 = norm_coeff_costs[p99];
+        let norm_once_mean = (norm_once_sum / samples as i128) as isize;
+        let norm_split_mean = (norm_split_sum / samples as i128) as isize;
+        let norm_once_first64 = (norm_once_first64_sum / 64i128) as isize;
+        let norm_split_first64 = (norm_split_first64_sum / 64i128) as isize;
         let norm_once_gap = norm_once_p99 - 2_700_000isize;
         let norm_split_gap = norm_split_p99 - 2_700_000isize;
+        let norm_once_mean_gap = norm_once_mean - 2_700_000isize;
+        let norm_split_mean_gap = norm_split_mean - 2_700_000isize;
+        let norm_once_first64_gap = norm_once_first64 - 2_700_000isize;
+        let norm_split_first64_gap = norm_split_first64 - 2_700_000isize;
         println!("METRIC centered_direct_signnorm_cneg257={cneg257}");
         println!("METRIC centered_direct_signnorm_cneg258={cneg258}");
         println!("METRIC centered_direct_signnorm_base_inline3x_p99={base_p99}");
@@ -10666,14 +10684,30 @@ mod tests {
         println!("METRIC centered_direct_signnorm_split_p99={norm_split_p99}");
         println!("METRIC centered_direct_signnorm_once_gap_to_2700k={norm_once_gap}");
         println!("METRIC centered_direct_signnorm_split_gap_to_2700k={norm_split_gap}");
+        println!("METRIC centered_direct_signnorm_once_mean={norm_once_mean}");
+        println!("METRIC centered_direct_signnorm_split_mean={norm_split_mean}");
+        println!("METRIC centered_direct_signnorm_once_mean_gap_to_2700k={norm_once_mean_gap}");
+        println!("METRIC centered_direct_signnorm_split_mean_gap_to_2700k={norm_split_mean_gap}");
+        println!("METRIC centered_direct_signnorm_once_first64={norm_once_first64}");
+        println!("METRIC centered_direct_signnorm_split_first64={norm_split_first64}");
+        println!("METRIC centered_direct_signnorm_once_first64_gap_to_2700k={norm_once_first64_gap}");
+        println!("METRIC centered_direct_signnorm_split_first64_gap_to_2700k={norm_split_first64_gap}");
         eprintln!(
-            "Direct-centered sign-normalized inline budget: cneg257={cneg257}, cneg258={cneg258}, base3x_p99={base_p99}, norm_count_p99={norm_count_p99}, norm_count_max={norm_count_max}, norm_cost_p99={norm_cost_p99}, rem_p99={norm_rem_p99}, coeff_p99={norm_coeff_p99}, once_p99={norm_once_p99}, split_p99={norm_split_p99}, once_gap={norm_once_gap}, split_gap={norm_split_gap}"
+            "Direct-centered sign-normalized inline budget: cneg257={cneg257}, cneg258={cneg258}, base3x_p99={base_p99}, norm_count_p99={norm_count_p99}, norm_count_max={norm_count_max}, norm_cost_p99={norm_cost_p99}, rem_p99={norm_rem_p99}, coeff_p99={norm_coeff_p99}, once_p99={norm_once_p99}, split_p99={norm_split_p99}, once_gap={norm_once_gap}, split_gap={norm_split_gap}, split_mean={norm_split_mean}, split_first64={norm_split_first64}"
         );
         assert!(norm_count_p99 > 0, "sign normalization never fired on sampled traces");
         assert!(norm_once_gap < 0, "single-pass sign normalization budget stopped fitting");
         assert!(
             norm_split_gap > 0,
             "split sign normalization budget reaches the low-qubit target; promote to implementation"
+        );
+        assert!(
+            norm_split_mean_gap < 0,
+            "sampled average split sign normalization stopped fitting the harness objective"
+        );
+        assert!(
+            norm_split_first64_gap < 0,
+            "first-64 split sign normalization stopped fitting the harness objective"
         );
     }
 
