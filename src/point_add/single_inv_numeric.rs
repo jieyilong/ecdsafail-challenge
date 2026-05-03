@@ -3857,11 +3857,13 @@ mod tests {
         struct PrefixLedger {
             residual_digit_width: usize,
             coeff_digit_width: usize,
+            final_fix_width: usize,
             residual_width_sum: usize,
             coeff_width_sum: usize,
             max_digits: usize,
             prefix_steps: usize,
             prefix_digits: usize,
+            final_negative_steps: usize,
             app: usize,
             replay: usize,
         }
@@ -3879,27 +3881,38 @@ mod tests {
             let mut d = smag_for_halfgcd_test(false, U512::from(1u64));
             let mut residual_digit_width = 0usize;
             let mut coeff_digit_width = 0usize;
+            let mut final_fix_width = 0usize;
             let mut residual_width_sum = 0usize;
             let mut coeff_width_sum = 0usize;
             let mut max_digits = 0usize;
             let mut prefix_steps = 0usize;
             let mut prefix_digits = 0usize;
+            let mut final_negative_steps = 0usize;
             while !v.is_zero() && u256_bit_len(u).max(u256_bit_len(v)) > 128 {
                 let q = u / v;
-                let digits = nonrestoring_floor_signed_digits_for_centered_test(
+                let (digits, prefinal_rem, prefinal_q) = nonrestoring_prefinal_signed_digits_for_centered_test(
                     u512_from_u256_for_halfgcd_test(u),
                     u512_from_u256_for_halfgcd_test(v),
                 );
+                let final_negative = prefinal_rem.neg && !prefinal_rem.mag.is_zero();
+                let floor_q = if final_negative {
+                    prefinal_q - U512::from(1u64)
+                } else {
+                    prefinal_q
+                };
+                assert_eq!(floor_q, u512_from_u256_for_halfgcd_test(q));
                 let width = u256_bit_len(u).max(u256_bit_len(v));
                 let coeff_width = u512_bit_len_for_halfgcd_test(b.mag)
                     .max(u512_bit_len_for_halfgcd_test(d.mag))
                     .max(1)
                     + 1;
-                residual_digit_width += digits.len() * width;
+                residual_digit_width += digits.len() * width.saturating_sub(1);
+                final_fix_width += (2 * width).saturating_sub(1) + (2 * coeff_width).saturating_sub(1);
                 residual_width_sum += width;
                 coeff_width_sum += coeff_width;
                 max_digits = max_digits.max(digits.len());
                 prefix_digits += digits.len();
+                final_negative_steps += final_negative as usize;
 
                 let mut coeff_acc = b;
                 for &(digit_neg, sh) in &digits {
@@ -3917,8 +3930,11 @@ mod tests {
                         .max(u512_bit_len_for_halfgcd_test(next.mag))
                         .max(1)
                         + 1;
-                    coeff_digit_width += op_width;
+                    coeff_digit_width += op_width.saturating_sub(1);
                     coeff_acc = next;
+                }
+                if final_negative {
+                    coeff_acc = signed_add_for_halfgcd_test(coeff_acc, d);
                 }
 
                 let rem = u - q * v;
@@ -3946,11 +3962,13 @@ mod tests {
             rows.push(PrefixLedger {
                 residual_digit_width,
                 coeff_digit_width,
+                final_fix_width,
                 residual_width_sum,
                 coeff_width_sum,
                 max_digits,
                 prefix_steps,
                 prefix_digits,
+                final_negative_steps,
                 app: halfgcd_signed_two_coeff_apply_cost_for_test(b, d),
                 replay: tail_payload * TAIL_REPLAY_PER_BIT_CCX,
             });
@@ -3962,6 +3980,7 @@ mod tests {
         let extraction_for = |row: PrefixLedger, barrel_bits: usize| -> usize {
             row.residual_digit_width
                 + row.coeff_digit_width
+                + row.final_fix_width
                 + (row.residual_width_sum + row.coeff_width_sum) * (barrel_bits + 1)
         };
         let mut bounded_extraction = Vec::with_capacity(samples);
@@ -3970,8 +3989,10 @@ mod tests {
         let mut exact_pointadd = Vec::with_capacity(samples);
         let mut prefix_steps = Vec::with_capacity(samples);
         let mut prefix_digits = Vec::with_capacity(samples);
+        let mut final_negative_steps = Vec::with_capacity(samples);
         let mut residual_digit_width = Vec::with_capacity(samples);
         let mut coeff_digit_width = Vec::with_capacity(samples);
+        let mut final_fix_width = Vec::with_capacity(samples);
         let mut app = Vec::with_capacity(samples);
         let mut replay = Vec::with_capacity(samples);
         for &row in &rows {
@@ -3987,8 +4008,10 @@ mod tests {
             );
             prefix_steps.push(row.prefix_steps);
             prefix_digits.push(row.prefix_digits);
+            final_negative_steps.push(row.final_negative_steps);
             residual_digit_width.push(row.residual_digit_width);
             coeff_digit_width.push(row.coeff_digit_width);
+            final_fix_width.push(row.final_fix_width);
             app.push(row.app);
             replay.push(row.replay);
         }
@@ -3998,15 +4021,19 @@ mod tests {
         exact_pointadd.sort_unstable();
         prefix_steps.sort_unstable();
         prefix_digits.sort_unstable();
+        final_negative_steps.sort_unstable();
         residual_digit_width.sort_unstable();
         coeff_digit_width.sort_unstable();
+        final_fix_width.sort_unstable();
         app.sort_unstable();
         replay.sort_unstable();
         let p99 = samples * 99 / 100;
         let steps_p99 = prefix_steps[p99];
         let digits_p99 = prefix_digits[p99];
+        let final_negative_p99 = final_negative_steps[p99];
         let residual_digit_p99 = residual_digit_width[p99];
         let coeff_digit_p99 = coeff_digit_width[p99];
+        let final_fix_p99 = final_fix_width[p99];
         let bounded_extraction_p99 = bounded_extraction[p99];
         let exact_extraction_p99 = exact_extraction[p99];
         let app_p99 = app[p99];
@@ -4017,13 +4044,15 @@ mod tests {
         let one_way_budget =
             (2_700_000usize - SCAFFOLD_AFTER_DIV - 2 * (app_p99 + replay_p99)) / 4;
         eprintln!(
-            "half-GCD second-column prefix ledger: steps_p99={steps_p99}, digits_p99={digits_p99}, bounded_barrel_bits={bounded_barrel_bits}, residual_digit_p99={residual_digit_p99}, coeff_digit_p99={coeff_digit_p99}, bounded_extraction_p99={bounded_extraction_p99}, exact_extraction_p99={exact_extraction_p99}, app_p99={app_p99}, replay_p99={replay_p99}, exact_pointadd_p99={exact_pointadd_p99}, exact_gap={exact_gap}"
+            "half-GCD second-column prefix ledger: steps_p99={steps_p99}, digits_p99={digits_p99}, final_negative_p99={final_negative_p99}, bounded_barrel_bits={bounded_barrel_bits}, residual_digit_p99={residual_digit_p99}, coeff_digit_p99={coeff_digit_p99}, final_fix_p99={final_fix_p99}, bounded_extraction_p99={bounded_extraction_p99}, exact_extraction_p99={exact_extraction_p99}, app_p99={app_p99}, replay_p99={replay_p99}, exact_pointadd_p99={exact_pointadd_p99}, exact_gap={exact_gap}"
         );
         println!("METRIC halfgcd_second_col_prefix_steps_p99={steps_p99}");
         println!("METRIC halfgcd_second_col_prefix_digits_p99={digits_p99}");
+        println!("METRIC halfgcd_second_col_prefix_final_negative_p99={final_negative_p99}");
         println!("METRIC halfgcd_second_col_prefix_bounded_barrel_bits={bounded_barrel_bits}");
         println!("METRIC halfgcd_second_col_prefix_residual_digit_width_p99={residual_digit_p99}");
         println!("METRIC halfgcd_second_col_prefix_coeff_digit_width_p99={coeff_digit_p99}");
+        println!("METRIC halfgcd_second_col_prefix_final_fix_width_p99={final_fix_p99}");
         println!("METRIC halfgcd_second_col_prefix_oneway_budget_ccx={one_way_budget}");
         println!("METRIC halfgcd_second_col_prefix_bounded_extraction_p99={bounded_extraction_p99}");
         println!("METRIC halfgcd_second_col_prefix_exact_extraction_p99={exact_extraction_p99}");

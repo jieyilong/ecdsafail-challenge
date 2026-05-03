@@ -127,7 +127,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "halfgcd_second_column_tail_stream",
             scratch_bits: 514,
             charged_toffoli: None,
-            blocker: "second-column live/tail state fits; optimistic exact-barrel prefix ledger projects 2385096, but phase-clean extractor implementation is still unbuilt",
+            blocker: "second-column live/tail state fits; final-fix charged exact-barrel prefix ledger projects 2538566, but full scaled extractor is still unbuilt",
         },
         Candidate {
             name: "folded_kaliski_one_pair_plus_required_sidecar",
@@ -246,14 +246,16 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let halfgcd_second_col_tail_raw_rank_degree_n14 = 0usize;
     let halfgcd_second_col_tail_raw_rank_density_n14 = 0usize;
     let halfgcd_second_col_prefix_steps_p99 = 91usize;
-    let halfgcd_second_col_prefix_digits_p99 = 253usize;
+    let halfgcd_second_col_prefix_digits_p99 = 221usize;
+    let halfgcd_second_col_prefix_final_negative_p99 = 37usize;
     let halfgcd_second_col_prefix_bounded_barrel_bits = 5usize;
-    let halfgcd_second_col_prefix_residual_digit_width_p99 = 48_776usize;
-    let halfgcd_second_col_prefix_coeff_digit_width_p99 = 17_316usize;
+    let halfgcd_second_col_prefix_residual_digit_width_p99 = 42_514usize;
+    let halfgcd_second_col_prefix_coeff_digit_width_p99 = 14_949usize;
+    let halfgcd_second_col_prefix_final_fix_width_p99 = 46_732usize;
     let halfgcd_second_col_prefix_oneway_budget_ccx = 345_059usize;
-    let halfgcd_second_col_prefix_bounded_extraction_p99 = 206_323usize;
-    let halfgcd_second_col_prefix_exact_extraction_p99 = 276_840usize;
-    let halfgcd_second_col_prefix_exact_pointadd_p99 = 2_385_096usize;
+    let halfgcd_second_col_prefix_bounded_extraction_p99 = 244_769usize;
+    let halfgcd_second_col_prefix_exact_extraction_p99 = 315_122usize;
+    let halfgcd_second_col_prefix_exact_pointadd_p99 = 2_538_566usize;
     let halfgcd_second_col_prefix_exact_gap_to_2700k =
         halfgcd_second_col_prefix_exact_pointadd_p99 as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
 
@@ -360,9 +362,11 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_halfgcd_second_col_tail_raw_rank_density_n14={halfgcd_second_col_tail_raw_rank_density_n14}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_steps_p99={halfgcd_second_col_prefix_steps_p99}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_digits_p99={halfgcd_second_col_prefix_digits_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_final_negative_p99={halfgcd_second_col_prefix_final_negative_p99}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_bounded_barrel_bits={halfgcd_second_col_prefix_bounded_barrel_bits}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_residual_digit_width_p99={halfgcd_second_col_prefix_residual_digit_width_p99}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_coeff_digit_width_p99={halfgcd_second_col_prefix_coeff_digit_width_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_final_fix_width_p99={halfgcd_second_col_prefix_final_fix_width_p99}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_oneway_budget_ccx={halfgcd_second_col_prefix_oneway_budget_ccx}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_bounded_extraction_p99={halfgcd_second_col_prefix_bounded_extraction_p99}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_exact_extraction_p99={halfgcd_second_col_prefix_exact_extraction_p99}");
