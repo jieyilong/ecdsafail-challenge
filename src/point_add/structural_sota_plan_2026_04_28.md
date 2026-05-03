@@ -1357,6 +1357,17 @@ the concrete scratch path: the arithmetic should use the history bank as dirty
 workspace or avoid the 256-bit AND addend, so peak scratch is history-dominated
 rather than `history + adder-temp`.
 
+A tempting exact-history shortcut now has an adversarial guardrail. The sampled
+test `denominator_pair_plus_50_sidecar_can_hold_raw_history_on_samples` found
+that the shrinking BY denominator pair plus a 50-bit sidecar held all 560 raw
+branch bits on 8192 secp trajectories. But the exhaustive toy counterpart,
+`denominator_pair_slack_history_toy_exhaustive_warns_exact_tail`, scales the
+worst sidecar to `160.0`, `153.6`, `149.3`, and `128.0` bits at `n=8,10,12,14`
+under the BY 560/256 step ratio. Therefore the 50-bit sampled sidecar is useful
+evidence about typical traces, not an exact production guarantee; an exact BY
+route still needs a proof, a rare-tail fallback, or a different compressed
+history cleanup.
+
 The first whole-point budget with this primitive is now explicit in
 `scaled_by_div_point_add_budget_has_sota_margin_if_history_workspace_solved`:
 

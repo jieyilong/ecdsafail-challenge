@@ -237,6 +237,12 @@ Examples worth probing only if they meet the budget gate up front:
 
 BY remains the best fully charged near-miss, but the missing primitive is precise. The first16/tail streaming-selector low-gate detour was checked and demoted: it fit 1425q scratch at `736` bits but a forward-only fresh tail carry update already exceeded the remaining low-gate Toffoli margin before cleanup/reversibility.
 
+The raw-history-in-denominator-slack idea is only sampled evidence, not an exact
+promotion criterion. Secp samples fit a 50-bit sidecar, but exhaustive toy
+BY-ratio checks scale the sidecar tail to 128-160 bits at 256-bit width. Treat
+the small sidecar as a distributional clue unless a proof or explicit rare-tail
+fallback is added.
+
 The remaining BY revival condition is:
 
 ```text

@@ -3023,6 +3023,65 @@ mod tests {
     }
 
     #[test]
+    fn denominator_pair_slack_history_toy_exhaustive_warns_exact_tail() {
+        // Exhaustive toy counterpart to the sampled secp slack-history check.
+        // For a low-qubit BY route, the raw branch stream can be stored in the
+        // shrinking f/g denominator pair only if the initial sidecar deficit
+        // stays a small fraction of n, not another field-sized history bank.
+        // Use a BY-like 560/256 step ratio on toy pseudo-Mersenne primes.
+        let cases = [
+            (8usize, 251u16),
+            (10usize, 1021u16),
+            (12usize, 4093u16),
+            (14usize, 16381u16),
+        ];
+        let mut max_scaled = 0.0f64;
+        for &(n, p16) in &cases {
+            let steps = (560usize * n).div_ceil(256);
+            let mut worst_deficit = 0isize;
+            let mut worst_x = 0u16;
+            let mut max_converge = 0usize;
+            for x in 1..p16 {
+                let mut delta = 1i64;
+                let mut f = SInt::from_u(U256::from(p16 as u64));
+                let mut g = SInt::from_u(U256::from(x as u64));
+                for step in 0..steps {
+                    if g.is_zero() {
+                        max_converge = max_converge.max(step);
+                        break;
+                    }
+                    divstep_sint_state(&mut delta, &mut f, &mut g);
+                    let used = bitlen_sint_for_compact_pair_test(f) + bitlen_sint_for_compact_pair_test(g);
+                    let slack = (2 * n) as isize - used as isize;
+                    let deficit = (step + 1) as isize - slack;
+                    if deficit > worst_deficit {
+                        worst_deficit = deficit;
+                        worst_x = x;
+                    }
+                    if step + 1 == steps {
+                        max_converge = max_converge.max(steps);
+                    }
+                }
+            }
+            let scaled_to_256 = (worst_deficit.max(0) as f64) * 256.0 / n as f64;
+            max_scaled = max_scaled.max(scaled_to_256);
+            eprintln!(
+                "BY toy slack-history: n={n}, steps={steps}, worst_deficit={worst_deficit}, scaled_to_256={scaled_to_256:.1}, worst_x={worst_x}, max_converge={max_converge}"
+            );
+            if n == 14 {
+                println!("METRIC by_slack_history_toy_n14_steps={steps}");
+                println!("METRIC by_slack_history_toy_n14_worst_deficit={worst_deficit}");
+                println!("METRIC by_slack_history_toy_n14_scaled_to_256={scaled_to_256:.3}");
+            }
+            assert!(worst_deficit >= 0, "deficit accounting should not stay negative");
+        }
+        assert!(
+            max_scaled > 120.0,
+            "toy exhaustive sidecar stayed small; sampled secp slack route is stronger than expected"
+        );
+    }
+
+    #[test]
     fn ratio_a_step_serial_inverse_budget_is_too_large() {
         // A bit-serial triangular inverse avoids large scratch, but each A step
         // still needs convolution work across the remaining active width.  Use
