@@ -127,7 +127,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "halfgcd_second_column_tail_stream",
             scratch_bits: 514,
             charged_toffoli: None,
-            blocker: "second-column live/tail state fits; final-fix charged exact-barrel prefix ledger projects 2538566, but full scaled extractor is still unbuilt",
+            blocker: "second-column live/tail state fits and toy prefix has no history sidecar; final-fix charged exact-barrel prefix ledger projects 2538566, but full scaled extractor/reverse decoder is still unbuilt",
         },
         Candidate {
             name: "folded_kaliski_one_pair_plus_required_sidecar",
@@ -245,6 +245,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let halfgcd_second_col_tail_raw_rank_max_mult_n14 = 1usize;
     let halfgcd_second_col_tail_raw_rank_degree_n14 = 0usize;
     let halfgcd_second_col_tail_raw_rank_density_n14 = 0usize;
+    let halfgcd_second_col_prefix_final_bd_max_mult_n14 = 1usize;
+    let halfgcd_second_col_prefix_local_reverse_max_mult_n14 = 1usize;
+    let halfgcd_second_col_prefix_local_reverse_collisions_n14 = 0usize;
+    let halfgcd_second_col_prefix_transitions_n14 = 82_028usize;
     let halfgcd_second_col_prefix_steps_p99 = 91usize;
     let halfgcd_second_col_prefix_digits_p99 = 221usize;
     let halfgcd_second_col_prefix_final_negative_p99 = 37usize;
@@ -360,6 +364,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_halfgcd_second_col_tail_raw_rank_max_mult_n14={halfgcd_second_col_tail_raw_rank_max_mult_n14}");
     println!("METRIC scratch600_halfgcd_second_col_tail_raw_rank_degree_n14={halfgcd_second_col_tail_raw_rank_degree_n14}");
     println!("METRIC scratch600_halfgcd_second_col_tail_raw_rank_density_n14={halfgcd_second_col_tail_raw_rank_density_n14}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_final_bd_max_mult_n14={halfgcd_second_col_prefix_final_bd_max_mult_n14}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_local_reverse_max_mult_n14={halfgcd_second_col_prefix_local_reverse_max_mult_n14}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_local_reverse_collisions_n14={halfgcd_second_col_prefix_local_reverse_collisions_n14}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_transitions_n14={halfgcd_second_col_prefix_transitions_n14}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_steps_p99={halfgcd_second_col_prefix_steps_p99}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_digits_p99={halfgcd_second_col_prefix_digits_p99}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_final_negative_p99={halfgcd_second_col_prefix_final_negative_p99}");
@@ -442,7 +450,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
         halfgcd_second_col_tail_stream_peak_gap_google < 0
             && halfgcd_second_col_tail_raw_rank_max_mult_n14 == 1
             && halfgcd_second_col_tail_raw_rank_degree_n14 == 0
-            && halfgcd_second_col_tail_raw_rank_density_n14 == 0,
+            && halfgcd_second_col_tail_raw_rank_density_n14 == 0
+            && halfgcd_second_col_prefix_final_bd_max_mult_n14 == 1
+            && halfgcd_second_col_prefix_local_reverse_max_mult_n14 == 1
+            && halfgcd_second_col_prefix_local_reverse_collisions_n14 == 0,
         "half-GCD second-column tail-stream scratch/parser changed; revisit prefix extraction route"
     );
     assert!(

@@ -3342,6 +3342,53 @@ mod tests {
         (degree, density, max_multiplicity)
     }
 
+    fn half_gcd_second_column_prefix_reversibility_stats(
+        n: usize,
+        p: u16,
+    ) -> (usize, usize, usize, usize) {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut by_final_bd: BTreeMap<(i128, i128), BTreeSet<Vec<usize>>> = BTreeMap::new();
+        let mut by_new_state: BTreeMap<
+            (i128, i128, i128, i128),
+            BTreeSet<(i128, i128, i128, i128, usize)>,
+        > = BTreeMap::new();
+        let mut transitions = 0usize;
+        for x in 1..p {
+            let mut u = p as i128;
+            let mut v = x as i128;
+            let mut b = 0i128;
+            let mut d = 1i128;
+            let mut qs = Vec::new();
+            while v != 0 && ((u as u128).ilog2().max((v as u128).ilog2()) as usize + 1) > n / 2 {
+                let q = u / v;
+                let rem = u - q * v;
+                let new_state = (v, rem, d, b - q * d);
+                by_new_state
+                    .entry(new_state)
+                    .or_default()
+                    .insert((u, v, b, d, q as usize));
+                u = new_state.0;
+                v = new_state.1;
+                b = new_state.2;
+                d = new_state.3;
+                qs.push(q as usize);
+                transitions += 1;
+            }
+            by_final_bd.entry((b, d)).or_default().insert(qs);
+        }
+        let final_bd_max_mult = by_final_bd.values().map(|qs| qs.len()).max().unwrap_or(1);
+        let local_reverse_max_mult =
+            by_new_state.values().map(|preds| preds.len()).max().unwrap_or(1);
+        let local_reverse_collision_keys =
+            by_new_state.values().filter(|preds| preds.len() > 1).count();
+        (
+            final_bd_max_mult,
+            local_reverse_max_mult,
+            local_reverse_collision_keys,
+            transitions,
+        )
+    }
+
     fn u512_popcount_for_halfgcd_test(x: U512) -> usize {
         x.as_limbs().iter().map(|w| w.count_ones() as usize).sum()
     }
@@ -3705,6 +3752,33 @@ mod tests {
                 assert_eq!(degree, 0);
                 assert_eq!(density, 0);
             }
+        }
+    }
+
+    #[test]
+    fn half_gcd_second_column_prefix_has_no_toy_history_sidecar() {
+        // A small final payload is not enough if the prefix generator hides a
+        // quotient-history channel.  In these toy fields, the final second
+        // column is injective over the prefix quotient path, and each reachable
+        // local `(u,v,b,d)` state has a unique predecessor.  This does not
+        // price the reverse decoder, but it rules out an information-theoretic
+        // sidecar in the toy model.
+        let cases = [(8usize, 251u16), (10, 1021), (12, 4093), (14, 16381)];
+        for &(n, p) in &cases {
+            let (final_bd_max, local_max, local_collisions, transitions) =
+                half_gcd_second_column_prefix_reversibility_stats(n, p);
+            eprintln!(
+                "half-GCD second-column prefix reversibility: n={n}, final_bd_max={final_bd_max}, local_reverse_max={local_max}, local_collisions={local_collisions}, transitions={transitions}"
+            );
+            if n == 14 {
+                println!("METRIC halfgcd_second_col_prefix_final_bd_max_mult_n14={final_bd_max}");
+                println!("METRIC halfgcd_second_col_prefix_local_reverse_max_mult_n14={local_max}");
+                println!("METRIC halfgcd_second_col_prefix_local_reverse_collisions_n14={local_collisions}");
+                println!("METRIC halfgcd_second_col_prefix_transitions_n14={transitions}");
+            }
+            assert_eq!(final_bd_max, 1, "final second-column checkpoint hides prefix path ambiguity");
+            assert_eq!(local_max, 1, "reachable second-column prefix state has ambiguous predecessor");
+            assert_eq!(local_collisions, 0, "local reverse collision keys appeared");
         }
     }
 
