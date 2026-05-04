@@ -3599,6 +3599,26 @@ mod tests {
         x.as_limbs().iter().map(|w| w.count_ones() as usize).sum()
     }
 
+    fn halfgcd_signed_two_coeff_apply_static_binary_floor_for_test(
+        x0: SignedMagU512ForHalfGcdTest,
+        x1: SignedMagU512ForHalfGcdTest,
+    ) -> usize {
+        // If coefficient bits remain quantum controls, the simulator charges
+        // every emitted controlled modular add, not only the shots where a bit
+        // is one.  This is a generous static floor: every live magnitude bit
+        // gets the cheaper add cost, and sign-selection overhead is ignored.
+        const MOD_ADD_FAST_CCX: usize = 1024;
+        const MOD_DOUBLE_FAST_CCX: usize = 255;
+        const MOD_HALVE_FAST_CCX: usize = 255;
+        let top0 = u512_bit_len_for_halfgcd_test(x0.mag).saturating_sub(1);
+        let top1 = u512_bit_len_for_halfgcd_test(x1.mag).saturating_sub(1);
+        let top = top0.max(top1);
+        let live_bits = u512_bit_len_for_halfgcd_test(x0.mag)
+            + u512_bit_len_for_halfgcd_test(x1.mag);
+        top * (MOD_DOUBLE_FAST_CCX + MOD_HALVE_FAST_CCX)
+            + live_bits * MOD_ADD_FAST_CCX
+    }
+
     fn halfgcd_signed_two_coeff_apply_cost_for_test(
         x0: SignedMagU512ForHalfGcdTest,
         x1: SignedMagU512ForHalfGcdTest,
@@ -5779,6 +5799,232 @@ mod tests {
         assert!(
             savings_mean > 40_870.0,
             "dynamic barrel charging does not recover the current fixed-depth64 gap"
+        );
+    }
+
+    #[test]
+    fn half_gcd_fixed_depth_coefficient_application_needs_classical_or_static_recode() {
+        // The fixed-depth64 near-miss also used a popcount-priced application
+        // of the final second-column coefficients.  That is only production
+        // charged if the coefficient bits are classical controls, or if a new
+        // static recoding avoids emitting a modular add for every possible
+        // coefficient bit.  Price the same exact 8-bit alignment row with a
+        // generous static binary floor for quantum coefficient controls.
+        const SCAFFOLD_AFTER_DIV: usize = 642_716;
+        const TAIL_REPLAY_PER_BIT_CCX: usize = 587;
+        const TARGET: f64 = 2_700_000.0;
+        const DEPTH: usize = 64;
+        let p = SECP256K1_P;
+        let samples = 4096usize;
+        let mut rng = 0x5ec0_0001_d7ba_0064u64;
+        let exact_barrel_bits = 8usize;
+        let mut popcount_pointadds = Vec::with_capacity(samples);
+        let mut static_pointadds = Vec::with_capacity(samples);
+        let mut app_popcount_rows = Vec::with_capacity(samples);
+        let mut app_static_rows = Vec::with_capacity(samples);
+        let mut first64_popcount = 0isize;
+        let mut first64_static = 0isize;
+
+        for sample_idx in 0..samples {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() {
+                x = U256::from(1u64);
+            }
+            let mut u = p;
+            let mut v = x;
+            let mut b = smag_for_halfgcd_test(false, U512::ZERO);
+            let mut d = smag_for_halfgcd_test(false, U512::from(1u64));
+            let mut residual_digit_width = 0usize;
+            let mut coeff_digit_width = 0usize;
+            let mut final_fix_width = 0usize;
+            let mut residual_width_sum = 0usize;
+            let mut coeff_width_sum = 0usize;
+            let mut decoder_digit = 0usize;
+            let mut decoder_final_fix = 0usize;
+            let mut decoder_width_sum = 0usize;
+            let mut prefix_steps = 0usize;
+
+            while prefix_steps < DEPTH && !v.is_zero() {
+                let q = u / v;
+                let (digits, prefinal_rem, prefinal_q) =
+                    nonrestoring_prefinal_signed_digits_for_centered_test(
+                        u512_from_u256_for_halfgcd_test(u),
+                        u512_from_u256_for_halfgcd_test(v),
+                    );
+                let final_negative = prefinal_rem.neg && !prefinal_rem.mag.is_zero();
+                let floor_q = if final_negative {
+                    prefinal_q - U512::from(1u64)
+                } else {
+                    prefinal_q
+                };
+                assert_eq!(floor_q, u512_from_u256_for_halfgcd_test(q));
+                let width = u256_bit_len(u).max(u256_bit_len(v)).max(1);
+                let coeff_width = u512_bit_len_for_halfgcd_test(b.mag)
+                    .max(u512_bit_len_for_halfgcd_test(d.mag))
+                    .max(1)
+                    + 1;
+                residual_digit_width += digits.len() * width.saturating_sub(1);
+                final_fix_width += (2 * width).saturating_sub(1)
+                    + (2 * coeff_width).saturating_sub(1);
+                residual_width_sum += width;
+                coeff_width_sum += coeff_width;
+
+                let mut coeff_acc = b;
+                for &(digit_neg, sh) in &digits {
+                    let term = signed_mul_mag_for_halfgcd_test(
+                        d,
+                        digit_neg,
+                        U512::from(1u64) << sh,
+                    );
+                    let next = signed_add_for_halfgcd_test(
+                        coeff_acc,
+                        signed_neg_for_halfgcd_test(term),
+                    );
+                    let op_width = u512_bit_len_for_halfgcd_test(coeff_acc.mag)
+                        .max(u512_bit_len_for_halfgcd_test(term.mag))
+                        .max(u512_bit_len_for_halfgcd_test(next.mag))
+                        .max(1)
+                        + 1;
+                    coeff_digit_width += op_width.saturating_sub(1);
+                    coeff_acc = next;
+                }
+                if final_negative {
+                    coeff_acc = signed_add_for_halfgcd_test(coeff_acc, d);
+                }
+
+                let rem = u - q * v;
+                let nb = d;
+                let nd = signed_sub_scaled_for_halfgcd_test(b, q, d);
+                assert_eq!(coeff_acc, nd, "fixed-depth static-app replay mismatch");
+
+                let numer = if b.mag.is_zero() {
+                    nd.mag
+                } else {
+                    nd.mag - U512::from(1u64)
+                };
+                let denom = nb.mag;
+                assert!(!denom.is_zero(), "fixed-depth static-app decoder denominator vanished");
+                assert_eq!(
+                    numer / denom,
+                    u512_from_u256_for_halfgcd_test(q),
+                    "fixed-depth static-app decoder reverse quotient mismatch"
+                );
+                let (decoder_digits, decoder_prefinal_rem, decoder_prefinal_q) =
+                    nonrestoring_prefinal_signed_digits_for_centered_test(numer, denom);
+                let decoder_final_negative =
+                    decoder_prefinal_rem.neg && !decoder_prefinal_rem.mag.is_zero();
+                let decoder_floor_q = if decoder_final_negative {
+                    decoder_prefinal_q - U512::from(1u64)
+                } else {
+                    decoder_prefinal_q
+                };
+                assert_eq!(decoder_floor_q, u512_from_u256_for_halfgcd_test(q));
+                let decoder_width = u512_bit_len_for_halfgcd_test(numer)
+                    .max(u512_bit_len_for_halfgcd_test(denom))
+                    .max(1);
+                decoder_digit += decoder_digits.len() * decoder_width.saturating_sub(1);
+                decoder_final_fix += (2 * decoder_width).saturating_sub(1);
+                decoder_width_sum += decoder_width;
+
+                u = v;
+                v = rem;
+                b = nb;
+                d = nd;
+                prefix_steps += 1;
+            }
+
+            let mut tail_payload = 0usize;
+            let mut tail_extract_floor = 0usize;
+            let mut tail_logbarrel_floor = 0usize;
+            let mut tu = u;
+            let mut tv = v;
+            while !tv.is_zero() {
+                let q = tu / tv;
+                let q_bits = u256_bit_len(q);
+                let tail_width = u256_bit_len(tu).max(u256_bit_len(tv)).max(1);
+                tail_payload += q_bits;
+                tail_extract_floor += q_bits * 3 * tail_width + tail_width;
+                tail_logbarrel_floor += tail_width * exact_barrel_bits;
+                let rem = tu - q * tv;
+                tu = tv;
+                tv = rem;
+            }
+            assert_eq!(tu, U256::from(1u64), "static-app fixed-depth tail missed gcd 1");
+
+            let exact_extraction = residual_digit_width
+                + coeff_digit_width
+                + final_fix_width
+                + (residual_width_sum + coeff_width_sum) * (exact_barrel_bits + 1);
+            let replay = tail_payload * TAIL_REPLAY_PER_BIT_CCX;
+            let decoder_exact =
+                decoder_digit + decoder_final_fix + decoder_width_sum * (exact_barrel_bits + 1);
+            let tail_exact = tail_extract_floor + tail_logbarrel_floor;
+            let app_popcount = halfgcd_signed_two_coeff_apply_cost_for_test(b, d);
+            let app_static = halfgcd_signed_two_coeff_apply_static_binary_floor_for_test(b, d);
+            let popcount_pointadd = SCAFFOLD_AFTER_DIV as isize
+                + 2 * (app_popcount + replay + 2 * exact_extraction) as isize
+                + 4 * decoder_exact as isize
+                + 4 * tail_exact as isize;
+            let static_pointadd = SCAFFOLD_AFTER_DIV as isize
+                + 2 * (app_static + replay + 2 * exact_extraction) as isize
+                + 4 * decoder_exact as isize
+                + 4 * tail_exact as isize;
+            if sample_idx < 64 {
+                first64_popcount += popcount_pointadd;
+                first64_static += static_pointadd;
+            }
+            popcount_pointadds.push(popcount_pointadd);
+            static_pointadds.push(static_pointadd);
+            app_popcount_rows.push(app_popcount);
+            app_static_rows.push(app_static);
+        }
+
+        let mean_isize = |rows: &[isize]| -> f64 {
+            rows.iter().map(|&v| v as f64).sum::<f64>() / rows.len() as f64
+        };
+        let mean_usize = |rows: &[usize]| -> f64 {
+            rows.iter().map(|&v| v as f64).sum::<f64>() / rows.len() as f64
+        };
+        let p99_isize = |rows: &mut Vec<isize>| -> isize {
+            rows.sort_unstable();
+            rows[rows.len() * 99 / 100]
+        };
+        let popcount_mean = mean_isize(&popcount_pointadds);
+        let static_mean = mean_isize(&static_pointadds);
+        let popcount_first64 = first64_popcount as f64 / 64.0;
+        let static_first64 = first64_static as f64 / 64.0;
+        let app_popcount_mean = mean_usize(&app_popcount_rows);
+        let app_static_mean = mean_usize(&app_static_rows);
+        let app_delta_mean = app_static_mean - app_popcount_mean;
+        let popcount_p99 = p99_isize(&mut popcount_pointadds);
+        let static_p99 = p99_isize(&mut static_pointadds);
+        println!("METRIC halfgcd_fixed_depth64_popcount_app_pointadd_mean={popcount_mean:.3}");
+        println!("METRIC halfgcd_fixed_depth64_popcount_app_pointadd_first64={popcount_first64:.3}");
+        println!("METRIC halfgcd_fixed_depth64_popcount_app_pointadd_p99={popcount_p99}");
+        println!("METRIC halfgcd_fixed_depth64_static_app_pointadd_mean={static_mean:.3}");
+        println!("METRIC halfgcd_fixed_depth64_static_app_pointadd_first64={static_first64:.3}");
+        println!("METRIC halfgcd_fixed_depth64_static_app_pointadd_p99={static_p99}");
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_app_gap_to_2700k={:.3}",
+            static_mean - TARGET
+        );
+        println!("METRIC halfgcd_fixed_depth64_app_popcount_mean={app_popcount_mean:.3}");
+        println!("METRIC halfgcd_fixed_depth64_app_static_floor_mean={app_static_mean:.3}");
+        println!("METRIC halfgcd_fixed_depth64_app_static_over_popcount_mean={app_delta_mean:.3}");
+        eprintln!(
+            "half-GCD fixed-depth64 coefficient application control model: popcount_mean={popcount_mean:.1}, static_mean={static_mean:.1}, first64_static={static_first64:.1}, static_p99={static_p99}, app_popcount_mean={app_popcount_mean:.1}, app_static_mean={app_static_mean:.1}, app_delta={app_delta_mean:.1}"
+        );
+        assert!(
+            popcount_mean > TARGET && popcount_first64 > TARGET,
+            "reference popcount/alignment row no longer matches the current near-miss"
+        );
+        assert!(
+            static_mean - popcount_mean > 40_870.0 && static_first64 > TARGET,
+            "static coefficient controls no longer kill the fixed-depth64 near-miss"
+        );
+        assert!(
+            app_delta_mean > 30_000.0,
+            "coefficient application popcount optimism is no longer material"
         );
     }
 

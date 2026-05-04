@@ -162,8 +162,8 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
         Candidate {
             name: "halfgcd_second_column_fixed_depth64_tail_stream",
             scratch_bits: 515,
-            charged_toffoli: Some(2_740_870),
-            blocker: "fixed-depth64 sampled 5-bit prefix/decoder alignment plus full tail averages 2500182 and two global fallback width passes still fit at 2660641, but adversarial small inputs need 8-bit prefix/decoder alignment; generic 8-bit alignment is the charged 2740870 row",
+            charged_toffoli: Some(2_934_322),
+            blocker: "fixed-depth64 popcount-priced coefficient application averages 2740052, but coefficient bits are quantum data; a generous static binary application floor averages 2934322, so this route needs classical coefficient controls or a static recode",
         },
         Candidate {
             name: "folded_kaliski_one_pair_plus_required_sidecar",
@@ -619,6 +619,14 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let halfgcd_second_col_fixed_depth64_dynamic_tail_static_mean = 51_671usize;
     let halfgcd_second_col_fixed_depth64_dynamic_tail_mean = 4_628usize;
     let halfgcd_second_col_fixed_depth64_dynamic_high_layer_hits_p99 = 0usize;
+    let halfgcd_second_col_fixed_depth64_static_app_mean = 2_934_322usize;
+    let halfgcd_second_col_fixed_depth64_static_app_p99 = 3_010_096usize;
+    let halfgcd_second_col_fixed_depth64_static_app_gap =
+        halfgcd_second_col_fixed_depth64_static_app_mean as isize
+            - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
+    let halfgcd_second_col_fixed_depth64_app_popcount_mean = 181_518usize;
+    let halfgcd_second_col_fixed_depth64_app_static_floor_mean = 278_653usize;
+    let halfgcd_second_col_fixed_depth64_app_static_over_popcount_mean = 97_135usize;
     let halfgcd_second_col_alignment_mbu_degree_n14 = 14usize;
     let halfgcd_second_col_alignment_mbu_density_n14 = 8_142usize;
     let halfgcd_second_col_alignment_mbu_max_alignment_n14 = 13usize;
@@ -1011,6 +1019,12 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_dynamic_tail_static_mean={halfgcd_second_col_fixed_depth64_dynamic_tail_static_mean}");
     println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_dynamic_tail_mean={halfgcd_second_col_fixed_depth64_dynamic_tail_mean}");
     println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_dynamic_high_layer_hits_p99={halfgcd_second_col_fixed_depth64_dynamic_high_layer_hits_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_static_app_mean={halfgcd_second_col_fixed_depth64_static_app_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_static_app_p99={halfgcd_second_col_fixed_depth64_static_app_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_static_app_gap_to_2700k={halfgcd_second_col_fixed_depth64_static_app_gap}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_app_popcount_mean={halfgcd_second_col_fixed_depth64_app_popcount_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_app_static_floor_mean={halfgcd_second_col_fixed_depth64_app_static_floor_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_app_static_over_popcount_mean={halfgcd_second_col_fixed_depth64_app_static_over_popcount_mean}");
     println!("METRIC scratch600_halfgcd_second_col_alignment_mbu_degree_n14={halfgcd_second_col_alignment_mbu_degree_n14}");
     println!("METRIC scratch600_halfgcd_second_col_alignment_mbu_density_n14={halfgcd_second_col_alignment_mbu_density_n14}");
     println!("METRIC scratch600_halfgcd_second_col_alignment_mbu_max_alignment_n14={halfgcd_second_col_alignment_mbu_max_alignment_n14}");
@@ -1367,6 +1381,16 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && halfgcd_second_col_fixed_depth64_exact_prefix_bounded_tail_logbarrel_plus_two_width_p99
                 > GOOGLE_LOW_QUBIT_TOFFOLI,
         "half-GCD fixed-depth64 tail-alignment frontier changed; revisit tail parser priority"
+    );
+    assert!(
+        halfgcd_second_col_fixed_depth64_static_app_mean > GOOGLE_LOW_QUBIT_TOFFOLI
+            && halfgcd_second_col_fixed_depth64_static_app_p99 > GOOGLE_LOW_QUBIT_TOFFOLI
+            && halfgcd_second_col_fixed_depth64_static_app_gap > 200_000
+            && halfgcd_second_col_fixed_depth64_app_static_floor_mean
+                > halfgcd_second_col_fixed_depth64_app_popcount_mean
+            && halfgcd_second_col_fixed_depth64_app_static_over_popcount_mean
+                > halfgcd_second_col_fixed_depth64_exact_tail_logbarrel_gap as usize,
+        "half-GCD coefficient application control accounting changed; revisit whether popcount application can be promoted"
     );
     assert!(
         halfgcd_second_col_fixed_depth64_dynamic_barrel_static_mean
