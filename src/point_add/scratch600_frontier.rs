@@ -130,6 +130,12 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             blocker: "optimistic Solinas history-carry scale model is gate-shaped, but the actual k22 split multihalve chunk peaks at 822q; even granting one reusable 256-bit lane remains 159 scratch bits over Google, and naive overlap is 1078 scratch",
         },
         Candidate {
+            name: "plusminus_scaled_affine_absorbed_scale",
+            scratch_bits: 517,
+            charged_toffoli: None,
+            blocker: "scaled affine formulas are exact, but the second raw cleanup DIV over 2^(2S1)*(Qx-Rx) returns lambda*2^(S1+S2), not lambda*2^S1; on 200 secp point-add samples S2 was nonzero every time and had 50 distinct values, so a variable scale cleanup is still required",
+        },
+        Candidate {
             name: "plusminus_unary_google663_existing_controlled_parser",
             scratch_bits: 650,
             charged_toffoli: Some(3_509_916),
@@ -1537,6 +1543,16 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let plusminus_solinas_scale_chunk_one_lane_reuse_over_google =
         plusminus_solinas_scale_chunk_one_lane_reuse_scratch as isize
             - GOOGLE_LOW_QUBIT_SCRATCH as isize;
+    let plusminus_affine_absorb_samples = 200usize;
+    let plusminus_affine_absorb_first_scale_min = 335usize;
+    let plusminus_affine_absorb_first_scale_p99 = 381usize;
+    let plusminus_affine_absorb_first_scale_max = 386usize;
+    let plusminus_affine_absorb_second_scale_min = 331usize;
+    let plusminus_affine_absorb_second_scale_p99 = 386usize;
+    let plusminus_affine_absorb_second_scale_max = 393usize;
+    let plusminus_affine_absorb_second_scale_distinct = 50usize;
+    let plusminus_affine_absorb_cleanup_mismatches = 200usize;
+    let plusminus_affine_absorb_zero_second_scales = 0usize;
     let plusminus_active_quantum_forward_ccx = 138_771usize;
     let plusminus_active_quantum_two_div_step_only = 56_063_484usize;
     let plusminus_active_quantum_gap_to_2700k =
@@ -3047,6 +3063,16 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_plusminus_solinas_scale_chunk_naive_over_google_bits={plusminus_solinas_scale_chunk_naive_over_google}");
     println!("METRIC scratch600_plusminus_solinas_scale_chunk_one_lane_reuse_scratch={plusminus_solinas_scale_chunk_one_lane_reuse_scratch}");
     println!("METRIC scratch600_plusminus_solinas_scale_chunk_one_lane_reuse_over_google_bits={plusminus_solinas_scale_chunk_one_lane_reuse_over_google}");
+    println!("METRIC scratch600_plusminus_affine_absorb_samples={plusminus_affine_absorb_samples}");
+    println!("METRIC scratch600_plusminus_affine_absorb_first_scale_min={plusminus_affine_absorb_first_scale_min}");
+    println!("METRIC scratch600_plusminus_affine_absorb_first_scale_p99={plusminus_affine_absorb_first_scale_p99}");
+    println!("METRIC scratch600_plusminus_affine_absorb_first_scale_max={plusminus_affine_absorb_first_scale_max}");
+    println!("METRIC scratch600_plusminus_affine_absorb_second_scale_min={plusminus_affine_absorb_second_scale_min}");
+    println!("METRIC scratch600_plusminus_affine_absorb_second_scale_p99={plusminus_affine_absorb_second_scale_p99}");
+    println!("METRIC scratch600_plusminus_affine_absorb_second_scale_max={plusminus_affine_absorb_second_scale_max}");
+    println!("METRIC scratch600_plusminus_affine_absorb_second_scale_distinct={plusminus_affine_absorb_second_scale_distinct}");
+    println!("METRIC scratch600_plusminus_affine_absorb_cleanup_mismatches={plusminus_affine_absorb_cleanup_mismatches}");
+    println!("METRIC scratch600_plusminus_affine_absorb_zero_second_scales={plusminus_affine_absorb_zero_second_scales}");
     println!("METRIC scratch600_plusminus_active_quantum_forward_ccx={plusminus_active_quantum_forward_ccx}");
     println!("METRIC scratch600_plusminus_active_quantum_two_div_step_only={plusminus_active_quantum_two_div_step_only}");
     println!("METRIC scratch600_plusminus_active_quantum_gap_to_2700k={plusminus_active_quantum_gap_to_2700k}");
@@ -3467,6 +3493,13 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && plusminus_solinas_scale_chunk_one_lane_reuse_over_google > 0
             && plusminus_solinas_scale_chunk_naive_over_google > 400,
         "plus-minus Solinas scale chunk now fits packed scratch; revisit scale-history route"
+    );
+    assert!(
+        plusminus_affine_absorb_cleanup_mismatches == plusminus_affine_absorb_samples
+            && plusminus_affine_absorb_zero_second_scales == 0
+            && plusminus_affine_absorb_second_scale_min > 0
+            && plusminus_affine_absorb_second_scale_distinct >= plusminus_affine_absorb_samples / 4,
+        "plus-minus scaled affine route may now absorb cleanup scale; revisit production wiring"
     );
     assert!(
         direct_signnorm_rank_over_google > 0 && direct_signnorm_ambiguous_rank_over_google > 0,

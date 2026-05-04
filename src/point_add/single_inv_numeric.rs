@@ -13703,6 +13703,126 @@ mod tests {
     }
 
     #[test]
+    fn plusminus_scaled_affine_absorption_still_requires_second_scale_cleanup() {
+        // Try the structural escape left by the post-hoc/Solinas scale blockers:
+        // do not correct the first plus-minus scale.  Instead, carry the point
+        // formulas in a scaled affine frame:
+        //
+        //   L  = 2^S1 * lambda
+        //   X' = 2^(2S1) * Rx
+        //   Y' = 2^(3S1) * Ry
+        //
+        // This part is algebraically exact.  The cleanup denominator available
+        // in the scaled frame is B' = 2^(2S1) * (Qx - Rx).  A second raw
+        // plus-minus inverse of B' returns 2^S2 / B', so the cleanup product is
+        // 2^S2 * L, not L.  Unless S2 is public/zero, the scale did not cancel;
+        // it merely moved to the second DIV cleanup.
+        let p = SECP256K1_P;
+        let mut samples = 0usize;
+        let mut cleanup_mismatches = 0usize;
+        let mut zero_second_scales = 0usize;
+        let mut first_scales = Vec::new();
+        let mut second_scales = Vec::new();
+        each_trial(|px, py, qx, qy, rx, ry| {
+            let dx = sub_mod(px, qx, p);
+            let dy = sub_mod(py, qy, p);
+            let (_w1, s1, _steps1, _twos1, c1_smag) =
+                plusminus_scaled_coeff_width_for_divisor(dx, p);
+            let c1 = smag_mod_u256_for_plusminus_test(c1_smag, p);
+            let lambda = dy.mul_mod(dx.inv_mod(p).expect("dx nonzero"), p);
+            let l_scaled = dy.mul_mod(c1, p);
+            let s1_factor = pow2_mod(s1 as i64, p);
+            assert_eq!(
+                l_scaled,
+                lambda.mul_mod(s1_factor, p),
+                "first scaled inverse convention drifted"
+            );
+
+            let x_scale = pow2_mod((2 * s1) as i64, p);
+            let y_scale = pow2_mod((3 * s1) as i64, p);
+            let rx_scaled = sub_mod(
+                l_scaled.mul_mod(l_scaled, p),
+                x_scale.mul_mod(px.add_mod(qx, p), p),
+                p,
+            );
+            assert_eq!(
+                rx_scaled.mul_mod(pow2_mod(-((2 * s1) as i64), p), p),
+                rx,
+                "scaled Rx formula stopped matching affine point add"
+            );
+
+            let scaled_cleanup_den = sub_mod(x_scale.mul_mod(qx, p), rx_scaled, p);
+            assert_eq!(
+                scaled_cleanup_den,
+                x_scale.mul_mod(sub_mod(qx, rx, p), p),
+                "scaled cleanup denominator relation drifted"
+            );
+            let y_plus_scaled = l_scaled.mul_mod(scaled_cleanup_den, p);
+            let ry_scaled = sub_mod(y_plus_scaled, y_scale.mul_mod(qy, p), p);
+            assert_eq!(
+                ry_scaled.mul_mod(pow2_mod(-((3 * s1) as i64), p), p),
+                ry,
+                "scaled Ry formula stopped matching affine point add"
+            );
+
+            let (_w2, s2, _steps2, _twos2, c2_smag) =
+                plusminus_scaled_coeff_width_for_divisor(scaled_cleanup_den, p);
+            let c2 = smag_mod_u256_for_plusminus_test(c2_smag, p);
+            let raw_cleanup_lambda = y_plus_scaled.mul_mod(c2, p);
+            let expected_extra_scaled = l_scaled.mul_mod(pow2_mod(s2 as i64, p), p);
+            assert_eq!(
+                raw_cleanup_lambda, expected_extra_scaled,
+                "second raw scaled inverse should leave exactly one extra 2^S2 factor"
+            );
+            if raw_cleanup_lambda != l_scaled {
+                cleanup_mismatches += 1;
+            }
+            if s2 == 0 {
+                zero_second_scales += 1;
+            }
+            first_scales.push(s1);
+            second_scales.push(s2);
+            samples += 1;
+        });
+        first_scales.sort_unstable();
+        second_scales.sort_unstable();
+        let p99 = samples * 99 / 100;
+        let first_min = first_scales[0];
+        let first_p99 = first_scales[p99];
+        let first_max = *first_scales.last().unwrap();
+        let second_min = second_scales[0];
+        let second_p99 = second_scales[p99];
+        let second_max = *second_scales.last().unwrap();
+        second_scales.dedup();
+        let distinct_second_scales = second_scales.len();
+        eprintln!(
+            "plus-minus scaled affine absorption: samples={samples}, first_scale={first_min}/{first_p99}/{first_max}, second_scale={second_min}/{second_p99}/{second_max}, distinct_second_scales={distinct_second_scales}, cleanup_mismatches={cleanup_mismatches}, zero_second_scales={zero_second_scales}"
+        );
+        println!("METRIC plusminus_affine_absorb_samples={samples}");
+        println!("METRIC plusminus_affine_absorb_first_scale_min={first_min}");
+        println!("METRIC plusminus_affine_absorb_first_scale_p99={first_p99}");
+        println!("METRIC plusminus_affine_absorb_first_scale_max={first_max}");
+        println!("METRIC plusminus_affine_absorb_second_scale_min={second_min}");
+        println!("METRIC plusminus_affine_absorb_second_scale_p99={second_p99}");
+        println!("METRIC plusminus_affine_absorb_second_scale_max={second_max}");
+        println!("METRIC plusminus_affine_absorb_second_scale_distinct={distinct_second_scales}");
+        println!("METRIC plusminus_affine_absorb_cleanup_mismatches={cleanup_mismatches}");
+        println!("METRIC plusminus_affine_absorb_zero_second_scales={zero_second_scales}");
+        assert_eq!(
+            cleanup_mismatches, samples,
+            "raw second DIV unexpectedly cleaned the first scaled lambda without scale correction"
+        );
+        assert_eq!(
+            zero_second_scales, 0,
+            "second cleanup scale became zero on sampled point-add denominators"
+        );
+        assert!(
+            distinct_second_scales >= samples / 4,
+            "second cleanup scale looks public enough to revisit affine absorption"
+        );
+    }
+
+    #[test]
     fn plusminus_scaled_integer_controlled_step_cost_is_sota_shaped_if_overflow_clean() {
         // Replace the modular controlled halve/double tax (1280 CCX) with the
         // operation suggested by the scaled-integer algebra: controlled signed
