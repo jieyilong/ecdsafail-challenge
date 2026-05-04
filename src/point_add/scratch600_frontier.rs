@@ -175,7 +175,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "direct_centered_restoring_final_low_branch_selective_prefix_flatten_floor",
             scratch_bits: 663,
             charged_toffoli: None,
-            blocker: "selective length-flattening spends the 381 prefix-bit p99 budget exactly, fits 663 scratch, and projects 2657019 with 42981 margin; support-2..18 generated balanced block2 selected-add/sub family is phase-clean across 289 pairs with max 402 CCX, but promotion still needs production schedule wiring and full reverse integration",
+            blocker: "selective length-flattening spends the 381 prefix-bit p99 budget exactly, fits 663 scratch, and projects 2657019 with 42981 margin; support-2..18 generated balanced block2 selected-add/sub roundtrip family is phase-clean across 289 pairs with max 804 CCX, but promotion still needs production schedule wiring",
         },
         Candidate {
             name: "direct_centered_restoring_final_mixed4to8_joint_binary_floor",
@@ -840,8 +840,8 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let direct_restoring_final_prefix_block2_balanced_family_toy_max_decode_forward_ccx = 74usize;
     let direct_restoring_final_prefix_block2_balanced_family_toy_max_select_shift_ccx = 216usize;
     let direct_restoring_final_prefix_block2_balanced_family_toy_max_addsub_ccx = 38usize;
-    let direct_restoring_final_prefix_block2_balanced_family_toy_max_total_ccx = 402usize;
-    let direct_restoring_final_prefix_block2_balanced_family_toy_max_peak_q = 154usize;
+    let direct_restoring_final_prefix_block2_balanced_family_toy_max_total_ccx = 804usize;
+    let direct_restoring_final_prefix_block2_balanced_family_toy_max_peak_q = 186usize;
     let direct_restoring_final_prefix_block2_balanced_family_toy_max_total_over_node_roundtrip =
         7.666_667f64;
     let direct_restoring_final_prefix_block2_balanced_family_toy_max_ratio_support0 = 3usize;
@@ -2902,8 +2902,8 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && direct_restoring_final_prefix_block2_balanced_family_toy_max_decode_forward_ccx == 74
             && direct_restoring_final_prefix_block2_balanced_family_toy_max_select_shift_ccx == 216
             && direct_restoring_final_prefix_block2_balanced_family_toy_max_addsub_ccx == 38
-            && direct_restoring_final_prefix_block2_balanced_family_toy_max_total_ccx == 402
-            && direct_restoring_final_prefix_block2_balanced_family_toy_max_peak_q <= 160
+            && direct_restoring_final_prefix_block2_balanced_family_toy_max_total_ccx == 804
+            && direct_restoring_final_prefix_block2_balanced_family_toy_max_peak_q <= 190
             && direct_restoring_final_prefix_block2_balanced_family_toy_max_total_over_node_roundtrip
                 < 8.0
             && direct_restoring_final_prefix_block2_balanced_family_toy_max_total_scaled_gap

@@ -26409,6 +26409,44 @@ mod tests {
             let select2_end = b.ops.len();
 
             emit_inverse_of_existing_ops_for_centered_test(&mut b, start, decode_end);
+            let reverse_start = b.ops.len();
+
+            for bit in 0..max_len0 {
+                b.cx(stream[bit], window1[bit]);
+            }
+            let prefix1_reverse =
+                emit_family_prefix_tree(&mut b, &window1, support0, &leaf1);
+            if len_classes0.len() > 1 {
+                for (&len, &ctrl) in len_classes0.iter().zip(len_ctrls.iter()) {
+                    for (symbol, code) in codes0.iter().enumerate() {
+                        if code.len == len {
+                            b.cx(leaf1[symbol], ctrl);
+                        }
+                    }
+                    for bit in 0..max_len1 {
+                        b.ccx(ctrl, stream[len + bit], window2[bit]);
+                    }
+                }
+            } else {
+                let len = len_classes0[0];
+                for bit in 0..max_len1 {
+                    b.cx(stream[len + bit], window2[bit]);
+                }
+            }
+            let prefix2_reverse =
+                emit_family_prefix_tree(&mut b, &window2, support1, &leaf2);
+            let reverse_decode_end = b.ops.len();
+
+            b.x(sign);
+            emit_selected_shift_materialize_for_family(&mut b, &leaf1, &coeff, &shifted);
+            emit_fused_sign_controlled_addsub_digit_for_centered_test(&mut b, &acc, &shifted, sign);
+            emit_selected_shift_materialize_for_family(&mut b, &leaf1, &coeff, &shifted);
+            emit_selected_shift_materialize_for_family(&mut b, &leaf2, &coeff, &shifted);
+            emit_fused_sign_controlled_addsub_digit_for_centered_test(&mut b, &acc, &shifted, sign);
+            emit_selected_shift_materialize_for_family(&mut b, &leaf2, &coeff, &shifted);
+            b.x(sign);
+
+            emit_inverse_of_existing_ops_for_centered_test(&mut b, reverse_start, reverse_decode_end);
 
             let tree_ccx = local_count_ccx_for_plusminus_cost(&b.ops[tree1_start..tree1_end])
                 + local_count_ccx_for_plusminus_cost(&b.ops[tree2_start..decode_end]);
@@ -26422,7 +26460,7 @@ mod tests {
             let addsub_ccx = local_count_ccx_for_plusminus_cost(&b.ops[add1_start..add1_end])
                 + local_count_ccx_for_plusminus_cost(&b.ops[add2_start..add2_end]);
             let total_ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
-            let node_roundtrip_floor = 2 * (support0 + support1 - 2);
+            let node_roundtrip_floor = 4 * (support0 + support1 - 2);
             let total_over_node_roundtrip =
                 total_ccx as f64 / node_roundtrip_floor as f64;
 
@@ -26435,6 +26473,8 @@ mod tests {
             ];
             dirty_slices.push(prefix1);
             dirty_slices.push(prefix2);
+            dirty_slices.push(prefix1_reverse);
+            dirty_slices.push(prefix2_reverse);
             let dirty_bits = len_ctrls;
 
             FamilyCircuit {
@@ -26495,7 +26535,7 @@ mod tests {
                 let expected_decode = expected_tree + expected_read;
                 let expected_select = 2 * COEFF_W * (support0 + support1);
                 let expected_addsub = 2 * acc_w.saturating_sub(1);
-                let expected_total = 2 * expected_decode + expected_select + expected_addsub;
+                let expected_total = 2 * (2 * expected_decode + expected_select + expected_addsub);
                 assert_eq!(
                     circuit.metrics.tree_ccx, expected_tree,
                     "tree cost drifted for support pair ({support0},{support1})"
@@ -26574,7 +26614,7 @@ mod tests {
                                     ^ ((support0 as u64) << 17)
                                     ^ ((support1 as u64) << 23))
                                     & acc_mask) as u64;
-                                let expected_acc = apply_symbol_addsub_for_family(
+                                let _expected_forward_acc = apply_symbol_addsub_for_family(
                                     symbol1,
                                     coeff_value,
                                     apply_symbol_addsub_for_family(
@@ -26623,14 +26663,15 @@ mod tests {
                                     .any(|&qubit| (sim.qubit(qubit) & 1) != 0);
                                 dirty_restore_cases += (stream_out != stream_value
                                     || coeff_out != coeff_value
+                                    || acc_out != acc_value
                                     || (sim.qubit(circuit.sign) as u64) != sign_value)
                                     as usize;
                                 dirty_history_cases += (dirty_slices || dirty_bits) as usize;
                                 dirty_phase_cases += ((sim.global_phase() & 1) != 0) as usize;
                                 simulated_cases += 1;
                                 assert_eq!(
-                                    acc_out, expected_acc,
-                                    "family selected add/sub mismatch support=({support0},{support1}) symbols=({symbol0},{symbol1}) stream={stream_value}"
+                                    acc_out, acc_value,
+                                    "family selected add/sub roundtrip mismatch support=({support0},{support1}) symbols=({symbol0},{symbol1}) stream={stream_value}"
                                 );
                             }
                         }
@@ -26663,7 +26704,7 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_prefix_block2_balanced_family_toy_dirty_history_cases={dirty_history_cases}");
         println!("METRIC centered_direct_restoring_final_prefix_block2_balanced_family_toy_dirty_phase_cases={dirty_phase_cases}");
         eprintln!(
-            "Direct-centered balanced prefix support-family toy: circuits={checked_circuits}, simulated={simulated_circuits}/{simulated_cases}, max_total={max_total_ccx}, max_peak={max_peak_q}, max_ratio={max_total_over_node_roundtrip:.3}x at ({},{}), scaled_gap={max_total_scaled_gap:.1}, dirty_restore={dirty_restore_cases}, dirty_history={dirty_history_cases}, dirty_phase={dirty_phase_cases}",
+            "Direct-centered balanced prefix support-family roundtrip toy: circuits={checked_circuits}, simulated={simulated_circuits}/{simulated_cases}, max_total={max_total_ccx}, max_peak={max_peak_q}, max_ratio={max_total_over_node_roundtrip:.3}x at ({},{}), scaled_gap={max_total_scaled_gap:.1}, dirty_restore={dirty_restore_cases}, dirty_history={dirty_history_cases}, dirty_phase={dirty_phase_cases}",
             max_ratio_pair.0,
             max_ratio_pair.1
         );
@@ -26674,7 +26715,7 @@ mod tests {
         assert_eq!(max_decode_forward_ccx, 74, "support-family decode cost drifted");
         assert_eq!(max_select_shift_ccx, 216, "support-family selected-shift cost drifted");
         assert_eq!(max_addsub_ccx, 38, "support-family add/sub cost drifted");
-        assert_eq!(max_total_ccx, 402, "support-family total cost drifted");
+        assert_eq!(max_total_ccx, 804, "support-family total cost drifted");
         assert!(
             max_total_scaled_gap < -25_000.0 && max_total_over_node_roundtrip < 8.0,
             "support-family parser no longer preserves the selective-prefix margin"
