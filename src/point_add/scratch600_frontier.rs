@@ -163,7 +163,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "direct_centered_restoring_final_low_branch_align_only_prefix_tree_floor",
             scratch_bits: 580,
             charged_toffoli: None,
-            blocker: "branch-as-final-digit removes branch symbols from the parser stream; low-alignment block2 fits 580 scratch, binary lookup projects 2626705, prefix-tree node floor projects 2593870, and a phase-clean block2 selected add/sub roundtrip toy scales parser-to-arithmetic cleanup to gap -25628, but production full-step range integration remains uncharged",
+            blocker: "branch-as-final-digit removes branch symbols from the parser stream; low-alignment block2 fits 580 scratch and prefix-tree node floor projects 2593870, but a span-24 noncontiguous selected add/sub roundtrip toy misses by 1685 unless production uses span-tapered accumulator widths",
         },
         Candidate {
             name: "direct_centered_restoring_final_mixed4to8_joint_binary_floor",
@@ -695,6 +695,29 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
         0usize;
     let direct_restoring_final_prefix_block2_selected_addsub_roundtrip_toy_dirty_phase_cases =
         0usize;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_decode_ccx = 28usize;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_decode_ccx = 28usize;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_select_shift_ccx =
+        60usize;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_select_shift_ccx =
+        60usize;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_addsub_ccx = 50usize;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_addsub_ccx = 50usize;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_ccx = 332usize;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_peak_q = 113usize;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_parser_over_node_roundtrip =
+        3.500_000f64;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_arithmetic_over_node_roundtrip =
+        6.875_000f64;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_over_node_roundtrip =
+        10.375_000f64;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_roundtrip_ratio_budget =
+        10.228_508f64;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_scaled_gap =
+        1_684.695f64;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_restore_cases = 0usize;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_history_cases = 0usize;
+    let direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_phase_cases = 0usize;
     let direct_restoring_final_coeff_decoder_alignment_degree_n14 = 13usize;
     let direct_restoring_final_coeff_decoder_alignment_density_n14 = 8_278usize;
     let direct_restoring_final_coeff_decoder_alignment_max_n14 = 13usize;
@@ -1643,6 +1666,22 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_direct_restoring_final_prefix_block2_selected_addsub_roundtrip_toy_dirty_restore_cases={direct_restoring_final_prefix_block2_selected_addsub_roundtrip_toy_dirty_restore_cases}");
     println!("METRIC scratch600_direct_restoring_final_prefix_block2_selected_addsub_roundtrip_toy_dirty_history_cases={direct_restoring_final_prefix_block2_selected_addsub_roundtrip_toy_dirty_history_cases}");
     println!("METRIC scratch600_direct_restoring_final_prefix_block2_selected_addsub_roundtrip_toy_dirty_phase_cases={direct_restoring_final_prefix_block2_selected_addsub_roundtrip_toy_dirty_phase_cases}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_decode_ccx={direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_decode_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_decode_ccx={direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_decode_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_select_shift_ccx={direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_select_shift_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_select_shift_ccx={direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_select_shift_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_addsub_ccx={direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_addsub_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_addsub_ccx={direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_addsub_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_ccx={direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_peak_q={direct_restoring_final_prefix_block2_span24_roundtrip_toy_peak_q}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_parser_over_node_roundtrip={direct_restoring_final_prefix_block2_span24_roundtrip_toy_parser_over_node_roundtrip:.6}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_arithmetic_over_node_roundtrip={direct_restoring_final_prefix_block2_span24_roundtrip_toy_arithmetic_over_node_roundtrip:.6}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_over_node_roundtrip={direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_over_node_roundtrip:.6}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_roundtrip_ratio_budget={direct_restoring_final_prefix_block2_span24_roundtrip_toy_roundtrip_ratio_budget:.6}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_scaled_gap_to_2700k={direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_scaled_gap:.3}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_restore_cases={direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_restore_cases}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_history_cases={direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_history_cases}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_phase_cases={direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_phase_cases}");
     println!("METRIC scratch600_direct_restoring_final_coeff_decoder_alignment_degree_n14={direct_restoring_final_coeff_decoder_alignment_degree_n14}");
     println!("METRIC scratch600_direct_restoring_final_coeff_decoder_alignment_density_n14={direct_restoring_final_coeff_decoder_alignment_density_n14}");
     println!("METRIC scratch600_direct_restoring_final_coeff_decoder_alignment_max_n14={direct_restoring_final_coeff_decoder_alignment_max_n14}");
@@ -2509,6 +2548,27 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && direct_restoring_final_prefix_block2_selected_addsub_roundtrip_toy_dirty_history_cases == 0
             && direct_restoring_final_prefix_block2_selected_addsub_roundtrip_toy_dirty_phase_cases == 0,
         "prefix block2 selected add/sub roundtrip toy changed; revisit parser-to-arithmetic cleanup"
+    );
+    assert!(
+        direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_decode_ccx == 28
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_decode_ccx == 28
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_select_shift_ccx
+                == 60
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_select_shift_ccx
+                == 60
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_forward_addsub_ccx == 50
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_reverse_addsub_ccx == 50
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_ccx == 332
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_peak_q == 113
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_parser_over_node_roundtrip
+                < direct_restoring_final_prefix_block2_span24_roundtrip_toy_roundtrip_ratio_budget
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_over_node_roundtrip
+                > direct_restoring_final_prefix_block2_span24_roundtrip_toy_roundtrip_ratio_budget
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_total_scaled_gap > 0.0
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_restore_cases == 0
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_history_cases == 0
+            && direct_restoring_final_prefix_block2_span24_roundtrip_toy_dirty_phase_cases == 0,
+        "span24 prefix selected-addsub accounting changed; revisit low-branch range integration"
     );
     assert!(
         direct_restoring_final_coeff_decoder_alignment_degree_n14 + 1 >= 14
