@@ -24516,6 +24516,308 @@ mod tests {
     }
 
     #[test]
+    fn direct_centered_restoring_final_prefix_block2_toy_cleans_reverse() {
+        // The best low-branch parser block size is two symbols.  This toy
+        // decodes two unary-prefix codewords from one packed byte, copies both
+        // symbols plus the final cursor, then reverses all tree/read internals.
+        // It checks the integration shape that matters for block2 rather than
+        // pessimizing each symbol as an independently unknown cursor.
+        use sha3::digest::{ExtendableOutput, Update};
+
+        const STREAM_W: usize = 8;
+        const MAX_CODE_W: usize = 4;
+        const SYMBOLS: usize = 5;
+        const SYMBOL_W: usize = 3;
+        const LEN_W: usize = 3;
+        const FINAL_CURSOR_W: usize = 4;
+        const BLOCK_SYMBOLS: usize = 2;
+        const PREFIX_TREE_INTERNAL_NODES: usize = 4;
+        const PREFIX_TREE_NODE_FLOOR_MEAN: f64 = 1_437.531;
+        const PREFIX_TREE_GAP_TO_2700K: f64 = -106_130.130;
+
+        fn decode_prefix_for_block2_toy(stream: u64, offset: usize) -> (usize, usize) {
+            let bit = |k: usize| -> bool { ((stream >> (offset + k)) & 1) != 0 };
+            if !bit(0) {
+                (0, 1)
+            } else if !bit(1) {
+                (1, 2)
+            } else if !bit(2) {
+                (2, 3)
+            } else if !bit(3) {
+                (3, 4)
+            } else {
+                (4, 4)
+            }
+        }
+
+        fn emit_prefix_tree_for_block2_toy(
+            b: &mut super::super::B,
+            window: &[super::super::QubitId],
+            prefix_flags: &[super::super::QubitId],
+            leaf_flags: &[super::super::QubitId],
+        ) {
+            b.x(window[0]);
+            b.cx(window[0], leaf_flags[0]);
+            b.x(window[0]);
+            b.x(window[1]);
+            b.ccx(window[0], window[1], leaf_flags[1]);
+            b.x(window[1]);
+            b.ccx(window[0], window[1], prefix_flags[0]);
+            b.x(window[2]);
+            b.ccx(prefix_flags[0], window[2], leaf_flags[2]);
+            b.x(window[2]);
+            b.ccx(prefix_flags[0], window[2], prefix_flags[1]);
+            b.x(window[3]);
+            b.ccx(prefix_flags[1], window[3], leaf_flags[3]);
+            b.x(window[3]);
+            b.ccx(prefix_flags[1], window[3], leaf_flags[4]);
+        }
+
+        fn xor_len_from_leaves_for_block2_toy(
+            b: &mut super::super::B,
+            leaf_flags: &[super::super::QubitId],
+            len_out: &[super::super::QubitId],
+        ) {
+            let len_payloads = [1u64, 2, 3, 4, 4];
+            for leaf in 0..SYMBOLS {
+                for bit in 0..LEN_W {
+                    if ((len_payloads[leaf] >> bit) & 1) != 0 {
+                        b.cx(leaf_flags[leaf], len_out[bit]);
+                    }
+                }
+            }
+        }
+
+        fn xor_symbol_from_leaves_for_block2_toy(
+            b: &mut super::super::B,
+            leaf_flags: &[super::super::QubitId],
+            symbol_out: &[super::super::QubitId],
+        ) {
+            for leaf in 0..SYMBOLS {
+                for bit in 0..SYMBOL_W {
+                    if (((leaf as u64) >> bit) & 1) != 0 {
+                        b.cx(leaf_flags[leaf], symbol_out[bit]);
+                    }
+                }
+            }
+        }
+
+        fn emit_clean_add3_to4_for_block2_toy(
+            b: &mut super::super::B,
+            a: &[super::super::QubitId],
+            c: &[super::super::QubitId],
+            out: &[super::super::QubitId],
+            carry0: super::super::QubitId,
+            carry1: super::super::QubitId,
+            carry2: super::super::QubitId,
+            xor1: super::super::QubitId,
+            xor2: super::super::QubitId,
+        ) {
+            b.cx(a[0], out[0]);
+            b.cx(c[0], out[0]);
+            b.ccx(a[0], c[0], carry0);
+            b.cx(a[1], out[1]);
+            b.cx(c[1], out[1]);
+            b.cx(carry0, out[1]);
+            b.ccx(a[1], c[1], carry1);
+            b.cx(a[1], xor1);
+            b.cx(c[1], xor1);
+            b.ccx(carry0, xor1, carry1);
+            b.cx(c[1], xor1);
+            b.cx(a[1], xor1);
+            b.cx(a[2], out[2]);
+            b.cx(c[2], out[2]);
+            b.cx(carry1, out[2]);
+            b.ccx(a[2], c[2], carry2);
+            b.cx(a[2], xor2);
+            b.cx(c[2], xor2);
+            b.ccx(carry1, xor2, carry2);
+            b.cx(c[2], xor2);
+            b.cx(a[2], xor2);
+            b.cx(carry2, out[3]);
+
+            b.cx(a[2], xor2);
+            b.cx(c[2], xor2);
+            b.ccx(carry1, xor2, carry2);
+            b.cx(c[2], xor2);
+            b.cx(a[2], xor2);
+            b.ccx(a[2], c[2], carry2);
+            b.cx(a[1], xor1);
+            b.cx(c[1], xor1);
+            b.ccx(carry0, xor1, carry1);
+            b.cx(c[1], xor1);
+            b.cx(a[1], xor1);
+            b.ccx(a[1], c[1], carry1);
+            b.ccx(a[0], c[0], carry0);
+        }
+
+        let mut b = super::super::B::new();
+        let stream = b.alloc_qubits(STREAM_W);
+        let window1 = b.alloc_qubits(MAX_CODE_W);
+        let prefix1 = b.alloc_qubits(2);
+        let leaf1 = b.alloc_qubits(SYMBOLS);
+        let len4_ctrl = b.alloc_qubit();
+        let window2 = b.alloc_qubits(MAX_CODE_W);
+        let prefix2 = b.alloc_qubits(2);
+        let leaf2 = b.alloc_qubits(SYMBOLS);
+        let len1 = b.alloc_qubits(LEN_W);
+        let len2 = b.alloc_qubits(LEN_W);
+        let symbol1_out = b.alloc_qubits(SYMBOL_W);
+        let symbol2_out = b.alloc_qubits(SYMBOL_W);
+        let final_cursor = b.alloc_qubits(FINAL_CURSOR_W);
+        let carry0 = b.alloc_qubit();
+        let carry1 = b.alloc_qubit();
+        let carry2 = b.alloc_qubit();
+        let xor1 = b.alloc_qubit();
+        let xor2 = b.alloc_qubit();
+
+        let start = b.ops.len();
+        for bit in 0..MAX_CODE_W {
+            b.cx(stream[bit], window1[bit]);
+        }
+        let tree1_start = b.ops.len();
+        emit_prefix_tree_for_block2_toy(&mut b, &window1, &prefix1, &leaf1);
+        let tree1_end = b.ops.len();
+        b.cx(leaf1[3], len4_ctrl);
+        b.cx(leaf1[4], len4_ctrl);
+        let read2_start = b.ops.len();
+        let read_ctrls = [leaf1[0], leaf1[1], leaf1[2], len4_ctrl];
+        for (pos, &ctrl) in (1usize..=4usize).zip(read_ctrls.iter()) {
+            for bit in 0..MAX_CODE_W {
+                b.ccx(ctrl, stream[pos + bit], window2[bit]);
+            }
+        }
+        let read2_end = b.ops.len();
+        let tree2_start = b.ops.len();
+        emit_prefix_tree_for_block2_toy(&mut b, &window2, &prefix2, &leaf2);
+        let decode_end = b.ops.len();
+
+        xor_symbol_from_leaves_for_block2_toy(&mut b, &leaf1, &symbol1_out);
+        xor_symbol_from_leaves_for_block2_toy(&mut b, &leaf2, &symbol2_out);
+        xor_len_from_leaves_for_block2_toy(&mut b, &leaf1, &len1);
+        xor_len_from_leaves_for_block2_toy(&mut b, &leaf2, &len2);
+        let cursor_add_start = b.ops.len();
+        emit_clean_add3_to4_for_block2_toy(
+            &mut b,
+            &len1,
+            &len2,
+            &final_cursor,
+            carry0,
+            carry1,
+            carry2,
+            xor1,
+            xor2,
+        );
+        let cursor_add_end = b.ops.len();
+        xor_len_from_leaves_for_block2_toy(&mut b, &leaf2, &len2);
+        xor_len_from_leaves_for_block2_toy(&mut b, &leaf1, &len1);
+        emit_inverse_of_existing_ops_for_centered_test(&mut b, start, decode_end);
+
+        let tree_ccx = local_count_ccx_for_plusminus_cost(&b.ops[tree1_start..tree1_end])
+            + local_count_ccx_for_plusminus_cost(&b.ops[tree2_start..decode_end]);
+        let read2_ccx = local_count_ccx_for_plusminus_cost(&b.ops[read2_start..read2_end]);
+        let cursor_add_ccx =
+            local_count_ccx_for_plusminus_cost(&b.ops[cursor_add_start..cursor_add_end]);
+        let decode_forward_ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..decode_end]);
+        let total_ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+        let peak = b.peak_qubits;
+        let node_roundtrip_floor =
+            2 * PREFIX_TREE_INTERNAL_NODES * BLOCK_SYMBOLS;
+        let block2_over_node_roundtrip = total_ccx as f64 / node_roundtrip_floor as f64;
+        let ratio_budget = 1.0
+            + (-PREFIX_TREE_GAP_TO_2700K) / (8.0 * PREFIX_TREE_NODE_FLOOR_MEAN);
+        let block2_scaled_gap = PREFIX_TREE_GAP_TO_2700K
+            + 8.0 * PREFIX_TREE_NODE_FLOOR_MEAN * (block2_over_node_roundtrip - 1.0);
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let mut dirty_restore_cases = 0usize;
+        let mut dirty_history_cases = 0usize;
+        let mut dirty_phase_cases = 0usize;
+        for stream_value in 0u64..(1u64 << STREAM_W) {
+            let (expected_symbol1, len1_value) = decode_prefix_for_block2_toy(stream_value, 0);
+            let (expected_symbol2, len2_value) =
+                decode_prefix_for_block2_toy(stream_value, len1_value);
+            let mut hasher = sha3::Shake128::default();
+            hasher.update(b"direct-centered-restoring-prefix-block2-toy-v1");
+            let mut xof = hasher.finalize_xof();
+            let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+            set_slice_u512_pm(&mut sim, &stream, U512::from(stream_value));
+            sim.apply(&ops);
+
+            let stream_out = get_slice_u512_pm(&sim, &stream).as_limbs()[0]
+                & ((1u64 << STREAM_W) - 1);
+            let symbol1 = get_slice_u512_pm(&sim, &symbol1_out).as_limbs()[0]
+                & ((1u64 << SYMBOL_W) - 1);
+            let symbol2 = get_slice_u512_pm(&sim, &symbol2_out).as_limbs()[0]
+                & ((1u64 << SYMBOL_W) - 1);
+            let cursor = get_slice_u512_pm(&sim, &final_cursor).as_limbs()[0]
+                & ((1u64 << FINAL_CURSOR_W) - 1);
+            let dirty_history = get_slice_u512_pm(&sim, &window1).as_limbs()[0] != 0
+                || get_slice_u512_pm(&sim, &prefix1).as_limbs()[0] != 0
+                || get_slice_u512_pm(&sim, &leaf1).as_limbs()[0] != 0
+                || (sim.qubit(len4_ctrl) & 1) != 0
+                || get_slice_u512_pm(&sim, &window2).as_limbs()[0] != 0
+                || get_slice_u512_pm(&sim, &prefix2).as_limbs()[0] != 0
+                || get_slice_u512_pm(&sim, &leaf2).as_limbs()[0] != 0
+                || get_slice_u512_pm(&sim, &len1).as_limbs()[0] != 0
+                || get_slice_u512_pm(&sim, &len2).as_limbs()[0] != 0
+                || (sim.qubit(carry0) & 1) != 0
+                || (sim.qubit(carry1) & 1) != 0
+                || (sim.qubit(carry2) & 1) != 0
+                || (sim.qubit(xor1) & 1) != 0
+                || (sim.qubit(xor2) & 1) != 0;
+            dirty_restore_cases += (stream_out != stream_value) as usize;
+            dirty_history_cases += dirty_history as usize;
+            dirty_phase_cases += ((sim.global_phase() & 1) != 0) as usize;
+            assert_eq!(
+                symbol1, expected_symbol1 as u64,
+                "first symbol mismatch stream={stream_value}"
+            );
+            assert_eq!(
+                symbol2, expected_symbol2 as u64,
+                "second symbol mismatch stream={stream_value}"
+            );
+            assert_eq!(
+                cursor,
+                (len1_value + len2_value) as u64,
+                "final cursor mismatch stream={stream_value}"
+            );
+        }
+
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_tree_ccx={tree_ccx}");
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_read2_ccx={read2_ccx}");
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_cursor_add_ccx={cursor_add_ccx}");
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_decode_forward_ccx={decode_forward_ccx}");
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_total_ccx={total_ccx}");
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_peak_q={peak}");
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_over_node_roundtrip={block2_over_node_roundtrip:.6}");
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_roundtrip_ratio_budget={ratio_budget:.6}");
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_scaled_gap_to_2700k={block2_scaled_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_dirty_restore_cases={dirty_restore_cases}");
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_dirty_history_cases={dirty_history_cases}");
+        println!("METRIC centered_direct_restoring_final_prefix_block2_toy_dirty_phase_cases={dirty_phase_cases}");
+        eprintln!(
+            "Direct-centered prefix block2 toy: tree={tree_ccx}, read2={read2_ccx}, cursor_add={cursor_add_ccx}, decode_forward={decode_forward_ccx}, total={total_ccx}, peak={peak}, over_node={block2_over_node_roundtrip:.3}x, budget={ratio_budget:.3}x, scaled_gap={block2_scaled_gap:.1}, dirty_restore={dirty_restore_cases}, dirty_history={dirty_history_cases}, dirty_phase={dirty_phase_cases}"
+        );
+        assert_eq!(tree_ccx, 12, "block2 tree cost drifted");
+        assert_eq!(read2_ccx, 16, "block2 second-symbol read cost drifted");
+        assert_eq!(cursor_add_ccx, 10, "block2 final cursor add cost drifted");
+        assert_eq!(
+            total_ccx,
+            2 * decode_forward_ccx + cursor_add_ccx,
+            "block2 cleanup is not decode/uncompute plus clean cursor add"
+        );
+        assert!(
+            block2_scaled_gap < -60_000.0 && block2_over_node_roundtrip < ratio_budget,
+            "block2 prefix parser toy no longer fits the low-branch parser margin"
+        );
+        assert_eq!(dirty_restore_cases, 0, "block2 parser did not restore stream");
+        assert_eq!(dirty_history_cases, 0, "block2 parser leaked internal history");
+        assert_eq!(dirty_phase_cases, 0, "block2 parser left phase garbage");
+    }
+
+    #[test]
     fn direct_centered_restoring_final_block_joint_rank_bits_are_dense() {
         // The mixed 4..8 block-joint binary-depth floor only helps if the block
         // pattern rank can be decoded phase-cleanly.  Treat the exact toy
