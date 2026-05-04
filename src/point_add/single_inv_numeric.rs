@@ -3619,6 +3619,34 @@ mod tests {
             + live_bits * MOD_ADD_FAST_CCX
     }
 
+    fn halfgcd_signed_two_coeff_apply_static_window_floor_for_test(
+        x0: SignedMagU512ForHalfGcdTest,
+        x1: SignedMagU512ForHalfGcdTest,
+        window: usize,
+        joint: bool,
+    ) -> usize {
+        // Optimistic static recoding floor.  It charges one modular add per
+        // public window and ignores table selection/precomputation.  `joint`
+        // assumes a single selected add of the pair combination per window;
+        // non-joint treats the two coefficients independently.
+        const MOD_ADD_FAST_CCX: usize = 1024;
+        const MOD_DOUBLE_FAST_CCX: usize = 255;
+        const MOD_HALVE_FAST_CCX: usize = 255;
+        assert!(window > 0);
+        let bit0 = u512_bit_len_for_halfgcd_test(x0.mag);
+        let bit1 = u512_bit_len_for_halfgcd_test(x1.mag);
+        let top = bit0.saturating_sub(1).max(bit1.saturating_sub(1));
+        let div_ceil = |x: usize| -> usize {
+            if x == 0 { 0 } else { (x + window - 1) / window }
+        };
+        let windows = if joint {
+            div_ceil(bit0.max(bit1))
+        } else {
+            div_ceil(bit0) + div_ceil(bit1)
+        };
+        top * (MOD_DOUBLE_FAST_CCX + MOD_HALVE_FAST_CCX) + windows * MOD_ADD_FAST_CCX
+    }
+
     fn halfgcd_signed_two_coeff_apply_cost_for_test(
         x0: SignedMagU512ForHalfGcdTest,
         x1: SignedMagU512ForHalfGcdTest,
@@ -5820,10 +5848,16 @@ mod tests {
         let exact_barrel_bits = 8usize;
         let mut popcount_pointadds = Vec::with_capacity(samples);
         let mut static_pointadds = Vec::with_capacity(samples);
+        let mut sep4_pointadds = Vec::with_capacity(samples);
+        let mut joint4_pointadds = Vec::with_capacity(samples);
         let mut app_popcount_rows = Vec::with_capacity(samples);
         let mut app_static_rows = Vec::with_capacity(samples);
+        let mut app_sep4_rows = Vec::with_capacity(samples);
+        let mut app_joint4_rows = Vec::with_capacity(samples);
         let mut first64_popcount = 0isize;
         let mut first64_static = 0isize;
+        let mut first64_sep4 = 0isize;
+        let mut first64_joint4 = 0isize;
 
         for sample_idx in 0..samples {
             let mut x = rand_u256(&mut rng);
@@ -5961,6 +5995,14 @@ mod tests {
             let tail_exact = tail_extract_floor + tail_logbarrel_floor;
             let app_popcount = halfgcd_signed_two_coeff_apply_cost_for_test(b, d);
             let app_static = halfgcd_signed_two_coeff_apply_static_binary_floor_for_test(b, d);
+            let app_sep4 =
+                halfgcd_signed_two_coeff_apply_static_window_floor_for_test(b, d, 4, false);
+            let app_joint4 =
+                halfgcd_signed_two_coeff_apply_static_window_floor_for_test(b, d, 4, true);
+            let without_app = SCAFFOLD_AFTER_DIV as isize
+                + 2 * (replay + 2 * exact_extraction) as isize
+                + 4 * decoder_exact as isize
+                + 4 * tail_exact as isize;
             let popcount_pointadd = SCAFFOLD_AFTER_DIV as isize
                 + 2 * (app_popcount + replay + 2 * exact_extraction) as isize
                 + 4 * decoder_exact as isize
@@ -5969,14 +6011,22 @@ mod tests {
                 + 2 * (app_static + replay + 2 * exact_extraction) as isize
                 + 4 * decoder_exact as isize
                 + 4 * tail_exact as isize;
+            let sep4_pointadd = without_app + 2 * app_sep4 as isize;
+            let joint4_pointadd = without_app + 2 * app_joint4 as isize;
             if sample_idx < 64 {
                 first64_popcount += popcount_pointadd;
                 first64_static += static_pointadd;
+                first64_sep4 += sep4_pointadd;
+                first64_joint4 += joint4_pointadd;
             }
             popcount_pointadds.push(popcount_pointadd);
             static_pointadds.push(static_pointadd);
+            sep4_pointadds.push(sep4_pointadd);
+            joint4_pointadds.push(joint4_pointadd);
             app_popcount_rows.push(app_popcount);
             app_static_rows.push(app_static);
+            app_sep4_rows.push(app_sep4);
+            app_joint4_rows.push(app_joint4);
         }
 
         let mean_isize = |rows: &[isize]| -> f64 {
@@ -5991,28 +6041,52 @@ mod tests {
         };
         let popcount_mean = mean_isize(&popcount_pointadds);
         let static_mean = mean_isize(&static_pointadds);
+        let sep4_mean = mean_isize(&sep4_pointadds);
+        let joint4_mean = mean_isize(&joint4_pointadds);
         let popcount_first64 = first64_popcount as f64 / 64.0;
         let static_first64 = first64_static as f64 / 64.0;
+        let sep4_first64 = first64_sep4 as f64 / 64.0;
+        let joint4_first64 = first64_joint4 as f64 / 64.0;
         let app_popcount_mean = mean_usize(&app_popcount_rows);
         let app_static_mean = mean_usize(&app_static_rows);
+        let app_sep4_mean = mean_usize(&app_sep4_rows);
+        let app_joint4_mean = mean_usize(&app_joint4_rows);
         let app_delta_mean = app_static_mean - app_popcount_mean;
+        let sep4_selector_budget = ((TARGET - sep4_mean) / 2.0).max(0.0);
+        let joint4_selector_budget = ((TARGET - joint4_mean) / 2.0).max(0.0);
         let popcount_p99 = p99_isize(&mut popcount_pointadds);
         let static_p99 = p99_isize(&mut static_pointadds);
+        let sep4_p99 = p99_isize(&mut sep4_pointadds);
+        let joint4_p99 = p99_isize(&mut joint4_pointadds);
         println!("METRIC halfgcd_fixed_depth64_popcount_app_pointadd_mean={popcount_mean:.3}");
         println!("METRIC halfgcd_fixed_depth64_popcount_app_pointadd_first64={popcount_first64:.3}");
         println!("METRIC halfgcd_fixed_depth64_popcount_app_pointadd_p99={popcount_p99}");
         println!("METRIC halfgcd_fixed_depth64_static_app_pointadd_mean={static_mean:.3}");
         println!("METRIC halfgcd_fixed_depth64_static_app_pointadd_first64={static_first64:.3}");
         println!("METRIC halfgcd_fixed_depth64_static_app_pointadd_p99={static_p99}");
+        println!("METRIC halfgcd_fixed_depth64_static_sep4_app_pointadd_mean={sep4_mean:.3}");
+        println!("METRIC halfgcd_fixed_depth64_static_sep4_app_pointadd_first64={sep4_first64:.3}");
+        println!("METRIC halfgcd_fixed_depth64_static_sep4_app_pointadd_p99={sep4_p99}");
+        println!("METRIC halfgcd_fixed_depth64_static_joint4_app_pointadd_mean={joint4_mean:.3}");
+        println!("METRIC halfgcd_fixed_depth64_static_joint4_app_pointadd_first64={joint4_first64:.3}");
+        println!("METRIC halfgcd_fixed_depth64_static_joint4_app_pointadd_p99={joint4_p99}");
         println!(
             "METRIC halfgcd_fixed_depth64_static_app_gap_to_2700k={:.3}",
             static_mean - TARGET
         );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_sep4_selector_budget_oneway={sep4_selector_budget:.3}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_joint4_selector_budget_oneway={joint4_selector_budget:.3}"
+        );
         println!("METRIC halfgcd_fixed_depth64_app_popcount_mean={app_popcount_mean:.3}");
         println!("METRIC halfgcd_fixed_depth64_app_static_floor_mean={app_static_mean:.3}");
+        println!("METRIC halfgcd_fixed_depth64_app_static_sep4_floor_mean={app_sep4_mean:.3}");
+        println!("METRIC halfgcd_fixed_depth64_app_static_joint4_floor_mean={app_joint4_mean:.3}");
         println!("METRIC halfgcd_fixed_depth64_app_static_over_popcount_mean={app_delta_mean:.3}");
         eprintln!(
-            "half-GCD fixed-depth64 coefficient application control model: popcount_mean={popcount_mean:.1}, static_mean={static_mean:.1}, first64_static={static_first64:.1}, static_p99={static_p99}, app_popcount_mean={app_popcount_mean:.1}, app_static_mean={app_static_mean:.1}, app_delta={app_delta_mean:.1}"
+            "half-GCD fixed-depth64 coefficient application control model: popcount_mean={popcount_mean:.1}, static_mean={static_mean:.1}, sep4_mean={sep4_mean:.1}, joint4_mean={joint4_mean:.1}, first64_static={static_first64:.1}, static_p99={static_p99}, app_popcount_mean={app_popcount_mean:.1}, app_static_mean={app_static_mean:.1}, app_sep4={app_sep4_mean:.1}, app_joint4={app_joint4_mean:.1}, app_delta={app_delta_mean:.1}, sep4_budget={sep4_selector_budget:.1}, joint4_budget={joint4_selector_budget:.1}"
         );
         assert!(
             popcount_mean > TARGET && popcount_first64 > TARGET,
@@ -6025,6 +6099,10 @@ mod tests {
         assert!(
             app_delta_mean > 30_000.0,
             "coefficient application popcount optimism is no longer material"
+        );
+        assert!(
+            sep4_mean < TARGET && joint4_mean < TARGET,
+            "even ideal static windowed coefficient application cannot recover the fixed-depth64 row"
         );
     }
 

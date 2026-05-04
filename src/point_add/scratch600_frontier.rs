@@ -163,7 +163,13 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "halfgcd_second_column_fixed_depth64_tail_stream",
             scratch_bits: 515,
             charged_toffoli: Some(2_934_322),
-            blocker: "fixed-depth64 popcount-priced coefficient application averages 2740052, but coefficient bits are quantum data; a generous static binary application floor averages 2934322, so this route needs classical coefficient controls or a static recode",
+            blocker: "fixed-depth64 popcount-priced coefficient application averages 2740052, but coefficient bits are quantum data; a generous static binary application floor averages 2934322, so this route needs classical coefficient controls or a static window recode",
+        },
+        Candidate {
+            name: "halfgcd_second_column_fixed_depth64_static_window_floor",
+            scratch_bits: 515,
+            charged_toffoli: None,
+            blocker: "ideal 4-bit static recode floor averages 2601124 separate / 2545006 joint with p99 under target, but selector/precompute/cleanup for quantum coefficients is uncharged; remaining one-way budgets are 49438 / 77497 CCX",
         },
         Candidate {
             name: "folded_kaliski_one_pair_plus_required_sidecar",
@@ -627,6 +633,20 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let halfgcd_second_col_fixed_depth64_app_popcount_mean = 181_518usize;
     let halfgcd_second_col_fixed_depth64_app_static_floor_mean = 278_653usize;
     let halfgcd_second_col_fixed_depth64_app_static_over_popcount_mean = 97_135usize;
+    let halfgcd_second_col_fixed_depth64_static_sep4_app_mean = 2_601_124usize;
+    let halfgcd_second_col_fixed_depth64_static_sep4_app_p99 = 2_693_054usize;
+    let halfgcd_second_col_fixed_depth64_static_sep4_app_gap =
+        halfgcd_second_col_fixed_depth64_static_sep4_app_mean as isize
+            - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
+    let halfgcd_second_col_fixed_depth64_static_joint4_app_mean = 2_545_006usize;
+    let halfgcd_second_col_fixed_depth64_static_joint4_app_p99 = 2_644_284usize;
+    let halfgcd_second_col_fixed_depth64_static_joint4_app_gap =
+        halfgcd_second_col_fixed_depth64_static_joint4_app_mean as isize
+            - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
+    let halfgcd_second_col_fixed_depth64_static_sep4_selector_budget_oneway = 49_438usize;
+    let halfgcd_second_col_fixed_depth64_static_joint4_selector_budget_oneway = 77_497usize;
+    let halfgcd_second_col_fixed_depth64_app_static_sep4_floor_mean = 112_054usize;
+    let halfgcd_second_col_fixed_depth64_app_static_joint4_floor_mean = 83_995usize;
     let halfgcd_second_col_alignment_mbu_degree_n14 = 14usize;
     let halfgcd_second_col_alignment_mbu_density_n14 = 8_142usize;
     let halfgcd_second_col_alignment_mbu_max_alignment_n14 = 13usize;
@@ -1025,6 +1045,16 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_app_popcount_mean={halfgcd_second_col_fixed_depth64_app_popcount_mean}");
     println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_app_static_floor_mean={halfgcd_second_col_fixed_depth64_app_static_floor_mean}");
     println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_app_static_over_popcount_mean={halfgcd_second_col_fixed_depth64_app_static_over_popcount_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_static_sep4_app_mean={halfgcd_second_col_fixed_depth64_static_sep4_app_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_static_sep4_app_p99={halfgcd_second_col_fixed_depth64_static_sep4_app_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_static_sep4_app_gap_to_2700k={halfgcd_second_col_fixed_depth64_static_sep4_app_gap}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_static_joint4_app_mean={halfgcd_second_col_fixed_depth64_static_joint4_app_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_static_joint4_app_p99={halfgcd_second_col_fixed_depth64_static_joint4_app_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_static_joint4_app_gap_to_2700k={halfgcd_second_col_fixed_depth64_static_joint4_app_gap}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_static_sep4_selector_budget_oneway={halfgcd_second_col_fixed_depth64_static_sep4_selector_budget_oneway}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_static_joint4_selector_budget_oneway={halfgcd_second_col_fixed_depth64_static_joint4_selector_budget_oneway}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_app_static_sep4_floor_mean={halfgcd_second_col_fixed_depth64_app_static_sep4_floor_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_fixed_depth64_app_static_joint4_floor_mean={halfgcd_second_col_fixed_depth64_app_static_joint4_floor_mean}");
     println!("METRIC scratch600_halfgcd_second_col_alignment_mbu_degree_n14={halfgcd_second_col_alignment_mbu_degree_n14}");
     println!("METRIC scratch600_halfgcd_second_col_alignment_mbu_density_n14={halfgcd_second_col_alignment_mbu_density_n14}");
     println!("METRIC scratch600_halfgcd_second_col_alignment_mbu_max_alignment_n14={halfgcd_second_col_alignment_mbu_max_alignment_n14}");
@@ -1391,6 +1421,19 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && halfgcd_second_col_fixed_depth64_app_static_over_popcount_mean
                 > halfgcd_second_col_fixed_depth64_exact_tail_logbarrel_gap as usize,
         "half-GCD coefficient application control accounting changed; revisit whether popcount application can be promoted"
+    );
+    assert!(
+        halfgcd_second_col_fixed_depth64_static_sep4_app_gap < 0
+            && halfgcd_second_col_fixed_depth64_static_sep4_app_p99 < GOOGLE_LOW_QUBIT_TOFFOLI
+            && halfgcd_second_col_fixed_depth64_static_joint4_app_gap < 0
+            && halfgcd_second_col_fixed_depth64_static_joint4_app_p99 < GOOGLE_LOW_QUBIT_TOFFOLI
+            && halfgcd_second_col_fixed_depth64_static_sep4_selector_budget_oneway < 50_000
+            && halfgcd_second_col_fixed_depth64_static_joint4_selector_budget_oneway < 80_000
+            && halfgcd_second_col_fixed_depth64_app_static_joint4_floor_mean
+                < halfgcd_second_col_fixed_depth64_app_static_sep4_floor_mean
+            && halfgcd_second_col_fixed_depth64_app_static_sep4_floor_mean
+                < halfgcd_second_col_fixed_depth64_app_popcount_mean,
+        "half-GCD static-window coefficient floor changed; revisit selector/precompute budget"
     );
     assert!(
         halfgcd_second_col_fixed_depth64_dynamic_barrel_static_mean
