@@ -163,7 +163,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "direct_centered_restoring_final_low_branch_align_only_prefix_tree_floor",
             scratch_bits: 580,
             charged_toffoli: None,
-            blocker: "branch-as-final-digit removes branch symbols from the parser stream; low-alignment block2 fits 580 scratch, binary lookup projects 2626705, prefix-tree node floor projects 2593870, and a phase-clean block2 consume/uncompute toy scales parser output cleanup to gap -63004, but production full-step reverse-decoder integration remains uncharged",
+            blocker: "branch-as-final-digit removes branch symbols from the parser stream; low-alignment block2 fits 580 scratch, binary lookup projects 2626705, prefix-tree node floor projects 2593870, and a phase-clean block2 leaf-touch toy scales parser-to-state integration to gap -48629, but production full-step arithmetic/reverse integration remains uncharged",
         },
         Candidate {
             name: "direct_centered_restoring_final_mixed4to8_joint_binary_floor",
@@ -613,6 +613,22 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let direct_restoring_final_prefix_block2_consume_toy_dirty_restore_cases = 0usize;
     let direct_restoring_final_prefix_block2_consume_toy_dirty_history_cases = 0usize;
     let direct_restoring_final_prefix_block2_consume_toy_dirty_phase_cases = 0usize;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_decode_forward_ccx = 28usize;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_leaf_touch_ccx = 40usize;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_parser_transient_ccx = 56usize;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_total_ccx = 96usize;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_peak_q = 43usize;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_parser_over_node_roundtrip =
+        3.500_000f64;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_total_over_node_roundtrip =
+        6.000_000f64;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_roundtrip_ratio_budget =
+        10.228_508f64;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_parser_scaled_gap = -77_379.510f64;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_total_scaled_gap = -48_628.890f64;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_restore_cases = 0usize;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_history_cases = 0usize;
+    let direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_phase_cases = 0usize;
     let direct_restoring_final_coeff_decoder_alignment_degree_n14 = 13usize;
     let direct_restoring_final_coeff_decoder_alignment_density_n14 = 8_278usize;
     let direct_restoring_final_coeff_decoder_alignment_max_n14 = 13usize;
@@ -1505,6 +1521,19 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_direct_restoring_final_prefix_block2_consume_toy_dirty_restore_cases={direct_restoring_final_prefix_block2_consume_toy_dirty_restore_cases}");
     println!("METRIC scratch600_direct_restoring_final_prefix_block2_consume_toy_dirty_history_cases={direct_restoring_final_prefix_block2_consume_toy_dirty_history_cases}");
     println!("METRIC scratch600_direct_restoring_final_prefix_block2_consume_toy_dirty_phase_cases={direct_restoring_final_prefix_block2_consume_toy_dirty_phase_cases}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_decode_forward_ccx={direct_restoring_final_prefix_block2_leaf_touch_toy_decode_forward_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_leaf_touch_ccx={direct_restoring_final_prefix_block2_leaf_touch_toy_leaf_touch_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_parser_transient_ccx={direct_restoring_final_prefix_block2_leaf_touch_toy_parser_transient_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_total_ccx={direct_restoring_final_prefix_block2_leaf_touch_toy_total_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_peak_q={direct_restoring_final_prefix_block2_leaf_touch_toy_peak_q}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_parser_over_node_roundtrip={direct_restoring_final_prefix_block2_leaf_touch_toy_parser_over_node_roundtrip:.6}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_total_over_node_roundtrip={direct_restoring_final_prefix_block2_leaf_touch_toy_total_over_node_roundtrip:.6}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_roundtrip_ratio_budget={direct_restoring_final_prefix_block2_leaf_touch_toy_roundtrip_ratio_budget:.6}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_parser_scaled_gap_to_2700k={direct_restoring_final_prefix_block2_leaf_touch_toy_parser_scaled_gap:.3}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_total_scaled_gap_to_2700k={direct_restoring_final_prefix_block2_leaf_touch_toy_total_scaled_gap:.3}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_restore_cases={direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_restore_cases}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_history_cases={direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_history_cases}");
+    println!("METRIC scratch600_direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_phase_cases={direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_phase_cases}");
     println!("METRIC scratch600_direct_restoring_final_coeff_decoder_alignment_degree_n14={direct_restoring_final_coeff_decoder_alignment_degree_n14}");
     println!("METRIC scratch600_direct_restoring_final_coeff_decoder_alignment_density_n14={direct_restoring_final_coeff_decoder_alignment_density_n14}");
     println!("METRIC scratch600_direct_restoring_final_coeff_decoder_alignment_max_n14={direct_restoring_final_coeff_decoder_alignment_max_n14}");
@@ -2283,6 +2312,23 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && direct_restoring_final_prefix_block2_consume_toy_dirty_history_cases == 0
             && direct_restoring_final_prefix_block2_consume_toy_dirty_phase_cases == 0,
         "prefix block2 consume/uncompute toy changed; revisit transient parser output cleanup"
+    );
+    assert!(
+        direct_restoring_final_prefix_block2_leaf_touch_toy_decode_forward_ccx == 28
+            && direct_restoring_final_prefix_block2_leaf_touch_toy_leaf_touch_ccx == 40
+            && direct_restoring_final_prefix_block2_leaf_touch_toy_parser_transient_ccx == 56
+            && direct_restoring_final_prefix_block2_leaf_touch_toy_total_ccx == 96
+            && direct_restoring_final_prefix_block2_leaf_touch_toy_peak_q == 43
+            && direct_restoring_final_prefix_block2_leaf_touch_toy_parser_over_node_roundtrip
+                < direct_restoring_final_prefix_block2_leaf_touch_toy_roundtrip_ratio_budget
+            && direct_restoring_final_prefix_block2_leaf_touch_toy_total_over_node_roundtrip
+                < direct_restoring_final_prefix_block2_leaf_touch_toy_roundtrip_ratio_budget
+            && direct_restoring_final_prefix_block2_leaf_touch_toy_parser_scaled_gap < -70_000.0
+            && direct_restoring_final_prefix_block2_leaf_touch_toy_total_scaled_gap < -35_000.0
+            && direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_restore_cases == 0
+            && direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_history_cases == 0
+            && direct_restoring_final_prefix_block2_leaf_touch_toy_dirty_phase_cases == 0,
+        "prefix block2 leaf-touch toy changed; revisit parser-to-state integration"
     );
     assert!(
         direct_restoring_final_coeff_decoder_alignment_degree_n14 + 1 >= 14
