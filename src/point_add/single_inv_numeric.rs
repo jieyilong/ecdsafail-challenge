@@ -20788,6 +20788,30 @@ mod tests {
             block32_symbol_count_p99,
             block32_augmented_gap,
         ) = block32.unwrap();
+        let mut lookup_scan_floor_rows = Vec::with_capacity(samples);
+        for (alignments, branches) in &traces {
+            let mut branch_at_step = vec![None; alignments.len()];
+            for &(step, branch) in branches {
+                branch_at_step[step] = Some(branch);
+            }
+            let mut lookup_scan_floor = 0usize;
+            for (step, _) in alignments.iter().enumerate() {
+                let alignment_support = align_by_step[step].len();
+                lookup_scan_floor += model_precision_bits * alignment_support.saturating_sub(1);
+                if branch_at_step[step].is_some() {
+                    let branch_support = branch_by_step[step]
+                        .iter()
+                        .filter(|&&count| count > 0)
+                        .count();
+                    lookup_scan_floor += model_precision_bits * branch_support.saturating_sub(1);
+                }
+            }
+            lookup_scan_floor_rows.push(lookup_scan_floor);
+        }
+        let lookup_scan_floor_mean = mean_usize(&lookup_scan_floor_rows);
+        let lookup_scan_floor_p99 = p99_usize(&mut lookup_scan_floor_rows);
+        let best_with_lookup_mean = best_touch_mean + lookup_scan_floor_mean;
+        let best_with_lookup_gap = STORED_BRANCH_MEAN + 4.0 * best_with_lookup_mean - TARGET;
         let oneway_parser_budget = (TARGET - STORED_BRANCH_MEAN) / 4.0;
         println!("METRIC centered_direct_restoring_final_block_parser_model_precision_bits={model_precision_bits}");
         println!("METRIC centered_direct_restoring_final_block_parser_oneway_budget={oneway_parser_budget:.3}");
@@ -20804,8 +20828,12 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_block32_live_scratch_p99={block32_scratch_p99}");
         println!("METRIC centered_direct_restoring_final_block32_symbol_count_p99={block32_symbol_count_p99}");
         println!("METRIC centered_direct_restoring_final_block32_augmented_gap_to_2700k={block32_augmented_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_block_parser_lookup_scan_floor_mean={lookup_scan_floor_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_block_parser_lookup_scan_floor_p99={lookup_scan_floor_p99}");
+        println!("METRIC centered_direct_restoring_final_block_parser_best_with_lookup_mean={best_with_lookup_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_block_parser_best_with_lookup_gap_to_2700k={best_with_lookup_gap:.3}");
         eprintln!(
-            "Direct-centered restoring-final block parser floor: best_block={best_block}, touch_mean={best_touch_mean:.1}, scratch_p99={best_scratch_p99}, compressed_p99={best_compressed_p99}, augmented_gap={best_augmented_gap:.1}, block32_touch={block32_touch_mean:.1}, block32_scratch={block32_scratch_p99}"
+            "Direct-centered restoring-final block parser floor: best_block={best_block}, touch_mean={best_touch_mean:.1}, lookup_mean={lookup_scan_floor_mean:.1}, touch_plus_lookup={best_with_lookup_mean:.1}, scratch_p99={best_scratch_p99}, compressed_p99={best_compressed_p99}, augmented_gap={best_augmented_gap:.1}, lookup_gap={best_with_lookup_gap:.1}, block32_touch={block32_touch_mean:.1}, block32_scratch={block32_scratch_p99}"
         );
         assert!(
             best_scratch_p99 <= GOOGLE_SCRATCH,
@@ -20814,6 +20842,10 @@ mod tests {
         assert!(
             best_touch_mean <= oneway_parser_budget,
             "blocked range parser still exceeds one-way average budget"
+        );
+        assert!(
+            best_with_lookup_mean > oneway_parser_budget && best_with_lookup_gap > 0.0,
+            "threshold-scan lookup floor now fits the block parser budget; build a toy parser"
         );
     }
 
