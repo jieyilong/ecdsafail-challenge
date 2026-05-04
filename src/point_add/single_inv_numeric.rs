@@ -21374,8 +21374,79 @@ mod tests {
         let ceil_log2 = |x: usize| -> usize {
             if x <= 1 { 0 } else { usize_bit_len_for_payload_test(x - 1) }
         };
+        let huffman_depths = |counts: &BTreeMap<usize, usize>| -> BTreeMap<usize, usize> {
+            let mut depths = BTreeMap::<usize, usize>::new();
+            let mut nodes = Vec::<(usize, Vec<usize>)>::new();
+            for (&symbol, &count) in counts {
+                if count > 0 {
+                    depths.insert(symbol, 0);
+                    nodes.push((count, vec![symbol]));
+                }
+            }
+            while nodes.len() > 1 {
+                nodes.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+                let (left_count, left_symbols) = nodes.remove(0);
+                let (right_count, right_symbols) = nodes.remove(0);
+                let mut merged = left_symbols;
+                for symbol in &merged {
+                    *depths.get_mut(symbol).unwrap() += 1;
+                }
+                for symbol in &right_symbols {
+                    *depths.get_mut(symbol).unwrap() += 1;
+                }
+                merged.extend(right_symbols);
+                merged.sort_unstable();
+                nodes.push((left_count + right_count, merged));
+            }
+            depths
+        };
+        let align_huffman_by_step: Vec<_> =
+            align_by_step.iter().map(huffman_depths).collect();
+        let branch_huffman_by_step: Vec<[usize; 2]> = branch_by_step
+            .iter()
+            .map(|counts| {
+                let freq = counts
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &count)| count > 0)
+                    .map(|(bit, &count)| (bit, count))
+                    .collect::<BTreeMap<_, _>>();
+                let depths = huffman_depths(&freq);
+                [
+                    *depths.get(&0).unwrap_or(&0),
+                    *depths.get(&1).unwrap_or(&0),
+                ]
+            })
+            .collect();
+        let cond_branch_huffman_by_step_alignment: Vec<BTreeMap<usize, [usize; 2]>> =
+            branch_by_step_alignment
+                .iter()
+                .map(|counts_by_alignment| {
+                    counts_by_alignment
+                        .iter()
+                        .map(|(&alignment, counts)| {
+                            let freq = counts
+                                .iter()
+                                .enumerate()
+                                .filter(|&(_, &count)| count > 0)
+                                .map(|(bit, &count)| (bit, count))
+                                .collect::<BTreeMap<_, _>>();
+                            let depths = huffman_depths(&freq);
+                            (
+                                alignment,
+                                [
+                                    *depths.get(&0).unwrap_or(&0),
+                                    *depths.get(&1).unwrap_or(&0),
+                                ],
+                            )
+                        })
+                        .collect()
+                })
+                .collect();
         let mut binary_lookup_floor_rows = Vec::with_capacity(samples);
         let mut cond_branch_binary_lookup_floor_rows = Vec::with_capacity(samples);
+        let mut huffman_lookup_floor_rows = Vec::with_capacity(samples);
+        let mut cond_branch_huffman_lookup_floor_rows = Vec::with_capacity(samples);
         let mut align_support_noncontig_steps = 0usize;
         let mut align_support_offset_steps = 0usize;
         let mut align_support_max_span = 0usize;
@@ -21398,20 +21469,33 @@ mod tests {
             let mut lookup_scan_floor = 0usize;
             let mut binary_lookup_floor = 0usize;
             let mut cond_branch_binary_lookup_floor = 0usize;
+            let mut huffman_lookup_floor = 0usize;
+            let mut cond_branch_huffman_lookup_floor = 0usize;
             for (step, _) in alignments.iter().enumerate() {
+                let alignment = alignments[step];
                 let alignment_support = align_by_step[step].len();
                 lookup_scan_floor += model_precision_bits * alignment_support.saturating_sub(1);
                 binary_lookup_floor += model_precision_bits * ceil_log2(alignment_support);
                 cond_branch_binary_lookup_floor +=
                     model_precision_bits * ceil_log2(alignment_support);
+                huffman_lookup_floor += model_precision_bits
+                    * align_huffman_by_step[step]
+                        .get(&alignment)
+                        .copied()
+                        .unwrap_or(0);
+                cond_branch_huffman_lookup_floor += model_precision_bits
+                    * align_huffman_by_step[step]
+                        .get(&alignment)
+                        .copied()
+                        .unwrap_or(0);
                 if branch_at_step[step].is_some() {
+                    let branch = branch_at_step[step].unwrap() as usize;
                     let branch_support = branch_by_step[step]
                         .iter()
                         .filter(|&&count| count > 0)
                         .count();
                     lookup_scan_floor += model_precision_bits * branch_support.saturating_sub(1);
                     binary_lookup_floor += model_precision_bits * ceil_log2(branch_support);
-                    let alignment = alignments[step];
                     let cond_branch_support = branch_by_step_alignment[step]
                         .get(&alignment)
                         .expect("conditional branch lookup missing seen alignment")
@@ -21420,11 +21504,20 @@ mod tests {
                         .count();
                     cond_branch_binary_lookup_floor +=
                         model_precision_bits * ceil_log2(cond_branch_support);
+                    huffman_lookup_floor +=
+                        model_precision_bits * branch_huffman_by_step[step][branch];
+                    cond_branch_huffman_lookup_floor += model_precision_bits
+                        * cond_branch_huffman_by_step_alignment[step]
+                            .get(&alignment)
+                            .expect("conditional branch huffman lookup missing seen alignment")
+                            [branch];
                 }
             }
             lookup_scan_floor_rows.push(lookup_scan_floor);
             binary_lookup_floor_rows.push(binary_lookup_floor);
             cond_branch_binary_lookup_floor_rows.push(cond_branch_binary_lookup_floor);
+            huffman_lookup_floor_rows.push(huffman_lookup_floor);
+            cond_branch_huffman_lookup_floor_rows.push(cond_branch_huffman_lookup_floor);
         }
         let lookup_scan_floor_mean = mean_usize(&lookup_scan_floor_rows);
         let lookup_scan_floor_p99 = p99_usize(&mut lookup_scan_floor_rows);
@@ -21437,6 +21530,12 @@ mod tests {
             mean_usize(&cond_branch_binary_lookup_floor_rows);
         let cond_branch_binary_lookup_floor_p99 =
             p99_usize(&mut cond_branch_binary_lookup_floor_rows);
+        let huffman_lookup_floor_mean = mean_usize(&huffman_lookup_floor_rows);
+        let huffman_lookup_floor_p99 = p99_usize(&mut huffman_lookup_floor_rows);
+        let cond_branch_huffman_lookup_floor_mean =
+            mean_usize(&cond_branch_huffman_lookup_floor_rows);
+        let cond_branch_huffman_lookup_floor_p99 =
+            p99_usize(&mut cond_branch_huffman_lookup_floor_rows);
         let eval_cond_schedule =
             |schedule: &[usize]| -> (f64, usize, usize, usize, usize, f64) {
                 let mut compressed_bits_rows = Vec::with_capacity(samples);
@@ -21593,6 +21692,12 @@ mod tests {
             STORED_BRANCH_MEAN + 4.0 * mixed67_with_binary_lookup_2x_mean - TARGET;
         let mixed67_lookup_multiplier_budget =
             (oneway_parser_budget - mixed67_touch_mean) / cond_branch_binary_lookup_floor_mean;
+        let mixed67_with_huffman_lookup_2x_mean =
+            mixed67_touch_mean + 2.0 * cond_branch_huffman_lookup_floor_mean;
+        let mixed67_with_huffman_lookup_2x_gap =
+            STORED_BRANCH_MEAN + 4.0 * mixed67_with_huffman_lookup_2x_mean - TARGET;
+        let mixed67_huffman_lookup_multiplier_budget =
+            (oneway_parser_budget - mixed67_touch_mean) / cond_branch_huffman_lookup_floor_mean;
         let best_with_binary_lookup_gap =
             STORED_BRANCH_MEAN + 4.0 * best_with_binary_lookup_mean - TARGET;
         let best_with_binary_lookup_2x_gap =
@@ -21697,6 +21802,8 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_block_parser_best_with_lookup_gap_to_2700k={best_with_lookup_gap:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_binary_lookup_floor_mean={binary_lookup_floor_mean:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_binary_lookup_floor_p99={binary_lookup_floor_p99}");
+        println!("METRIC centered_direct_restoring_final_block_parser_huffman_lookup_floor_mean={huffman_lookup_floor_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_block_parser_huffman_lookup_floor_p99={huffman_lookup_floor_p99}");
         println!("METRIC centered_direct_restoring_final_block_parser_best_with_binary_lookup_mean={best_with_binary_lookup_mean:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_best_with_binary_lookup_gap_to_2700k={best_with_binary_lookup_gap:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_best_with_binary_lookup_2x_mean={best_with_binary_lookup_2x_mean:.3}");
@@ -21712,6 +21819,8 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_block7_lookup_multiplier_budget={block7_lookup_multiplier_budget:.6}");
         println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_binary_lookup_floor_mean={cond_branch_binary_lookup_floor_mean:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_binary_lookup_floor_p99={cond_branch_binary_lookup_floor_p99}");
+        println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_huffman_lookup_floor_mean={cond_branch_huffman_lookup_floor_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_huffman_lookup_floor_p99={cond_branch_huffman_lookup_floor_p99}");
         println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_best_with_binary_lookup_mean={best_cond_branch_with_binary_lookup_mean:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_best_with_binary_lookup_gap_to_2700k={best_cond_branch_with_binary_lookup_gap:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_best_with_binary_lookup_2x_mean={best_cond_branch_with_binary_lookup_2x_mean:.3}");
@@ -21731,11 +21840,14 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_cond_mixed67_with_binary_lookup_2x_mean={mixed67_with_binary_lookup_2x_mean:.3}");
         println!("METRIC centered_direct_restoring_final_cond_mixed67_with_binary_lookup_2x_gap_to_2700k={mixed67_with_binary_lookup_2x_gap:.3}");
         println!("METRIC centered_direct_restoring_final_cond_mixed67_lookup_multiplier_budget={mixed67_lookup_multiplier_budget:.6}");
+        println!("METRIC centered_direct_restoring_final_cond_mixed67_with_huffman_lookup_2x_mean={mixed67_with_huffman_lookup_2x_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_mixed67_with_huffman_lookup_2x_gap_to_2700k={mixed67_with_huffman_lookup_2x_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_mixed67_huffman_lookup_multiplier_budget={mixed67_huffman_lookup_multiplier_budget:.6}");
         println!("METRIC centered_direct_restoring_final_block_parser_align_support_noncontig_steps={align_support_noncontig_steps}");
         println!("METRIC centered_direct_restoring_final_block_parser_align_support_offset_steps={align_support_offset_steps}");
         println!("METRIC centered_direct_restoring_final_block_parser_align_support_max_span={align_support_max_span}");
         eprintln!(
-            "Direct-centered restoring-final block parser floor: best_block={best_block}, touch_mean={best_touch_mean:.1}, cond_branch_block={best_cond_branch_block}, cond_touch={best_cond_branch_touch_mean:.1}, cond_scratch={best_cond_branch_scratch_p99}, cond_binary2x_gap={best_cond_branch_with_binary_lookup_2x_gap:.1}, mixed67_period={mixed67_period}, mixed67_mask={mixed67_mask}, mixed67_scratch={mixed67_scratch_p99}, mixed67_binary2x_gap={mixed67_with_binary_lookup_2x_gap:.1}, qrom_rows={best_qrom_row_floor}, lookup_mean={lookup_scan_floor_mean:.1}, binary_lookup={binary_lookup_floor_mean:.1}, binary2x_gap={best_with_binary_lookup_2x_gap:.1}, noncontig_steps={align_support_noncontig_steps}, touch_plus_lookup={best_with_lookup_mean:.1}, scratch_p99={best_scratch_p99}, compressed_p99={best_compressed_p99}, augmented_gap={best_augmented_gap:.1}, qrom_gap={best_qrom_gap:.1}, lookup_gap={best_with_lookup_gap:.1}, block4_touch={block4_touch_mean:.1}, block4_scratch={block4_scratch_p99}, block4_binary2x_gap={block4_with_binary_lookup_2x_gap:.1}, block4_lookup_multiplier_budget={block4_lookup_multiplier_budget:.3}, cond_block4_scratch={cond_block4_scratch_p99}, cond_block4_binary2x_gap={cond_block4_with_binary_lookup_2x_gap:.1}, block5_touch={block5_touch_mean:.1}, block5_scratch={block5_scratch_p99}, block5_binary2x_gap={block5_with_binary_lookup_2x_gap:.1}, cond_block5_scratch={cond_block5_scratch_p99}, cond_block5_binary2x_gap={cond_block5_with_binary_lookup_2x_gap:.1}, block6_touch={block6_touch_mean:.1}, block6_scratch={block6_scratch_p99}, cond_block6_scratch={cond_block6_scratch_p99}, cond_block6_binary2x_gap={cond_block6_with_binary_lookup_2x_gap:.1}, block7_touch={block7_touch_mean:.1}, block7_scratch={block7_scratch_p99}, block7_binary2x_gap={block7_with_binary_lookup_2x_gap:.1}, block32_touch={block32_touch_mean:.1}, block32_qrom_rows={block32_qrom_row_floor}, block32_scratch={block32_scratch_p99}"
+            "Direct-centered restoring-final block parser floor: best_block={best_block}, touch_mean={best_touch_mean:.1}, cond_branch_block={best_cond_branch_block}, cond_touch={best_cond_branch_touch_mean:.1}, cond_scratch={best_cond_branch_scratch_p99}, cond_binary2x_gap={best_cond_branch_with_binary_lookup_2x_gap:.1}, mixed67_period={mixed67_period}, mixed67_mask={mixed67_mask}, mixed67_scratch={mixed67_scratch_p99}, mixed67_binary2x_gap={mixed67_with_binary_lookup_2x_gap:.1}, mixed67_huffman2x_gap={mixed67_with_huffman_lookup_2x_gap:.1}, qrom_rows={best_qrom_row_floor}, lookup_mean={lookup_scan_floor_mean:.1}, binary_lookup={binary_lookup_floor_mean:.1}, huffman_lookup={huffman_lookup_floor_mean:.1}, cond_huffman_lookup={cond_branch_huffman_lookup_floor_mean:.1}, binary2x_gap={best_with_binary_lookup_2x_gap:.1}, noncontig_steps={align_support_noncontig_steps}, touch_plus_lookup={best_with_lookup_mean:.1}, scratch_p99={best_scratch_p99}, compressed_p99={best_compressed_p99}, augmented_gap={best_augmented_gap:.1}, qrom_gap={best_qrom_gap:.1}, lookup_gap={best_with_lookup_gap:.1}, block4_touch={block4_touch_mean:.1}, block4_scratch={block4_scratch_p99}, block4_binary2x_gap={block4_with_binary_lookup_2x_gap:.1}, block4_lookup_multiplier_budget={block4_lookup_multiplier_budget:.3}, cond_block4_scratch={cond_block4_scratch_p99}, cond_block4_binary2x_gap={cond_block4_with_binary_lookup_2x_gap:.1}, block5_touch={block5_touch_mean:.1}, block5_scratch={block5_scratch_p99}, block5_binary2x_gap={block5_with_binary_lookup_2x_gap:.1}, cond_block5_scratch={cond_block5_scratch_p99}, cond_block5_binary2x_gap={cond_block5_with_binary_lookup_2x_gap:.1}, block6_touch={block6_touch_mean:.1}, block6_scratch={block6_scratch_p99}, cond_block6_scratch={cond_block6_scratch_p99}, cond_block6_binary2x_gap={cond_block6_with_binary_lookup_2x_gap:.1}, block7_touch={block7_touch_mean:.1}, block7_scratch={block7_scratch_p99}, block7_binary2x_gap={block7_with_binary_lookup_2x_gap:.1}, block32_touch={block32_touch_mean:.1}, block32_qrom_rows={block32_qrom_row_floor}, block32_scratch={block32_scratch_p99}"
         );
         assert!(
             best_scratch_p99 <= GOOGLE_SCRATCH,
