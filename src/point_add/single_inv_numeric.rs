@@ -32080,31 +32080,76 @@ mod tests {
         let path_bit_mask = 0b1011usize;
         let cases = [(8usize, 251u16), (10, 1021), (12, 4093), (14, 16381)];
         for &(n, p) in &cases {
-            let (
-                degree,
-                density,
-                max_path_bits,
-                max_code_len,
-                max_symbols,
-                codebook_entries,
-                max_support,
-            ) = direct_centered_restoring_final_huffman_path_anf_stats(n, p, path_bit_mask);
+            let stats = direct_centered_restoring_final_huffman_path_anf_stats(n, p, path_bit_mask);
             let table = 1usize << n;
             eprintln!(
-                "direct-centered restoring-final Huffman path ANF: n={n}, degree={degree}, density={density}/{table}, max_path_bits={max_path_bits}, max_code_len={max_code_len}, max_symbols={max_symbols}, codebook_entries={codebook_entries}, max_support={max_support}"
+                "direct-centered restoring-final Huffman path ANF: n={n}, degree={}, density={}/{table}, max_path_bits={}, max_code_len={}, max_symbols={}, codebook_entries={}, max_support={}, min_code_bit_degree={}, min_code_bit_density={}, max_code_bit_density={}",
+                stats.parity_degree,
+                stats.parity_density,
+                stats.max_path_bits,
+                stats.max_code_len,
+                stats.max_symbols,
+                stats.codebook_entries,
+                stats.max_support,
+                stats.min_code_bit_degree,
+                stats.min_code_bit_density,
+                stats.max_code_bit_density
             );
             if n == 14 {
-                println!("METRIC centered_direct_restoring_final_huffman_path_degree_n14={degree}");
-                println!("METRIC centered_direct_restoring_final_huffman_path_density_n14={density}");
-                println!("METRIC centered_direct_restoring_final_huffman_path_max_bits_n14={max_path_bits}");
-                println!("METRIC centered_direct_restoring_final_huffman_path_max_code_len_n14={max_code_len}");
-                println!("METRIC centered_direct_restoring_final_huffman_path_max_symbols_n14={max_symbols}");
-                println!("METRIC centered_direct_restoring_final_huffman_path_codebook_entries_n14={codebook_entries}");
-                println!("METRIC centered_direct_restoring_final_huffman_path_max_support_n14={max_support}");
+                println!(
+                    "METRIC centered_direct_restoring_final_huffman_path_degree_n14={}",
+                    stats.parity_degree
+                );
+                println!(
+                    "METRIC centered_direct_restoring_final_huffman_path_density_n14={}",
+                    stats.parity_density
+                );
+                println!(
+                    "METRIC centered_direct_restoring_final_huffman_path_max_bits_n14={}",
+                    stats.max_path_bits
+                );
+                println!(
+                    "METRIC centered_direct_restoring_final_huffman_path_max_code_len_n14={}",
+                    stats.max_code_len
+                );
+                println!(
+                    "METRIC centered_direct_restoring_final_huffman_path_max_symbols_n14={}",
+                    stats.max_symbols
+                );
+                println!(
+                    "METRIC centered_direct_restoring_final_huffman_path_codebook_entries_n14={}",
+                    stats.codebook_entries
+                );
+                println!(
+                    "METRIC centered_direct_restoring_final_huffman_path_max_support_n14={}",
+                    stats.max_support
+                );
+                println!(
+                    "METRIC centered_direct_restoring_final_huffman_path_min_code_bit_degree_n14={}",
+                    stats.min_code_bit_degree
+                );
+                println!(
+                    "METRIC centered_direct_restoring_final_huffman_path_min_code_bit_density_n14={}",
+                    stats.min_code_bit_density
+                );
+                println!(
+                    "METRIC centered_direct_restoring_final_huffman_path_max_code_bit_density_n14={}",
+                    stats.max_code_bit_density
+                );
             }
-            assert!(max_path_bits > 0, "toy Huffman path collapsed");
-            assert!(degree + 1 >= n, "Huffman path parity unexpectedly low degree");
-            assert!(density > table / 4, "Huffman path parity unexpectedly sparse");
+            assert!(stats.max_path_bits > 0, "toy Huffman path collapsed");
+            assert!(
+                stats.parity_degree + 1 >= n,
+                "Huffman path parity unexpectedly low degree"
+            );
+            assert!(
+                stats.parity_density > table / 4,
+                "Huffman path parity unexpectedly sparse"
+            );
+            assert!(
+                stats.min_code_bit_degree + 1 >= n,
+                "individual Huffman code bit unexpectedly low degree"
+            );
         }
     }
 
@@ -34552,11 +34597,24 @@ mod tests {
         }
     }
 
+    struct DirectCenteredRestoringFinalHuffmanPathAnfStats {
+        parity_degree: usize,
+        parity_density: usize,
+        max_path_bits: usize,
+        max_code_len: usize,
+        max_symbols: usize,
+        codebook_entries: usize,
+        max_support: usize,
+        min_code_bit_degree: usize,
+        min_code_bit_density: usize,
+        max_code_bit_density: usize,
+    }
+
     fn direct_centered_restoring_final_huffman_path_anf_stats(
         n: usize,
         p: u16,
         path_bit_mask: usize,
-    ) -> (usize, usize, usize, usize, usize, usize, usize) {
+    ) -> DirectCenteredRestoringFinalHuffmanPathAnfStats {
         use std::collections::BTreeMap;
 
         assert!(path_bit_mask != 0, "path-bit mask must select at least one bit");
@@ -34730,20 +34788,20 @@ mod tests {
             }
         }
 
-        let mut anf = vec![0u8; size];
         let mut max_path_bits = 0usize;
         let mut max_symbols = 0usize;
+        let mut trace_codewords = Vec::<(usize, Vec<(usize, usize)>)>::new();
         for (x, alignments, branches) in traces {
             let mut branch_at_step = vec![None; alignments.len()];
             for (step, branch) in branches {
                 branch_at_step[step] = Some(branch);
             }
-            let mut parity = 0u8;
+            let mut codewords = Vec::new();
             let mut path_bits = 0usize;
             let mut symbol_count = 0usize;
             for (step, &alignment) in alignments.iter().enumerate() {
                 if let Some(&(code, len)) = align_codebooks[step].get(&alignment) {
-                    parity ^= ((code & path_bit_mask).count_ones() as u8) & 1;
+                    codewords.push((code, len));
                     path_bits += len;
                 }
                 symbol_count += 1;
@@ -34753,7 +34811,7 @@ mod tests {
                         .get(&alignment)
                         .and_then(|book| book.get(&branch_idx))
                     {
-                        parity ^= ((code & path_bit_mask).count_ones() as u8) & 1;
+                        codewords.push((code, len));
                         path_bits += len;
                     }
                     symbol_count += 1;
@@ -34761,31 +34819,65 @@ mod tests {
             }
             max_path_bits = max_path_bits.max(path_bits);
             max_symbols = max_symbols.max(symbol_count);
-            anf[x] = parity;
+            trace_codewords.push((x, codewords));
         }
-        for bit in 0..n {
-            for idx in 0..size {
-                if (idx & (1usize << bit)) != 0 {
-                    anf[idx] ^= anf[idx ^ (1usize << bit)];
+        let anf_stats_for_path_mask = |mask: usize| -> (usize, usize) {
+            let mut anf = vec![0u8; size];
+            for (x, codewords) in &trace_codewords {
+                let mut parity = 0u8;
+                for &(code, _) in codewords {
+                    parity ^= ((code & mask).count_ones() as u8) & 1;
+                }
+                anf[*x] = parity;
+            }
+            for bit in 0..n {
+                for idx in 0..size {
+                    if (idx & (1usize << bit)) != 0 {
+                        anf[idx] ^= anf[idx ^ (1usize << bit)];
+                    }
                 }
             }
+            let density = anf.iter().filter(|&&c| c != 0).count();
+            let degree = anf
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &c)| {
+                    if c != 0 {
+                        Some(i.count_ones() as usize)
+                    } else {
+                        None
+                    }
+                })
+                .max()
+                .unwrap_or(0);
+            (degree, density)
+        };
+        let (parity_degree, parity_density) = anf_stats_for_path_mask(path_bit_mask);
+        let mut min_code_bit_degree = usize::MAX;
+        let mut min_code_bit_density = usize::MAX;
+        let mut max_code_bit_density = 0usize;
+        for bit in 0..max_code_len {
+            let (degree, density) = anf_stats_for_path_mask(1usize << bit);
+            min_code_bit_degree = min_code_bit_degree.min(degree);
+            min_code_bit_density = min_code_bit_density.min(density);
+            max_code_bit_density = max_code_bit_density.max(density);
         }
-        let density = anf.iter().filter(|&&c| c != 0).count();
-        let degree = anf
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &c)| if c != 0 { Some(i.count_ones() as usize) } else { None })
-            .max()
-            .unwrap_or(0);
-        (
-            degree,
-            density,
+        if max_code_len == 0 {
+            min_code_bit_degree = 0;
+            min_code_bit_density = 0;
+        }
+        DirectCenteredRestoringFinalHuffmanPathAnfStats {
+            parity_degree,
+            parity_density,
             max_path_bits,
             max_code_len,
             max_symbols,
             codebook_entries,
             max_support,
-        )
+            min_code_bit_degree,
+            min_code_bit_density,
+            max_code_bit_density,
+        }
     }
 
     fn direct_centered_restoring_final_coeff_decoder_costs_for_test(
