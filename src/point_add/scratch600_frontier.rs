@@ -181,7 +181,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "direct_centered_restoring_final_low_branch_digit_mixed4to8_floor",
             scratch_bits: 663,
             charged_toffoli: Some(2_643_614),
-            blocker: "low-candidate branch-as-final-digit lower bound clears binary lookup by 56386, high_q=low_q+1 on the sample set, and a 23-CCX branch digit toy is Bennett-clean; but the hidden high/low branch is not locally recoverable: exact n14 still has 1068 collisions after granting det-low14, row signs, decoded q sign, step, and low-width/alignment metadata; free neighboring low-alignment lookahead still leaves 4865 n14 / 14160 n16 colliding contexts, and even granting neighboring low alignment plus denominator/low widths leaves 4828 n14 / 14191 n16 collisions",
+            blocker: "low-candidate branch-as-final-digit lower bound clears binary lookup by 56386, high_q=low_q+1 on the sample set, and a 23-CCX branch digit toy is Bennett-clean; but the hidden high/low branch is not locally recoverable: exact n14 still has 1068 collisions after granting det-low14, row signs, decoded q sign, step, and low-width/alignment metadata; free neighboring low-alignment lookahead still leaves 4865 n14 / 14160 n16 colliding contexts, even granting neighboring low alignment plus denominator/low widths leaves 4828 n14 / 14191 n16 collisions, and a radius-3 window of full low-branch metadata still leaves 4111 n14 / 21946 n16 collisions",
         },
         Candidate {
             name: "direct_centered_restoring_final_low_branch_align_only_prefix_tree_floor",
@@ -700,6 +700,12 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
         4_828usize;
     let direct_restoring_final_low_branch_neighbor_full_high_both_collisions_n16 =
         14_191usize;
+    let direct_restoring_final_low_branch_radius_full_high_r3_collisions_n14 =
+        4_111usize;
+    let direct_restoring_final_low_branch_radius_full_high_r3_collisions_n16 =
+        21_946usize;
+    let direct_restoring_final_low_branch_radius_full_high_r3_states_n16 =
+        214_960usize;
     let direct_restoring_final_coeff_decoder_exact_p99 = 185_694usize;
     let direct_restoring_final_coeff_decoder_digit_width_p99 = 46_950usize;
     let direct_restoring_final_coeff_decoder_scan_p99 = 138_744usize;
@@ -2654,6 +2660,9 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_direct_restoring_final_low_branch_neighbor_high_both_collisions_n16={direct_restoring_final_low_branch_neighbor_high_both_collisions_n16}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_neighbor_full_high_both_collisions_n14={direct_restoring_final_low_branch_neighbor_full_high_both_collisions_n14}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_neighbor_full_high_both_collisions_n16={direct_restoring_final_low_branch_neighbor_full_high_both_collisions_n16}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_radius_full_high_r3_collisions_n14={direct_restoring_final_low_branch_radius_full_high_r3_collisions_n14}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_radius_full_high_r3_collisions_n16={direct_restoring_final_low_branch_radius_full_high_r3_collisions_n16}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_radius_full_high_r3_states_n16={direct_restoring_final_low_branch_radius_full_high_r3_states_n16}");
     println!("METRIC scratch600_direct_restoring_final_coeff_decoder_exact_p99={direct_restoring_final_coeff_decoder_exact_p99}");
     println!("METRIC scratch600_direct_restoring_final_coeff_decoder_digit_width_p99={direct_restoring_final_coeff_decoder_digit_width_p99}");
     println!("METRIC scratch600_direct_restoring_final_coeff_decoder_scan_p99={direct_restoring_final_coeff_decoder_scan_p99}");
@@ -4273,6 +4282,12 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
         direct_restoring_final_low_branch_neighbor_full_high_both_collisions_n14 > 0
             && direct_restoring_final_low_branch_neighbor_full_high_both_collisions_n16 > 0,
         "neighbor full metadata context now recovers the hidden high branch; revisit low-branch decoder"
+    );
+    assert!(
+        direct_restoring_final_low_branch_radius_full_high_r3_collisions_n14 > 0
+            && direct_restoring_final_low_branch_radius_full_high_r3_collisions_n16 > 0
+            && direct_restoring_final_low_branch_radius_full_high_r3_states_n16 > 200_000,
+        "radius-3 full low-branch metadata context now recovers the hidden high branch; revisit finite-context decoder"
     );
     assert!(
         direct_restoring_final_coeff_decoder_exact_p99

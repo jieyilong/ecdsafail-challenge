@@ -36800,6 +36800,190 @@ mod tests {
     }
 
     #[test]
+    fn direct_centered_low_branch_radius_full_metadata_does_not_recover_high_branch() {
+        // Push the previous/next metadata escape one step harder: grant a
+        // radius-1/2/3 window of already-decoded low-branch metadata around
+        // each ambiguous high/low branch.  If a small finite-state parser were
+        // hiding in the alignment stream, these exact toy images would become
+        // injective.  Remaining collisions mean the branch needs a non-local
+        // invariant or an explicit side channel.
+        use std::collections::BTreeMap;
+
+        type BaseKey = (usize, i128, bool, bool, bool, bool, bool, usize, usize, usize);
+        type MetaKey = (usize, usize, usize);
+
+        #[derive(Clone, Copy)]
+        struct StepRow {
+            base: BaseKey,
+            target: Option<u8>,
+            meta: MetaKey,
+        }
+
+        fn collision_count<K: Ord>(image: &BTreeMap<K, u8>) -> usize {
+            image.values().filter(|&&mask| mask == 0b11).count()
+        }
+
+        let bit_len_u128 = |x: u128| -> usize {
+            if x == 0 { 0 } else { 128 - x.leading_zeros() as usize }
+        };
+        let context_for = |trace: &[StepRow], idx: usize, radius: usize, n: usize| -> Vec<MetaKey> {
+            let mut context = Vec::with_capacity(2 * radius);
+            for dist in (1..=radius).rev() {
+                let sentinel = (n + dist, n + dist, n + dist);
+                context.push(
+                    idx.checked_sub(dist)
+                        .and_then(|pos| trace.get(pos))
+                        .map(|row| row.meta)
+                        .unwrap_or(sentinel),
+                );
+            }
+            for dist in 1..=radius {
+                let sentinel = (n + radius + dist, n + radius + dist, n + radius + dist);
+                context.push(
+                    trace
+                        .get(idx + dist)
+                        .map(|row| row.meta)
+                        .unwrap_or(sentinel),
+                );
+            }
+            context
+        };
+
+        let cases = [(10usize, 1021u16), (12, 4093), (14, 16381), (16, 65521)];
+        let radii = [1usize, 2, 3];
+        let mut largest_collisions = [0usize; 3];
+        let mut largest_states = [0usize; 3];
+        let mut largest_ambiguous = 0usize;
+        let mut largest_high_count = 0usize;
+        for &(n, p) in &cases {
+            let modulus = 1i128 << n;
+            let mut images = vec![BTreeMap::<(BaseKey, Vec<MetaKey>), u8>::new(); radii.len()];
+            let mut ambiguous = 0usize;
+            let mut high_count = 0usize;
+
+            for x in 1..p {
+                let mut u = p as i128;
+                let mut v = x as i128;
+                let mut coeff_u = 0i128;
+                let mut coeff_v = 1i128;
+                let mut step = 0usize;
+                let mut trace = Vec::<StepRow>::new();
+                while v != 0 {
+                    let abs_u = u.unsigned_abs();
+                    let abs_v = v.unsigned_abs();
+                    let adjusted = abs_u + (abs_v >> 1usize);
+                    let q_abs = adjusted / abs_v;
+                    let q_signed = if (u < 0) ^ (v < 0) {
+                        -(q_abs as i128)
+                    } else {
+                        q_abs as i128
+                    };
+                    let next_v = u - q_signed * v;
+                    let next_coeff_v = coeff_u - q_signed * coeff_v;
+
+                    let denom = coeff_v.unsigned_abs();
+                    assert!(denom > 0, "radius-full denominator vanished");
+                    let next_abs = next_coeff_v.unsigned_abs();
+                    let low_numer = if coeff_u == 0 {
+                        next_abs
+                    } else {
+                        next_abs
+                            .checked_sub(1)
+                            .expect("radius-full low numerator underflow")
+                    };
+                    let high_numer = if coeff_u == 0 {
+                        low_numer
+                    } else {
+                        next_abs + denom - 1
+                    };
+                    let low_q = low_numer / denom;
+                    let high_q = high_numer / denom;
+                    assert!(
+                        q_abs == low_q || q_abs == high_q,
+                        "actual quotient escaped radius-full high/low candidates"
+                    );
+                    let target = if coeff_u != 0 && low_q != high_q {
+                        Some((q_abs == high_q) as u8)
+                    } else {
+                        None
+                    };
+                    let det = v * next_coeff_v - next_v * coeff_v;
+                    let det_residue = det.rem_euclid(modulus);
+                    let decoded_q_neg = !((next_coeff_v < 0) ^ (coeff_v < 0));
+                    let denom_width = bit_len_u128(denom);
+                    let low_width = bit_len_u128(low_numer).max(denom_width).max(1);
+                    let low_alignment = bit_len_u128(low_numer).saturating_sub(denom_width);
+                    let base = (
+                        step,
+                        det_residue,
+                        coeff_v < 0,
+                        next_coeff_v < 0,
+                        v < 0,
+                        next_v < 0,
+                        decoded_q_neg,
+                        low_alignment,
+                        denom_width,
+                        low_width,
+                    );
+                    let meta = (low_alignment, denom_width, low_width);
+                    trace.push(StepRow { base, target, meta });
+
+                    u = v;
+                    v = next_v;
+                    coeff_u = coeff_v;
+                    coeff_v = next_coeff_v;
+                    step += 1;
+                }
+
+                for (idx, row) in trace.iter().copied().enumerate() {
+                    let Some(target) = row.target else { continue; };
+                    ambiguous += 1;
+                    high_count += target as usize;
+                    for (radius_idx, &radius) in radii.iter().enumerate() {
+                        let context = context_for(&trace, idx, radius, n);
+                        *images[radius_idx].entry((row.base, context)).or_insert(0) |=
+                            1u8 << target;
+                    }
+                }
+            }
+
+            largest_ambiguous = largest_ambiguous.max(ambiguous);
+            largest_high_count = largest_high_count.max(high_count);
+            for (radius_idx, &radius) in radii.iter().enumerate() {
+                let collisions = collision_count(&images[radius_idx]);
+                let states = images[radius_idx].len();
+                largest_collisions[radius_idx] = largest_collisions[radius_idx].max(collisions);
+                largest_states[radius_idx] = largest_states[radius_idx].max(states);
+                println!("METRIC centered_direct_low_branch_radius_full_high_n{n}_r{radius}_collisions={collisions}");
+                println!("METRIC centered_direct_low_branch_radius_full_high_n{n}_r{radius}_states={states}");
+                eprintln!(
+                    "Low-branch radius full high recovery n={n} r={radius}: ambiguous={ambiguous}, high={high_count}, collisions={collisions}, states={states}"
+                );
+            }
+        }
+        println!(
+            "METRIC centered_direct_low_branch_radius_full_high_largest_ambiguous={largest_ambiguous}"
+        );
+        println!(
+            "METRIC centered_direct_low_branch_radius_full_high_largest_high_count={largest_high_count}"
+        );
+        for (radius_idx, &radius) in radii.iter().enumerate() {
+            println!(
+                "METRIC centered_direct_low_branch_radius_full_high_r{radius}_largest_collisions={}",
+                largest_collisions[radius_idx]
+            );
+            println!(
+                "METRIC centered_direct_low_branch_radius_full_high_r{radius}_largest_states={}",
+                largest_states[radius_idx]
+            );
+        }
+        assert!(
+            largest_collisions[2] > 0,
+            "radius-3 full low-branch metadata recovers the hidden high branch; build the finite-context decoder"
+        );
+    }
+
+    #[test]
     fn direct_centered_restoring_final_block_joint_rank_bits_are_dense() {
         // The mixed 4..8 block-joint binary-depth floor only helps if the block
         // pattern rank can be decoded phase-cleanly.  Treat the exact toy
