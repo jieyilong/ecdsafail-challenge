@@ -6356,6 +6356,8 @@ mod tests {
             vec![Vec::<isize>::with_capacity(samples); WINDOW_SCAN.len()];
         let mut scan_joint_table_only_pointadds =
             vec![Vec::<isize>::with_capacity(samples); WINDOW_SCAN.len()];
+        let mut scan_joint_table_source_pointadds =
+            vec![Vec::<isize>::with_capacity(samples); WINDOW_SCAN.len()];
         let mut scan_joint_source_product_pointadds =
             vec![Vec::<isize>::with_capacity(samples); WINDOW_SCAN.len()];
         let mut scan_joint_wnaf_pointadds =
@@ -6367,6 +6369,8 @@ mod tests {
         let mut scan_joint_selector_floors =
             vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
         let mut scan_joint_table_rows =
+            vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
+        let mut scan_joint_table_source_products =
             vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
         let mut scan_joint_source_product_floors =
             vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
@@ -6562,6 +6566,9 @@ mod tests {
                 let joint_windows = div_ceil(coeff_bits0.max(coeff_bits1), window);
                 let table_row_floor =
                     joint_windows * ((1usize << (2 * window)).saturating_sub(1));
+                let digit_values = 1usize << window;
+                let table_source_product_floor =
+                    joint_windows * 2 * 256 * 2 * (digit_values - 1) * digit_values;
                 let source_product_floor =
                     halfgcd_signed_two_coeff_apply_static_window_source_product_floor_for_test(
                         b, d, window, true,
@@ -6587,6 +6594,8 @@ mod tests {
                 let pointadd = without_app + 2 * (app_joint + selector_floor) as isize;
                 let table_only_pointadd =
                     without_app + 2 * (app_joint + table_row_floor) as isize;
+                let table_source_pointadd =
+                    without_app + 2 * (app_joint + table_source_product_floor) as isize;
                 let source_product_pointadd =
                     without_app + 2 * (app_joint + source_selector_floor) as isize;
                 let wnaf_pointadd =
@@ -6595,12 +6604,14 @@ mod tests {
                     without_app + 2 * (wnaf_app + wnaf_compact_selector_floor) as isize;
                 scan_joint_pointadds[window_idx].push(pointadd);
                 scan_joint_table_only_pointadds[window_idx].push(table_only_pointadd);
+                scan_joint_table_source_pointadds[window_idx].push(table_source_pointadd);
                 scan_joint_source_product_pointadds[window_idx].push(source_product_pointadd);
                 scan_joint_wnaf_pointadds[window_idx].push(wnaf_pointadd);
                 scan_joint_wnaf_compact_pointadds[window_idx].push(wnaf_compact_pointadd);
                 scan_joint_apps[window_idx].push(app_joint);
                 scan_joint_selector_floors[window_idx].push(selector_floor);
                 scan_joint_table_rows[window_idx].push(table_row_floor);
+                scan_joint_table_source_products[window_idx].push(table_source_product_floor);
                 scan_joint_source_product_floors[window_idx].push(source_product_floor);
                 scan_joint_wnaf_apps[window_idx].push(wnaf_app);
                 scan_joint_wnaf_selector_floors[window_idx].push(wnaf_selector_floor);
@@ -6665,6 +6676,7 @@ mod tests {
         let selector_over_joint4_budget = app_selector_floor_mean - joint4_selector_budget;
         let mut best_scan: Option<(usize, f64, isize, f64, f64, f64)> = None;
         let mut best_table_only_scan: Option<(usize, f64, isize)> = None;
+        let mut best_table_source_scan: Option<(usize, f64, isize, f64)> = None;
         let mut best_source_product_scan: Option<(usize, f64, isize, f64, f64)> = None;
         let mut best_wnaf_scan: Option<(usize, f64, isize, f64, f64, f64, f64, f64)> = None;
         let mut best_wnaf_compact_scan: Option<(usize, f64, isize, f64, f64, f64, f64)> = None;
@@ -6673,6 +6685,8 @@ mod tests {
             let app_mean = mean_usize(&scan_joint_apps[window_idx]);
             let selector_mean = mean_usize(&scan_joint_selector_floors[window_idx]);
             let table_row_mean = mean_usize(&scan_joint_table_rows[window_idx]);
+            let table_source_product_mean =
+                mean_usize(&scan_joint_table_source_products[window_idx]);
             let source_product_mean =
                 mean_usize(&scan_joint_source_product_floors[window_idx]);
             let wnaf_mean = mean_isize(&scan_joint_wnaf_pointadds[window_idx]);
@@ -6688,6 +6702,9 @@ mod tests {
             let p99 = p99_isize(&mut scan_joint_pointadds[window_idx]);
             let table_only_mean = mean_isize(&scan_joint_table_only_pointadds[window_idx]);
             let table_only_p99 = p99_isize(&mut scan_joint_table_only_pointadds[window_idx]);
+            let table_source_mean = mean_isize(&scan_joint_table_source_pointadds[window_idx]);
+            let table_source_p99 =
+                p99_isize(&mut scan_joint_table_source_pointadds[window_idx]);
             let source_product_mean_pointadd =
                 mean_isize(&scan_joint_source_product_pointadds[window_idx]);
             let source_product_p99 =
@@ -6708,6 +6725,17 @@ mod tests {
                 .unwrap_or(true)
             {
                 best_table_only_scan = Some((window, table_only_mean, table_only_p99));
+            }
+            if best_table_source_scan
+                .map(|(_, old_mean, _, _)| table_source_mean < old_mean)
+                .unwrap_or(true)
+            {
+                best_table_source_scan = Some((
+                    window,
+                    table_source_mean,
+                    table_source_p99,
+                    table_source_product_mean,
+                ));
             }
             if best_source_product_scan
                 .map(|(_, old_mean, _, _, _)| source_product_mean_pointadd < old_mean)
@@ -6764,6 +6792,12 @@ mod tests {
             best_table_only_scan_mean,
             best_table_only_scan_p99,
         ) = best_table_only_scan.unwrap();
+        let (
+            best_table_source_scan_window,
+            best_table_source_scan_mean,
+            best_table_source_scan_p99,
+            best_table_source_product_mean,
+        ) = best_table_source_scan.unwrap();
         let (
             best_source_product_scan_window,
             best_source_product_scan_mean,
@@ -6862,6 +6896,22 @@ mod tests {
         println!(
             "METRIC halfgcd_fixed_depth64_static_window_table_only_best_gap_to_2700k={:.3}",
             best_table_only_scan_mean - TARGET
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_table_source_best_w={best_table_source_scan_window}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_table_source_pointadd_mean={best_table_source_scan_mean:.3}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_table_source_pointadd_p99={best_table_source_scan_p99}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_table_source_gap_to_2700k={:.3}",
+            best_table_source_scan_mean - TARGET
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_table_source_product_floor_mean={best_table_source_product_mean:.3}"
         );
         println!(
             "METRIC halfgcd_fixed_depth64_static_window_required_selector_mean={best_scan_required_selector_mean:.3}"
@@ -6967,7 +7017,7 @@ mod tests {
         );
         println!("METRIC halfgcd_fixed_depth64_app_static_over_popcount_mean={app_delta_mean:.3}");
         eprintln!(
-            "half-GCD fixed-depth64 coefficient application control model: popcount_mean={popcount_mean:.1}, static_mean={static_mean:.1}, sep4_mean={sep4_mean:.1}, joint4_mean={joint4_mean:.1}, joint4_with_selector={joint4_with_selector_mean:.1}, scan_best_w={best_scan_window}, scan_best={best_scan_mean:.1}, table_only={best_table_only_scan_mean:.1}, source_best_w={best_source_product_scan_window}, source_best={best_source_product_scan_mean:.1}, wnaf_w={best_wnaf_scan_window}, wnaf={best_wnaf_scan_mean:.1}, wnaf_compact_w={best_wnaf_compact_scan_window}, wnaf_compact={best_wnaf_compact_scan_mean:.1}, wnaf_compact_missing_active={best_wnaf_compact_missing_active_mean:.1}, wnaf_compact_active_slack={best_wnaf_compact_active_slack_oneway:.1}, selector_required={best_scan_required_selector_mean:.1}, first64_static={static_first64:.1}, static_p99={static_p99}, app_popcount_mean={app_popcount_mean:.1}, app_static_mean={app_static_mean:.1}, app_sep4={app_sep4_mean:.1}, app_joint4={app_joint4_mean:.1}, selector_floor={app_selector_floor_mean:.1}, scan_selector={best_scan_selector_mean:.1}, scan_rows={best_scan_table_row_mean:.1}, source_floor={best_source_product_floor_mean:.1}, source_rows={best_source_product_table_row_mean:.1}, wnaf_app={best_wnaf_app_mean:.1}, wnaf_selector={best_wnaf_selector_mean:.1}, wnaf_source={best_wnaf_source_product_mean:.1}, wnaf_rows={best_wnaf_table_row_mean:.1}, wnaf_positions={best_wnaf_positions_mean:.1}, wnaf_compact_app={best_wnaf_compact_app_mean:.1}, wnaf_compact_source={best_wnaf_compact_source_product_mean:.1}, wnaf_compact_rows={best_wnaf_compact_table_row_mean:.1}, app_delta={app_delta_mean:.1}, sep4_budget={sep4_selector_budget:.1}, joint4_budget={joint4_selector_budget:.1}, selector_over_joint4_budget={selector_over_joint4_budget:.1}"
+            "half-GCD fixed-depth64 coefficient application control model: popcount_mean={popcount_mean:.1}, static_mean={static_mean:.1}, sep4_mean={sep4_mean:.1}, joint4_mean={joint4_mean:.1}, joint4_with_selector={joint4_with_selector_mean:.1}, scan_best_w={best_scan_window}, scan_best={best_scan_mean:.1}, table_only={best_table_only_scan_mean:.1}, table_source_w={best_table_source_scan_window}, table_source={best_table_source_scan_mean:.1}, source_best_w={best_source_product_scan_window}, source_best={best_source_product_scan_mean:.1}, wnaf_w={best_wnaf_scan_window}, wnaf={best_wnaf_scan_mean:.1}, wnaf_compact_w={best_wnaf_compact_scan_window}, wnaf_compact={best_wnaf_compact_scan_mean:.1}, wnaf_compact_missing_active={best_wnaf_compact_missing_active_mean:.1}, wnaf_compact_active_slack={best_wnaf_compact_active_slack_oneway:.1}, selector_required={best_scan_required_selector_mean:.1}, first64_static={static_first64:.1}, static_p99={static_p99}, app_popcount_mean={app_popcount_mean:.1}, app_static_mean={app_static_mean:.1}, app_sep4={app_sep4_mean:.1}, app_joint4={app_joint4_mean:.1}, selector_floor={app_selector_floor_mean:.1}, scan_selector={best_scan_selector_mean:.1}, scan_rows={best_scan_table_row_mean:.1}, table_source_floor={best_table_source_product_mean:.1}, source_floor={best_source_product_floor_mean:.1}, source_rows={best_source_product_table_row_mean:.1}, wnaf_app={best_wnaf_app_mean:.1}, wnaf_selector={best_wnaf_selector_mean:.1}, wnaf_source={best_wnaf_source_product_mean:.1}, wnaf_rows={best_wnaf_table_row_mean:.1}, wnaf_positions={best_wnaf_positions_mean:.1}, wnaf_compact_app={best_wnaf_compact_app_mean:.1}, wnaf_compact_source={best_wnaf_compact_source_product_mean:.1}, wnaf_compact_rows={best_wnaf_compact_table_row_mean:.1}, app_delta={app_delta_mean:.1}, sep4_budget={sep4_selector_budget:.1}, joint4_budget={joint4_selector_budget:.1}, selector_over_joint4_budget={selector_over_joint4_budget:.1}"
         );
         assert!(
             popcount_mean > TARGET && popcount_first64 > TARGET,
@@ -7002,6 +7052,11 @@ mod tests {
                 && best_scan_selector_cut_needed > 20_000.0
                 && best_scan_table_margin > 5_000.0,
             "half-GCD selector budget changed; revisit static-window application route"
+        );
+        assert!(
+            best_table_source_scan_mean > TARGET
+                && best_table_source_product_mean > best_source_product_floor_mean,
+            "row-controlled table application now fits; build a structural selector"
         );
         assert!(
             best_source_product_scan_mean > TARGET
