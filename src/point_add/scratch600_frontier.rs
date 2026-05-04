@@ -151,7 +151,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "direct_centered_restoring_final_mixed67_huffman_floor",
             scratch_bits: 663,
             charged_toffoli: Some(2_690_447),
-            blocker: "distribution-aware Huffman lookup floor would clear 2.7M by 9553 at 663 scratch, but this is only a lower-bound parser target until a phase-clean reversible decision-tree decoder is built",
+            blocker: "distribution-aware Huffman path floor would clear 2.7M by 9553 at 663 scratch, but coherent tree execution reverts to the full scan and misses by 105208 unless a phase-clean classical-path decoder is found",
         },
         Candidate {
             name: "direct_centered_restoring_final_cond_block6_parser",
@@ -517,6 +517,8 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let direct_restoring_final_block32_qrom_block_count_p99 = 8usize;
     let direct_restoring_final_block_parser_lookup_scan_floor_mean = 18_856.559f64;
     let direct_restoring_final_block_parser_lookup_scan_floor_p99 = 20_579usize;
+    let direct_restoring_final_block_parser_cond_branch_lookup_scan_floor_mean = 18_855.902f64;
+    let direct_restoring_final_block_parser_cond_branch_lookup_scan_floor_p99 = 20_579usize;
     let direct_restoring_final_block_parser_best_with_lookup_mean = 21_672.106f64;
     let direct_restoring_final_block_parser_best_with_lookup_gap = 31_958.425f64;
     let direct_restoring_final_block_parser_binary_lookup_floor_mean = 6_796.417f64;
@@ -602,9 +604,22 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let direct_restoring_final_cond_mixed67_with_binary_lookup_2x_mean = 15_864.168f64;
     let direct_restoring_final_cond_mixed67_with_binary_lookup_2x_gap = 8_726.672f64;
     let direct_restoring_final_cond_mixed67_lookup_multiplier_budget = 1.678_966f64;
+    let direct_restoring_final_cond_mixed67_with_cond_scan_lookup_2x_mean = 39_984.452f64;
+    let direct_restoring_final_cond_mixed67_with_cond_scan_lookup_2x_gap = 105_207.810f64;
     let direct_restoring_final_cond_mixed67_with_huffman_lookup_2x_mean = 11_294.160f64;
     let direct_restoring_final_cond_mixed67_with_huffman_lookup_2x_gap = -9_553.359f64;
     let direct_restoring_final_cond_mixed67_huffman_lookup_multiplier_budget = 2.529_477f64;
+    let direct_restoring_final_huffman_tree_toy_compare_ccx = 30usize;
+    let direct_restoring_final_huffman_tree_toy_forward_ccx = 34usize;
+    let direct_restoring_final_huffman_tree_toy_roundtrip_ccx = 68usize;
+    let direct_restoring_final_huffman_tree_toy_peak_q = 21usize;
+    let direct_restoring_final_huffman_tree_toy_weighted_path_depth = 1.888_889f64;
+    let direct_restoring_final_huffman_tree_toy_full_tree_nodes = 5usize;
+    let direct_restoring_final_huffman_tree_toy_path_compare_ccx_mean = 11.333f64;
+    let direct_restoring_final_huffman_tree_toy_full_over_path_ratio = 2.647_059f64;
+    let direct_restoring_final_huffman_tree_toy_dirty_restore_cases = 0usize;
+    let direct_restoring_final_huffman_tree_toy_dirty_history_cases = 0usize;
+    let direct_restoring_final_huffman_tree_toy_dirty_phase_cases = 0usize;
     let direct_restoring_final_block_parser_align_support_noncontig_steps = 52usize;
     let direct_restoring_final_block_parser_align_support_offset_steps = 127usize;
     let direct_restoring_final_block_parser_align_support_max_span = 20usize;
@@ -1191,6 +1206,8 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_direct_restoring_final_block32_qrom_block_count_p99={direct_restoring_final_block32_qrom_block_count_p99}");
     println!("METRIC scratch600_direct_restoring_final_block_parser_lookup_scan_floor_mean={direct_restoring_final_block_parser_lookup_scan_floor_mean:.3}");
     println!("METRIC scratch600_direct_restoring_final_block_parser_lookup_scan_floor_p99={direct_restoring_final_block_parser_lookup_scan_floor_p99}");
+    println!("METRIC scratch600_direct_restoring_final_block_parser_cond_branch_lookup_scan_floor_mean={direct_restoring_final_block_parser_cond_branch_lookup_scan_floor_mean:.3}");
+    println!("METRIC scratch600_direct_restoring_final_block_parser_cond_branch_lookup_scan_floor_p99={direct_restoring_final_block_parser_cond_branch_lookup_scan_floor_p99}");
     println!("METRIC scratch600_direct_restoring_final_block_parser_best_with_lookup_mean={direct_restoring_final_block_parser_best_with_lookup_mean:.3}");
     println!("METRIC scratch600_direct_restoring_final_block_parser_best_with_lookup_gap_to_2700k={direct_restoring_final_block_parser_best_with_lookup_gap:.3}");
     println!("METRIC scratch600_direct_restoring_final_block_parser_binary_lookup_floor_mean={direct_restoring_final_block_parser_binary_lookup_floor_mean:.3}");
@@ -1272,9 +1289,22 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_direct_restoring_final_cond_mixed67_with_binary_lookup_2x_mean={direct_restoring_final_cond_mixed67_with_binary_lookup_2x_mean:.3}");
     println!("METRIC scratch600_direct_restoring_final_cond_mixed67_with_binary_lookup_2x_gap_to_2700k={direct_restoring_final_cond_mixed67_with_binary_lookup_2x_gap:.3}");
     println!("METRIC scratch600_direct_restoring_final_cond_mixed67_lookup_multiplier_budget={direct_restoring_final_cond_mixed67_lookup_multiplier_budget:.6}");
+    println!("METRIC scratch600_direct_restoring_final_cond_mixed67_with_cond_scan_lookup_2x_mean={direct_restoring_final_cond_mixed67_with_cond_scan_lookup_2x_mean:.3}");
+    println!("METRIC scratch600_direct_restoring_final_cond_mixed67_with_cond_scan_lookup_2x_gap_to_2700k={direct_restoring_final_cond_mixed67_with_cond_scan_lookup_2x_gap:.3}");
     println!("METRIC scratch600_direct_restoring_final_cond_mixed67_with_huffman_lookup_2x_mean={direct_restoring_final_cond_mixed67_with_huffman_lookup_2x_mean:.3}");
     println!("METRIC scratch600_direct_restoring_final_cond_mixed67_with_huffman_lookup_2x_gap_to_2700k={direct_restoring_final_cond_mixed67_with_huffman_lookup_2x_gap:.3}");
     println!("METRIC scratch600_direct_restoring_final_cond_mixed67_huffman_lookup_multiplier_budget={direct_restoring_final_cond_mixed67_huffman_lookup_multiplier_budget:.6}");
+    println!("METRIC scratch600_direct_restoring_final_huffman_tree_toy_compare_ccx={direct_restoring_final_huffman_tree_toy_compare_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_huffman_tree_toy_forward_ccx={direct_restoring_final_huffman_tree_toy_forward_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_huffman_tree_toy_roundtrip_ccx={direct_restoring_final_huffman_tree_toy_roundtrip_ccx}");
+    println!("METRIC scratch600_direct_restoring_final_huffman_tree_toy_peak_q={direct_restoring_final_huffman_tree_toy_peak_q}");
+    println!("METRIC scratch600_direct_restoring_final_huffman_tree_toy_weighted_path_depth={direct_restoring_final_huffman_tree_toy_weighted_path_depth:.6}");
+    println!("METRIC scratch600_direct_restoring_final_huffman_tree_toy_full_tree_nodes={direct_restoring_final_huffman_tree_toy_full_tree_nodes}");
+    println!("METRIC scratch600_direct_restoring_final_huffman_tree_toy_path_compare_ccx_mean={direct_restoring_final_huffman_tree_toy_path_compare_ccx_mean:.3}");
+    println!("METRIC scratch600_direct_restoring_final_huffman_tree_toy_full_over_path_ratio={direct_restoring_final_huffman_tree_toy_full_over_path_ratio:.6}");
+    println!("METRIC scratch600_direct_restoring_final_huffman_tree_toy_dirty_restore_cases={direct_restoring_final_huffman_tree_toy_dirty_restore_cases}");
+    println!("METRIC scratch600_direct_restoring_final_huffman_tree_toy_dirty_history_cases={direct_restoring_final_huffman_tree_toy_dirty_history_cases}");
+    println!("METRIC scratch600_direct_restoring_final_huffman_tree_toy_dirty_phase_cases={direct_restoring_final_huffman_tree_toy_dirty_phase_cases}");
     println!("METRIC scratch600_direct_restoring_final_block_parser_align_support_noncontig_steps={direct_restoring_final_block_parser_align_support_noncontig_steps}");
     println!("METRIC scratch600_direct_restoring_final_block_parser_align_support_offset_steps={direct_restoring_final_block_parser_align_support_offset_steps}");
     println!("METRIC scratch600_direct_restoring_final_block_parser_align_support_max_span={direct_restoring_final_block_parser_align_support_max_span}");
@@ -1841,6 +1871,20 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && direct_restoring_final_cond_mixed67_with_huffman_lookup_2x_gap < 0.0
             && direct_restoring_final_cond_mixed67_huffman_lookup_multiplier_budget > 2.5,
         "distribution-aware restoring parser lookup floor no longer clears target; update parser target"
+    );
+    assert!(
+        direct_restoring_final_block_parser_cond_branch_lookup_scan_floor_mean
+            > direct_restoring_final_block_parser_cond_branch_huffman_lookup_floor_mean
+            && direct_restoring_final_cond_mixed67_with_cond_scan_lookup_2x_gap > 100_000.0
+            && direct_restoring_final_huffman_tree_toy_compare_ccx == 30
+            && direct_restoring_final_huffman_tree_toy_roundtrip_ccx
+                == 2 * direct_restoring_final_huffman_tree_toy_forward_ccx
+            && direct_restoring_final_huffman_tree_toy_full_over_path_ratio
+                > direct_restoring_final_cond_mixed67_huffman_lookup_multiplier_budget
+            && direct_restoring_final_huffman_tree_toy_dirty_restore_cases == 0
+            && direct_restoring_final_huffman_tree_toy_dirty_history_cases == 0
+            && direct_restoring_final_huffman_tree_toy_dirty_phase_cases == 0,
+        "coherent restoring parser decision-tree blocker changed; revisit Huffman path floor"
     );
     assert!(
         direct_restoring_final_block_parser_best_qrom_row_floor as f64

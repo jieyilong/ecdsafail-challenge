@@ -21444,6 +21444,7 @@ mod tests {
                 })
                 .collect();
         let mut binary_lookup_floor_rows = Vec::with_capacity(samples);
+        let mut cond_branch_lookup_scan_floor_rows = Vec::with_capacity(samples);
         let mut cond_branch_binary_lookup_floor_rows = Vec::with_capacity(samples);
         let mut huffman_lookup_floor_rows = Vec::with_capacity(samples);
         let mut cond_branch_huffman_lookup_floor_rows = Vec::with_capacity(samples);
@@ -21467,6 +21468,7 @@ mod tests {
                 branch_at_step[step] = Some(branch);
             }
             let mut lookup_scan_floor = 0usize;
+            let mut cond_branch_lookup_scan_floor = 0usize;
             let mut binary_lookup_floor = 0usize;
             let mut cond_branch_binary_lookup_floor = 0usize;
             let mut huffman_lookup_floor = 0usize;
@@ -21475,6 +21477,8 @@ mod tests {
                 let alignment = alignments[step];
                 let alignment_support = align_by_step[step].len();
                 lookup_scan_floor += model_precision_bits * alignment_support.saturating_sub(1);
+                cond_branch_lookup_scan_floor +=
+                    model_precision_bits * alignment_support.saturating_sub(1);
                 binary_lookup_floor += model_precision_bits * ceil_log2(alignment_support);
                 cond_branch_binary_lookup_floor +=
                     model_precision_bits * ceil_log2(alignment_support);
@@ -21502,6 +21506,8 @@ mod tests {
                         .iter()
                         .filter(|&&count| count > 0)
                         .count();
+                    cond_branch_lookup_scan_floor +=
+                        model_precision_bits * cond_branch_support.saturating_sub(1);
                     cond_branch_binary_lookup_floor +=
                         model_precision_bits * ceil_log2(cond_branch_support);
                     huffman_lookup_floor +=
@@ -21514,6 +21520,7 @@ mod tests {
                 }
             }
             lookup_scan_floor_rows.push(lookup_scan_floor);
+            cond_branch_lookup_scan_floor_rows.push(cond_branch_lookup_scan_floor);
             binary_lookup_floor_rows.push(binary_lookup_floor);
             cond_branch_binary_lookup_floor_rows.push(cond_branch_binary_lookup_floor);
             huffman_lookup_floor_rows.push(huffman_lookup_floor);
@@ -21523,6 +21530,10 @@ mod tests {
         let lookup_scan_floor_p99 = p99_usize(&mut lookup_scan_floor_rows);
         let best_with_lookup_mean = best_touch_mean + lookup_scan_floor_mean;
         let best_with_lookup_gap = STORED_BRANCH_MEAN + 4.0 * best_with_lookup_mean - TARGET;
+        let cond_branch_lookup_scan_floor_mean =
+            mean_usize(&cond_branch_lookup_scan_floor_rows);
+        let cond_branch_lookup_scan_floor_p99 =
+            p99_usize(&mut cond_branch_lookup_scan_floor_rows);
         let binary_lookup_floor_mean = mean_usize(&binary_lookup_floor_rows);
         let binary_lookup_floor_p99 = p99_usize(&mut binary_lookup_floor_rows);
         let oneway_parser_budget = (TARGET - STORED_BRANCH_MEAN) / 4.0;
@@ -21692,6 +21703,10 @@ mod tests {
             STORED_BRANCH_MEAN + 4.0 * mixed67_with_binary_lookup_2x_mean - TARGET;
         let mixed67_lookup_multiplier_budget =
             (oneway_parser_budget - mixed67_touch_mean) / cond_branch_binary_lookup_floor_mean;
+        let mixed67_with_cond_scan_lookup_2x_mean =
+            mixed67_touch_mean + 2.0 * cond_branch_lookup_scan_floor_mean;
+        let mixed67_with_cond_scan_lookup_2x_gap =
+            STORED_BRANCH_MEAN + 4.0 * mixed67_with_cond_scan_lookup_2x_mean - TARGET;
         let mixed67_with_huffman_lookup_2x_mean =
             mixed67_touch_mean + 2.0 * cond_branch_huffman_lookup_floor_mean;
         let mixed67_with_huffman_lookup_2x_gap =
@@ -21798,6 +21813,8 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_block32_qrom_block_count_p99={block32_qrom_block_count_p99}");
         println!("METRIC centered_direct_restoring_final_block_parser_lookup_scan_floor_mean={lookup_scan_floor_mean:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_lookup_scan_floor_p99={lookup_scan_floor_p99}");
+        println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_lookup_scan_floor_mean={cond_branch_lookup_scan_floor_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_lookup_scan_floor_p99={cond_branch_lookup_scan_floor_p99}");
         println!("METRIC centered_direct_restoring_final_block_parser_best_with_lookup_mean={best_with_lookup_mean:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_best_with_lookup_gap_to_2700k={best_with_lookup_gap:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_binary_lookup_floor_mean={binary_lookup_floor_mean:.3}");
@@ -21840,6 +21857,8 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_cond_mixed67_with_binary_lookup_2x_mean={mixed67_with_binary_lookup_2x_mean:.3}");
         println!("METRIC centered_direct_restoring_final_cond_mixed67_with_binary_lookup_2x_gap_to_2700k={mixed67_with_binary_lookup_2x_gap:.3}");
         println!("METRIC centered_direct_restoring_final_cond_mixed67_lookup_multiplier_budget={mixed67_lookup_multiplier_budget:.6}");
+        println!("METRIC centered_direct_restoring_final_cond_mixed67_with_cond_scan_lookup_2x_mean={mixed67_with_cond_scan_lookup_2x_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_mixed67_with_cond_scan_lookup_2x_gap_to_2700k={mixed67_with_cond_scan_lookup_2x_gap:.3}");
         println!("METRIC centered_direct_restoring_final_cond_mixed67_with_huffman_lookup_2x_mean={mixed67_with_huffman_lookup_2x_mean:.3}");
         println!("METRIC centered_direct_restoring_final_cond_mixed67_with_huffman_lookup_2x_gap_to_2700k={mixed67_with_huffman_lookup_2x_gap:.3}");
         println!("METRIC centered_direct_restoring_final_cond_mixed67_huffman_lookup_multiplier_budget={mixed67_huffman_lookup_multiplier_budget:.6}");
@@ -21847,7 +21866,7 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_block_parser_align_support_offset_steps={align_support_offset_steps}");
         println!("METRIC centered_direct_restoring_final_block_parser_align_support_max_span={align_support_max_span}");
         eprintln!(
-            "Direct-centered restoring-final block parser floor: best_block={best_block}, touch_mean={best_touch_mean:.1}, cond_branch_block={best_cond_branch_block}, cond_touch={best_cond_branch_touch_mean:.1}, cond_scratch={best_cond_branch_scratch_p99}, cond_binary2x_gap={best_cond_branch_with_binary_lookup_2x_gap:.1}, mixed67_period={mixed67_period}, mixed67_mask={mixed67_mask}, mixed67_scratch={mixed67_scratch_p99}, mixed67_binary2x_gap={mixed67_with_binary_lookup_2x_gap:.1}, mixed67_huffman2x_gap={mixed67_with_huffman_lookup_2x_gap:.1}, qrom_rows={best_qrom_row_floor}, lookup_mean={lookup_scan_floor_mean:.1}, binary_lookup={binary_lookup_floor_mean:.1}, huffman_lookup={huffman_lookup_floor_mean:.1}, cond_huffman_lookup={cond_branch_huffman_lookup_floor_mean:.1}, binary2x_gap={best_with_binary_lookup_2x_gap:.1}, noncontig_steps={align_support_noncontig_steps}, touch_plus_lookup={best_with_lookup_mean:.1}, scratch_p99={best_scratch_p99}, compressed_p99={best_compressed_p99}, augmented_gap={best_augmented_gap:.1}, qrom_gap={best_qrom_gap:.1}, lookup_gap={best_with_lookup_gap:.1}, block4_touch={block4_touch_mean:.1}, block4_scratch={block4_scratch_p99}, block4_binary2x_gap={block4_with_binary_lookup_2x_gap:.1}, block4_lookup_multiplier_budget={block4_lookup_multiplier_budget:.3}, cond_block4_scratch={cond_block4_scratch_p99}, cond_block4_binary2x_gap={cond_block4_with_binary_lookup_2x_gap:.1}, block5_touch={block5_touch_mean:.1}, block5_scratch={block5_scratch_p99}, block5_binary2x_gap={block5_with_binary_lookup_2x_gap:.1}, cond_block5_scratch={cond_block5_scratch_p99}, cond_block5_binary2x_gap={cond_block5_with_binary_lookup_2x_gap:.1}, block6_touch={block6_touch_mean:.1}, block6_scratch={block6_scratch_p99}, cond_block6_scratch={cond_block6_scratch_p99}, cond_block6_binary2x_gap={cond_block6_with_binary_lookup_2x_gap:.1}, block7_touch={block7_touch_mean:.1}, block7_scratch={block7_scratch_p99}, block7_binary2x_gap={block7_with_binary_lookup_2x_gap:.1}, block32_touch={block32_touch_mean:.1}, block32_qrom_rows={block32_qrom_row_floor}, block32_scratch={block32_scratch_p99}"
+            "Direct-centered restoring-final block parser floor: best_block={best_block}, touch_mean={best_touch_mean:.1}, cond_branch_block={best_cond_branch_block}, cond_touch={best_cond_branch_touch_mean:.1}, cond_scratch={best_cond_branch_scratch_p99}, cond_binary2x_gap={best_cond_branch_with_binary_lookup_2x_gap:.1}, mixed67_period={mixed67_period}, mixed67_mask={mixed67_mask}, mixed67_scratch={mixed67_scratch_p99}, mixed67_binary2x_gap={mixed67_with_binary_lookup_2x_gap:.1}, mixed67_cond_scan2x_gap={mixed67_with_cond_scan_lookup_2x_gap:.1}, mixed67_huffman2x_gap={mixed67_with_huffman_lookup_2x_gap:.1}, qrom_rows={best_qrom_row_floor}, lookup_mean={lookup_scan_floor_mean:.1}, cond_scan_lookup={cond_branch_lookup_scan_floor_mean:.1}, binary_lookup={binary_lookup_floor_mean:.1}, huffman_lookup={huffman_lookup_floor_mean:.1}, cond_huffman_lookup={cond_branch_huffman_lookup_floor_mean:.1}, binary2x_gap={best_with_binary_lookup_2x_gap:.1}, noncontig_steps={align_support_noncontig_steps}, touch_plus_lookup={best_with_lookup_mean:.1}, scratch_p99={best_scratch_p99}, compressed_p99={best_compressed_p99}, augmented_gap={best_augmented_gap:.1}, qrom_gap={best_qrom_gap:.1}, lookup_gap={best_with_lookup_gap:.1}, block4_touch={block4_touch_mean:.1}, block4_scratch={block4_scratch_p99}, block4_binary2x_gap={block4_with_binary_lookup_2x_gap:.1}, block4_lookup_multiplier_budget={block4_lookup_multiplier_budget:.3}, cond_block4_scratch={cond_block4_scratch_p99}, cond_block4_binary2x_gap={cond_block4_with_binary_lookup_2x_gap:.1}, block5_touch={block5_touch_mean:.1}, block5_scratch={block5_scratch_p99}, block5_binary2x_gap={block5_with_binary_lookup_2x_gap:.1}, cond_block5_scratch={cond_block5_scratch_p99}, cond_block5_binary2x_gap={cond_block5_with_binary_lookup_2x_gap:.1}, block6_touch={block6_touch_mean:.1}, block6_scratch={block6_scratch_p99}, cond_block6_scratch={cond_block6_scratch_p99}, cond_block6_binary2x_gap={cond_block6_with_binary_lookup_2x_gap:.1}, block7_touch={block7_touch_mean:.1}, block7_scratch={block7_scratch_p99}, block7_binary2x_gap={block7_with_binary_lookup_2x_gap:.1}, block32_touch={block32_touch_mean:.1}, block32_qrom_rows={block32_qrom_row_floor}, block32_scratch={block32_scratch_p99}"
         );
         assert!(
             best_scratch_p99 <= GOOGLE_SCRATCH,
@@ -21881,10 +21900,138 @@ mod tests {
             "conditional-branch block parser now fits strict scratch and binary lookup budget; build a toy parser"
         );
         assert!(
+            mixed67_with_cond_scan_lookup_2x_gap > 0.0
+                && cond_branch_lookup_scan_floor_mean > cond_branch_huffman_lookup_floor_mean,
+            "coherent full-tree lookup now fits the mixed 6/7 restoring parser budget; revisit decoder"
+        );
+        assert!(
             best_qrom_row_floor as f64 > oneway_parser_budget
                 && block32_qrom_row_floor as f64 > oneway_parser_budget
                 && best_qrom_gap > 0.0,
             "sampled block-QROM row floor now fits; table decoder may revive restoring-final"
+        );
+    }
+
+    #[test]
+    fn direct_centered_restoring_final_huffman_tree_toy_shows_coherent_full_tree_tax() {
+        // A Huffman lookup floor is only a path-depth floor.  If the tree path
+        // is controlled by quantum metadata, the circuit still has to emit the
+        // whole coherent decision tree and then reverse it; quantum controls do
+        // not reduce executed Toffoli in this harness.  This toy keeps the
+        // local decoder phase-clean, but makes the full-tree/path-depth tax
+        // explicit.
+        use sha3::digest::{ExtendableOutput, Update};
+
+        const SYMBOL_W: usize = 3;
+        const OUT_W: usize = 3;
+        const SYMBOLS: usize = 6;
+        let thresholds = [1usize, 2, 3, 4, 5];
+        let payloads = [3u64, 5, 6, 1, 7, 2];
+        let weights = [32usize, 16, 8, 4, 2, 1];
+        let depths = [1usize, 2, 3, 4, 5, 5];
+        let weighted_depth = weights
+            .iter()
+            .zip(depths.iter())
+            .map(|(&weight, &depth)| weight as f64 * depth as f64)
+            .sum::<f64>()
+            / weights.iter().sum::<usize>() as f64;
+        let coherent_vs_path_ratio = thresholds.len() as f64 / weighted_depth;
+
+        let mut b = super::super::B::new();
+        let symbol = b.alloc_qubits(SYMBOL_W);
+        let threshold_reg = b.alloc_qubits(SYMBOL_W);
+        let lt_flags = b.alloc_qubits(thresholds.len());
+        let leaf_flags = b.alloc_qubits(SYMBOLS);
+        let output = b.alloc_qubits(OUT_W);
+        let start = b.ops.len();
+        for (&threshold, &flag) in thresholds.iter().zip(lt_flags.iter()) {
+            for bit in 0..SYMBOL_W {
+                if ((threshold >> bit) & 1) != 0 {
+                    b.x(threshold_reg[bit]);
+                }
+            }
+            super::super::cmp_lt_into(&mut b, &symbol, &threshold_reg, flag);
+            for bit in (0..SYMBOL_W).rev() {
+                if ((threshold >> bit) & 1) != 0 {
+                    b.x(threshold_reg[bit]);
+                }
+            }
+        }
+        let compare_end = b.ops.len();
+        b.cx(lt_flags[0], leaf_flags[0]);
+        for leaf in 1..SYMBOLS - 1 {
+            b.x(lt_flags[leaf - 1]);
+            b.ccx(lt_flags[leaf - 1], lt_flags[leaf], leaf_flags[leaf]);
+            b.x(lt_flags[leaf - 1]);
+        }
+        b.x(leaf_flags[SYMBOLS - 1]);
+        b.cx(lt_flags[SYMBOLS - 2], leaf_flags[SYMBOLS - 1]);
+        let forward_end = b.ops.len();
+        for (leaf, &payload) in payloads.iter().enumerate() {
+            for bit in 0..OUT_W {
+                if ((payload >> bit) & 1) != 0 {
+                    b.cx(leaf_flags[leaf], output[bit]);
+                }
+            }
+        }
+        emit_inverse_of_existing_ops_for_centered_test(&mut b, start, forward_end);
+
+        let compare_ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..compare_end]);
+        let forward_ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..forward_end]);
+        let roundtrip_ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let peak = b.peak_qubits;
+        let ops = b.ops;
+        let mut dirty_restore_cases = 0usize;
+        let mut dirty_history_cases = 0usize;
+        let mut dirty_phase_cases = 0usize;
+        for sym in 0u64..SYMBOLS as u64 {
+            let mut hasher = sha3::Shake128::default();
+            hasher.update(b"direct-centered-restoring-huffman-tree-toy-v1");
+            let mut xof = hasher.finalize_xof();
+            let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+            set_slice_u512_pm(&mut sim, &symbol, U512::from(sym));
+            sim.apply(&ops);
+
+            let symbol_out = get_slice_u512_pm(&sim, &symbol).as_limbs()[0]
+                & ((1u64 << SYMBOL_W) - 1);
+            let payload_out =
+                get_slice_u512_pm(&sim, &output).as_limbs()[0] & ((1u64 << OUT_W) - 1);
+            let mut dirty_history = false;
+            dirty_history |= get_slice_u512_pm(&sim, &threshold_reg).as_limbs()[0] != 0;
+            dirty_history |= get_slice_u512_pm(&sim, &lt_flags).as_limbs()[0] != 0;
+            dirty_history |= get_slice_u512_pm(&sim, &leaf_flags).as_limbs()[0] != 0;
+            dirty_restore_cases += (symbol_out != sym) as usize;
+            dirty_history_cases += dirty_history as usize;
+            dirty_phase_cases += ((sim.global_phase() & 1) != 0) as usize;
+            assert_eq!(payload_out, payloads[sym as usize], "payload mismatch sym={sym}");
+        }
+
+        let expected_compare_ccx = thresholds.len() * 2 * SYMBOL_W;
+        let path_compare_ccx_mean = 2.0 * SYMBOL_W as f64 * weighted_depth;
+        println!("METRIC centered_direct_restoring_final_huffman_tree_toy_compare_ccx={compare_ccx}");
+        println!("METRIC centered_direct_restoring_final_huffman_tree_toy_forward_ccx={forward_ccx}");
+        println!("METRIC centered_direct_restoring_final_huffman_tree_toy_roundtrip_ccx={roundtrip_ccx}");
+        println!("METRIC centered_direct_restoring_final_huffman_tree_toy_peak_q={peak}");
+        println!("METRIC centered_direct_restoring_final_huffman_tree_toy_weighted_path_depth={weighted_depth:.6}");
+        println!("METRIC centered_direct_restoring_final_huffman_tree_toy_full_tree_nodes={}", thresholds.len());
+        println!("METRIC centered_direct_restoring_final_huffman_tree_toy_path_compare_ccx_mean={path_compare_ccx_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_huffman_tree_toy_full_over_path_ratio={coherent_vs_path_ratio:.6}");
+        println!("METRIC centered_direct_restoring_final_huffman_tree_toy_dirty_restore_cases={dirty_restore_cases}");
+        println!("METRIC centered_direct_restoring_final_huffman_tree_toy_dirty_history_cases={dirty_history_cases}");
+        println!("METRIC centered_direct_restoring_final_huffman_tree_toy_dirty_phase_cases={dirty_phase_cases}");
+        eprintln!(
+            "Direct-centered restoring-final Huffman tree toy: compare_ccx={compare_ccx}, forward_ccx={forward_ccx}, roundtrip_ccx={roundtrip_ccx}, peak={peak}, weighted_depth={weighted_depth:.3}, full_over_path={coherent_vs_path_ratio:.3}, dirty_restore={dirty_restore_cases}, dirty_history={dirty_history_cases}, dirty_phase={dirty_phase_cases}"
+        );
+        assert_eq!(compare_ccx, expected_compare_ccx, "decision compare cost drifted");
+        assert_eq!(roundtrip_ccx, 2 * forward_ccx, "decision tree cleanup is not pure compute/uncompute");
+        assert_eq!(dirty_restore_cases, 0, "decision tree did not restore symbol input");
+        assert_eq!(dirty_history_cases, 0, "decision tree leaked path history");
+        assert_eq!(dirty_phase_cases, 0, "decision tree left phase garbage");
+        assert!(
+            coherent_vs_path_ratio > 2.5,
+            "toy stopped exposing the full-tree/path-depth tax behind the Huffman lower bound"
         );
     }
 
