@@ -11094,6 +11094,493 @@ mod tests {
     }
 
     #[test]
+    fn half_gcd_full_block_endpoint_dp_choice_has_sampled_lookahead12_horizon() {
+        // The local endpoint DP is a useful structural decoder only if it can
+        // be turned into a small phase-clean parser.  Test the optimistic
+        // short-lookahead version directly: given the current carry/seen state,
+        // fixed outgoing endpoint, and the next k local bit-pairs, does the
+        // traced DP choice become a function of that local window?  On the secp
+        // sample, k=12 clears the observed collisions while k=8 does not.  Exact
+        // small toys still need the full toy block, so this is only a parser
+        // horizon lead, not a production proof.
+        use std::collections::{BTreeMap, BTreeSet};
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        struct Cost {
+            cost: usize,
+            digits: usize,
+            occupied: usize,
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        struct Choice {
+            offset: usize,
+            len: usize,
+            c0i: usize,
+            c1i: usize,
+            seen: usize,
+            end_state: u8,
+            digit_pair: u8,
+        }
+
+        fn better(candidate: Cost, old: Option<Cost>) -> Option<Cost> {
+            match old {
+                Some(row)
+                    if (row.cost, row.digits, row.occupied)
+                        <= (candidate.cost, candidate.digits, candidate.occupied) =>
+                {
+                    Some(row)
+                }
+                _ => Some(candidate),
+            }
+        }
+
+        fn add_cost(a: Cost, b: Cost) -> Cost {
+            Cost {
+                cost: a.cost + b.cost,
+                digits: a.digits + b.digits,
+                occupied: a.occupied + b.occupied,
+            }
+        }
+
+        fn local_endpoint_dp_choices(
+            x0: SignedMagU512ForHalfGcdTest,
+            x1: SignedMagU512ForHalfGcdTest,
+            block_idx: usize,
+            block: usize,
+            total_bits: usize,
+            start_state: u8,
+            end_state: u8,
+        ) -> Option<(u128, Vec<Choice>)> {
+            const MOD_ADD_FAST_CCX: usize = 1024;
+            const FIELD_BITS: usize = 256;
+            const STATES: usize = 18;
+            let base = block_idx * block;
+            let len = block.min(total_bits.saturating_sub(base));
+            if len == 0 {
+                return None;
+            }
+            let state_idx = |c0i: usize, c1i: usize, seen: usize| -> usize {
+                ((c0i * 3) + c1i) * 2 + seen
+            };
+            let bit_at = |x: U512, bit: usize| -> i8 {
+                if bit >= 512 {
+                    0
+                } else {
+                    ((x >> bit).as_limbs()[0] & 1) as i8
+                }
+            };
+            let digit_code = |digit: i8| -> u128 {
+                match digit {
+                    -1 => 2,
+                    0 => 0,
+                    1 => 1,
+                    _ => unreachable!("signed-binary digit escaped ternary alphabet"),
+                }
+            };
+            let digit_pair_code = |d0: i8, d1: i8| -> u8 {
+                ((digit_code(d0) as u8) << 2) | digit_code(d1) as u8
+            };
+
+            let end_c0i = (end_state / 3) as usize;
+            let end_c1i = (end_state % 3) as usize;
+            let zero = Cost {
+                cost: 0,
+                digits: 0,
+                occupied: 0,
+            };
+            let mut dp = vec![[None::<Cost>; STATES]; len + 1];
+            dp[len][state_idx(end_c0i, end_c1i, 1)] = Some(zero);
+
+            for offset in (0..len).rev() {
+                let bit = base + offset;
+                let b0 = bit_at(x0.mag, bit);
+                let b1 = bit_at(x1.mag, bit);
+                for c0i in 0..3 {
+                    for c1i in 0..3 {
+                        for seen_idx in 0..2 {
+                            let seen = seen_idx != 0;
+                            let c0 = c0i as i8 - 1;
+                            let c1 = c1i as i8 - 1;
+                            let mut best = None::<Cost>;
+                            for d0 in -1i8..=1 {
+                                let s0 = b0 + c0 - d0;
+                                if s0.rem_euclid(2) != 0 {
+                                    continue;
+                                }
+                                let nc0 = s0 / 2;
+                                if !(-1..=1).contains(&nc0) {
+                                    continue;
+                                }
+                                for d1 in -1i8..=1 {
+                                    let s1 = b1 + c1 - d1;
+                                    if s1.rem_euclid(2) != 0 {
+                                        continue;
+                                    }
+                                    let nc1 = s1 / 2;
+                                    if !(-1..=1).contains(&nc1) {
+                                        continue;
+                                    }
+                                    let digit_count =
+                                        (d0 != 0) as usize + (d1 != 0) as usize;
+                                    let occupied = digit_count != 0;
+                                    let starts_block = occupied && !seen;
+                                    let next_seen = (seen || occupied) as usize;
+                                    let Some(suffix) = dp[offset + 1][state_idx(
+                                        (nc0 + 1) as usize,
+                                        (nc1 + 1) as usize,
+                                        next_seen,
+                                    )] else {
+                                        continue;
+                                    };
+                                    let delta = Cost {
+                                        cost: if occupied { MOD_ADD_FAST_CCX } else { 0 }
+                                            + 2 * FIELD_BITS * digit_count
+                                            + if starts_block { 2 * FIELD_BITS } else { 0 },
+                                        digits: digit_count,
+                                        occupied: occupied as usize,
+                                    };
+                                    best = better(add_cost(delta, suffix), best);
+                                }
+                            }
+                            dp[offset][state_idx(c0i, c1i, seen_idx)] = best;
+                        }
+                    }
+                }
+            }
+
+            let mut c0i = (start_state / 3) as usize;
+            let mut c1i = (start_state % 3) as usize;
+            let mut seen_idx = 0usize;
+            let mut pattern = 0u128;
+            let mut choices = Vec::with_capacity(len);
+            for offset in 0..len {
+                let bit = base + offset;
+                let b0 = bit_at(x0.mag, bit);
+                let b1 = bit_at(x1.mag, bit);
+                let seen = seen_idx != 0;
+                let c0 = c0i as i8 - 1;
+                let c1 = c1i as i8 - 1;
+                let want = dp[offset][state_idx(c0i, c1i, seen_idx)]?;
+                let mut chosen = None::<(usize, usize, usize, i8, i8)>;
+                'digits: for d0 in -1i8..=1 {
+                    let s0 = b0 + c0 - d0;
+                    if s0.rem_euclid(2) != 0 {
+                        continue;
+                    }
+                    let nc0 = s0 / 2;
+                    if !(-1..=1).contains(&nc0) {
+                        continue;
+                    }
+                    for d1 in -1i8..=1 {
+                        let s1 = b1 + c1 - d1;
+                        if s1.rem_euclid(2) != 0 {
+                            continue;
+                        }
+                        let nc1 = s1 / 2;
+                        if !(-1..=1).contains(&nc1) {
+                            continue;
+                        }
+                        let digit_count = (d0 != 0) as usize + (d1 != 0) as usize;
+                        let occupied = digit_count != 0;
+                        let starts_block = occupied && !seen;
+                        let next_seen = (seen || occupied) as usize;
+                        let Some(suffix) = dp[offset + 1][state_idx(
+                            (nc0 + 1) as usize,
+                            (nc1 + 1) as usize,
+                            next_seen,
+                        )] else {
+                            continue;
+                        };
+                        let delta = Cost {
+                            cost: if occupied { MOD_ADD_FAST_CCX } else { 0 }
+                                + 2 * FIELD_BITS * digit_count
+                                + if starts_block { 2 * FIELD_BITS } else { 0 },
+                            digits: digit_count,
+                            occupied: occupied as usize,
+                        };
+                        if add_cost(delta, suffix) == want {
+                            chosen = Some((
+                                (nc0 + 1) as usize,
+                                (nc1 + 1) as usize,
+                                next_seen,
+                                d0,
+                                d1,
+                            ));
+                            break 'digits;
+                        }
+                    }
+                }
+                let (next_c0i, next_c1i, next_seen, d0, d1) = chosen?;
+                pattern |= digit_code(d0) << (4 * offset);
+                pattern |= digit_code(d1) << (4 * offset + 2);
+                choices.push(Choice {
+                    offset,
+                    len,
+                    c0i,
+                    c1i,
+                    seen: seen_idx,
+                    end_state,
+                    digit_pair: digit_pair_code(d0, d1),
+                });
+                c0i = next_c0i;
+                c1i = next_c1i;
+                seen_idx = next_seen;
+            }
+            Some((pattern, choices))
+        }
+
+        fn window_bits(
+            x0: SignedMagU512ForHalfGcdTest,
+            x1: SignedMagU512ForHalfGcdTest,
+            block_idx: usize,
+            block: usize,
+            total_bits: usize,
+            offset: usize,
+            lookahead: usize,
+        ) -> u128 {
+            let base = block_idx * block + offset;
+            let mut word = 0u128;
+            for k in 0..lookahead {
+                let bit = base + k;
+                let b0 = if bit >= total_bits || bit >= 512 {
+                    0
+                } else {
+                    ((x0.mag >> bit).as_limbs()[0] & 1) as u128
+                };
+                let b1 = if bit >= total_bits || bit >= 512 {
+                    0
+                } else {
+                    ((x1.mag >> bit).as_limbs()[0] & 1) as u128
+                };
+                word |= b0 << (2 * k);
+                word |= b1 << (2 * k + 1);
+            }
+            word
+        }
+
+        let endpoint_state = |block_idx: usize, block_start_states: &[u8]| -> u8 {
+            block_start_states
+                .get(block_idx + 1)
+                .copied()
+                .unwrap_or(4)
+        };
+        let total_bits_for = |x0: SignedMagU512ForHalfGcdTest,
+                              x1: SignedMagU512ForHalfGcdTest|
+         -> usize {
+            u512_bit_len_for_halfgcd_test(x0.mag)
+                .max(u512_bit_len_for_halfgcd_test(x1.mag))
+                .max(1)
+                + 3
+        };
+        let record = |maps: &mut [BTreeMap<(usize, usize, usize, usize, usize, u8, u128), u8>],
+                      collisions: &mut [BTreeSet<(usize, usize, usize, usize, usize, u8, u128)>],
+                      lookaheads: &[usize],
+                      x0: SignedMagU512ForHalfGcdTest,
+                      x1: SignedMagU512ForHalfGcdTest,
+                      block_idx: usize,
+                      block: usize,
+                      total_bits: usize,
+                      choice: Choice| {
+            for (idx, &lookahead) in lookaheads.iter().enumerate() {
+                let key = (
+                    choice.offset,
+                    choice.len,
+                    choice.c0i,
+                    choice.c1i,
+                    choice.seen,
+                    choice.end_state,
+                    window_bits(x0, x1, block_idx, block, total_bits, choice.offset, lookahead),
+                );
+                match maps[idx].get(&key).copied() {
+                    Some(old) if old != choice.digit_pair => {
+                        collisions[idx].insert(key);
+                    }
+                    Some(_) => {}
+                    None => {
+                        maps[idx].insert(key, choice.digit_pair);
+                    }
+                }
+            }
+        };
+
+        const DEPTH: usize = 64;
+        const BLOCK: usize = 32;
+        const SAMPLES: usize = 4096;
+        const SAMPLE_LOOKAHEADS: [usize; 8] = [0, 2, 4, 6, 8, 12, 16, 32];
+        let mut sample_maps = vec![BTreeMap::new(); SAMPLE_LOOKAHEADS.len()];
+        let mut sample_collisions = vec![BTreeSet::new(); SAMPLE_LOOKAHEADS.len()];
+        let mut rng = 0x10ca_1dec_0de5_ec4u64;
+        let mut sample_choices = 0usize;
+        let mut sample_mismatches = 0usize;
+        for _ in 0..SAMPLES {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() {
+                x = U256::from(1u64);
+            }
+            let (b, d) =
+                halfgcd_second_column_after_fixed_depth_for_test(x, SECP256K1_P, DEPTH);
+            let (_, _, _, _, _, _, _, digit_patterns, block_start_states) =
+                halfgcd_signed_two_coeff_apply_block_active_trace_for_test(b, d, BLOCK);
+            let total_bits = total_bits_for(b, d);
+            for (block_idx, &pattern) in digit_patterns.iter().enumerate() {
+                if pattern == 0 {
+                    continue;
+                }
+                let (decoded, choices) = local_endpoint_dp_choices(
+                    b,
+                    d,
+                    block_idx,
+                    BLOCK,
+                    total_bits,
+                    block_start_states[block_idx],
+                    endpoint_state(block_idx, &block_start_states),
+                )
+                .expect("sample active block has no endpoint DP decode");
+                sample_mismatches += (decoded != pattern) as usize;
+                sample_choices += choices.len();
+                for choice in choices {
+                    record(
+                        &mut sample_maps,
+                        &mut sample_collisions,
+                        &SAMPLE_LOOKAHEADS,
+                        b,
+                        d,
+                        block_idx,
+                        BLOCK,
+                        total_bits,
+                        choice,
+                    );
+                }
+            }
+        }
+        println!(
+            "METRIC halfgcd_full_block_endpoint_dp_lookahead_sample_choices={sample_choices}"
+        );
+        println!(
+            "METRIC halfgcd_full_block_endpoint_dp_lookahead_sample_mismatches={sample_mismatches}"
+        );
+        for (idx, &lookahead) in SAMPLE_LOOKAHEADS.iter().enumerate() {
+            println!(
+                "METRIC halfgcd_full_block_endpoint_dp_lookahead_sample_k{lookahead}_keys={}",
+                sample_maps[idx].len()
+            );
+            println!(
+                "METRIC halfgcd_full_block_endpoint_dp_lookahead_sample_k{lookahead}_collision_keys={}",
+                sample_collisions[idx].len()
+            );
+        }
+
+        const TOY_LOOKAHEADS: [usize; 6] = [0, 1, 2, 3, 4, 5];
+        let cases = [
+            (10usize, 1_021u32, 2usize),
+            (12usize, 4_093u32, 3usize),
+            (14usize, 16_381u32, 4usize),
+            (16usize, 65_521u32, 4usize),
+            (17usize, 65_537u32, 5usize),
+        ];
+        let mut toy_maps = vec![BTreeMap::new(); TOY_LOOKAHEADS.len()];
+        let mut toy_collisions = vec![BTreeSet::new(); TOY_LOOKAHEADS.len()];
+        let mut toy_choices_total = 0usize;
+        let mut toy_mismatches_total = 0usize;
+        for &(toy_n, toy_p, toy_block) in &cases {
+            let toy_depth = (toy_n / 4).max(1);
+            for x in 1..toy_p {
+                let (b, d) = halfgcd_second_column_after_fixed_depth_for_test(
+                    U256::from(x as u64),
+                    U256::from(toy_p as u64),
+                    toy_depth,
+                );
+                let (_, _, _, _, _, _, _, digit_patterns, block_start_states) =
+                    halfgcd_signed_two_coeff_apply_block_active_trace_for_test(
+                        b, d, toy_block,
+                    );
+                let total_bits = total_bits_for(b, d);
+                for (block_idx, &pattern) in digit_patterns.iter().enumerate() {
+                    if pattern == 0 {
+                        continue;
+                    }
+                    let (decoded, choices) = local_endpoint_dp_choices(
+                        b,
+                        d,
+                        block_idx,
+                        toy_block,
+                        total_bits,
+                        block_start_states[block_idx],
+                        endpoint_state(block_idx, &block_start_states),
+                    )
+                    .expect("toy active block has no endpoint DP decode");
+                    toy_mismatches_total += (decoded != pattern) as usize;
+                    toy_choices_total += choices.len();
+                    for choice in choices {
+                        record(
+                            &mut toy_maps,
+                            &mut toy_collisions,
+                            &TOY_LOOKAHEADS,
+                            b,
+                            d,
+                            block_idx,
+                            toy_block,
+                            total_bits,
+                            choice,
+                        );
+                    }
+                }
+            }
+        }
+        println!(
+            "METRIC halfgcd_full_block_endpoint_dp_lookahead_toy_choices={toy_choices_total}"
+        );
+        println!(
+            "METRIC halfgcd_full_block_endpoint_dp_lookahead_toy_mismatches={toy_mismatches_total}"
+        );
+        for (idx, &lookahead) in TOY_LOOKAHEADS.iter().enumerate() {
+            println!(
+                "METRIC halfgcd_full_block_endpoint_dp_lookahead_toy_k{lookahead}_keys={}",
+                toy_maps[idx].len()
+            );
+            println!(
+                "METRIC halfgcd_full_block_endpoint_dp_lookahead_toy_k{lookahead}_collision_keys={}",
+                toy_collisions[idx].len()
+            );
+        }
+        eprintln!(
+            "half-GCD endpoint DP lookahead: sample_choices={sample_choices}, sample_k16_collisions={}, sample_k32_collisions={}, toy_k4_collisions={}, toy_k5_collisions={}",
+            sample_collisions[6].len(),
+            sample_collisions[7].len(),
+            toy_collisions[4].len(),
+            toy_collisions[5].len()
+        );
+
+        assert_eq!(
+            sample_mismatches, 0,
+            "sample endpoint DP choices no longer replay traced blocks"
+        );
+        assert_eq!(
+            toy_mismatches_total, 0,
+            "toy endpoint DP choices no longer replay traced blocks"
+        );
+        assert!(
+            sample_collisions[4].len() > 0,
+            "8-bit local lookahead now determines sampled endpoint DP choices; build the short-window parser"
+        );
+        assert_eq!(
+            sample_collisions[7].len(),
+            0,
+            "full b32 suffix does not determine sampled endpoint DP choices"
+        );
+        assert!(
+            toy_collisions[4].len() > 0,
+            "four bit-pairs now determine exact toy choices; revisit decoder horizon"
+        );
+        assert_eq!(
+            toy_collisions[5].len(),
+            0,
+            "full toy suffix does not determine endpoint DP choices"
+        );
+    }
+
+    #[test]
     fn half_gcd_full_block_endpoint_table_floor_needs_algorithmic_decoder() {
         // Endpoint state reopens the full-block code, but only barely.  A
         // generic coherent table over endpoint keys is already at the margin
