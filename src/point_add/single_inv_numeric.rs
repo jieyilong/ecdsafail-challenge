@@ -28872,11 +28872,47 @@ mod tests {
                 let over_budget_traces = rows.iter().filter(|&&bits| bits > budget).count();
                 ToyEval { p99, max, missing_symbols, missing_traces, over_budget_traces }
             };
+        let eval_schedule_with_raw_escape =
+            |traces: &[Vec<usize>],
+             schedule: &ToySchedule,
+             budget: usize,
+             raw_escape_bits: usize|
+             -> ToyEval {
+            let mut rows = Vec::with_capacity(traces.len());
+            let mut missing_symbols = 0usize;
+            let mut missing_traces = 0usize;
+            for alignments in traces {
+                let mut bits = 0usize;
+                let mut trace_missing = false;
+                for (step, &alignment) in alignments.iter().enumerate() {
+                    let lens = if schedule.flatten[step] {
+                        &schedule.balanced_lens_by_step[step]
+                    } else {
+                        &schedule.shannon_lens_by_step[step]
+                    };
+                    if let Some(&len) = lens.get(&alignment) {
+                        bits += len;
+                    } else {
+                        missing_symbols += 1;
+                        trace_missing = true;
+                        bits += raw_escape_bits;
+                    }
+                }
+                missing_traces += trace_missing as usize;
+                rows.push(bits);
+            }
+            let max = max_usize(&rows);
+            let p99 = p99_usize(&mut rows);
+            let over_budget_traces = rows.iter().filter(|&&bits| bits > budget).count();
+            ToyEval { p99, max, missing_symbols, missing_traces, over_budget_traces }
+        };
 
         let mut cases_with_sample_gap = 0usize;
         let mut largest_missing_symbols = 0usize;
         let mut largest_sample_over_budget = 0usize;
         let mut largest_exact_over_budget = 0usize;
+        let mut largest_raw_escape_over_budget = 0usize;
+        let mut largest_raw_escape_max_bits = 0usize;
         let cases = [
             (10usize, 1021u16, 128usize),
             (12usize, 4093u16, 256usize),
@@ -28902,6 +28938,12 @@ mod tests {
             let sample_schedule = build_schedule(&train_traces, max_steps, budget);
             let sample_train_eval = eval_schedule(&train_traces, &sample_schedule, budget);
             let sample_domain_eval = eval_schedule(&domain_traces, &sample_schedule, budget);
+            let raw_escape_eval = eval_schedule_with_raw_escape(
+                &domain_traces,
+                &sample_schedule,
+                budget,
+                usize_bit_len_for_payload_test(n) + 1,
+            );
             let exact_schedule = build_schedule(&domain_traces, max_steps, budget);
             let exact_eval = eval_schedule(&domain_traces, &exact_schedule, budget);
             let sample_gap = sample_domain_eval.missing_symbols > 0
@@ -28914,6 +28956,9 @@ mod tests {
                 largest_sample_over_budget.max(sample_domain_eval.over_budget_traces);
             largest_exact_over_budget =
                 largest_exact_over_budget.max(exact_eval.over_budget_traces);
+            largest_raw_escape_over_budget =
+                largest_raw_escape_over_budget.max(raw_escape_eval.over_budget_traces);
+            largest_raw_escape_max_bits = largest_raw_escape_max_bits.max(raw_escape_eval.max);
             println!("METRIC centered_direct_peakfit_toy_n{n}_budget_bits={budget}");
             println!(
                 "METRIC centered_direct_peakfit_toy_n{n}_train_samples={}",
@@ -28960,6 +29005,18 @@ mod tests {
                 sample_domain_eval.over_budget_traces
             );
             println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_raw_escape_domain_p99={}",
+                raw_escape_eval.p99
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_raw_escape_domain_max={}",
+                raw_escape_eval.max
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_raw_escape_over_budget_traces={}",
+                raw_escape_eval.over_budget_traces
+            );
+            println!(
                 "METRIC centered_direct_peakfit_toy_n{n}_exact_domain_p99={}",
                 exact_eval.p99
             );
@@ -28976,7 +29033,7 @@ mod tests {
                 exact_schedule.flatten_steps
             );
             eprintln!(
-                "Peak-fit toy exact-domain n={n}: budget={budget}, train={}, sample_train={}/{}, sample_domain_seen={}/{}, missing={}/{}, over={}, exact={}/{}, exact_over={}, exact_flat={}, mean_len={:.2}",
+                "Peak-fit toy exact-domain n={n}: budget={budget}, train={}, sample_train={}/{}, sample_domain_seen={}/{}, missing={}/{}, over={}, raw_escape={}/{}, raw_over={}, exact={}/{}, exact_over={}, exact_flat={}, mean_len={:.2}",
                 train_traces.len(),
                 sample_train_eval.p99,
                 sample_train_eval.max,
@@ -28985,6 +29042,9 @@ mod tests {
                 sample_domain_eval.missing_symbols,
                 sample_domain_eval.missing_traces,
                 sample_domain_eval.over_budget_traces,
+                raw_escape_eval.p99,
+                raw_escape_eval.max,
+                raw_escape_eval.over_budget_traces,
                 exact_eval.p99,
                 exact_eval.max,
                 exact_eval.over_budget_traces,
@@ -29004,6 +29064,12 @@ mod tests {
         println!(
             "METRIC centered_direct_peakfit_toy_largest_exact_over_budget_traces={largest_exact_over_budget}"
         );
+        println!(
+            "METRIC centered_direct_peakfit_toy_largest_raw_escape_over_budget_traces={largest_raw_escape_over_budget}"
+        );
+        println!(
+            "METRIC centered_direct_peakfit_toy_largest_raw_escape_max_bits={largest_raw_escape_max_bits}"
+        );
         assert!(
             cases_with_sample_gap > 0 && largest_missing_symbols > 0,
             "sample-trained peak-fit schedules generalized exactly on toy domains; revisit the secp non-sampled blocker"
@@ -29011,6 +29077,10 @@ mod tests {
         assert!(
             largest_exact_over_budget > 0,
             "exact-support toy peak-fit schedules fit the strict scaled bit budget; revisit the secp proof path"
+        );
+        assert!(
+            largest_raw_escape_over_budget > largest_sample_over_budget,
+            "raw escape fallback now rescues missing sample support; revisit low-branch parser promotion"
         );
     }
 
