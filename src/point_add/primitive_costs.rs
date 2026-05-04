@@ -639,20 +639,22 @@ fn cost_halve_double_n256() {
 }
 
 #[test]
-fn chunked_shift_prescaler_reopens_small_scale_absorption_win() {
+fn chunked_shift_prescaler_reopens_small_scale_absorption_but_not_qubit_gate() {
     // Scale absorption deletes a ~iters-long halve/double correction loop if we
     // initialize Kaliski with 2^iters*x.  The constants are sparse for secp256k1,
     // e.g. 2^404 = 2^148(2^32+977), so try a custom constant multiplier that
     // jumps between sparse set-bit positions with the Solinas k-bit shifter
     // instead of walking through every intermediate double.  This beats the old
     // mixed prescaler locally and is just below the correction-loop cost for the
-    // current pair1/pair2 iteration counts, making scale absorption a small but
-    // real env-gated integration candidate.
+    // current pair1/pair2 iteration counts.  Full folded integration is
+    // phase-clean and reaches 4,065,906 average executed Toffoli, but currently
+    // peaks at 3153q (LOWQ_SHIFT22=1 is worse: 4,194,666 / 3152q), so this is an
+    // env-gated structural primitive rather than a promotable default path.
     use super::*;
     let p = SECP256K1_P;
     let x = B::new();
     drop(x);
-    for &(iters, label) in &[(404usize, "pair1"), (401usize, "pair2")] {
+    for &(iters, label) in &[(404usize, "pair1"), (400usize, "pair2")] {
         let scale = pow_mod_2_k(p, iters);
         let mut b = B::new();
         let src = b.alloc_qubits(N);
@@ -660,6 +662,7 @@ fn chunked_shift_prescaler_reopens_small_scale_absorption_win() {
         let start = b.ops.len();
         mul_by_const_acc_exact_adds_fast_shifts(&mut b, &src, scale, &acc, p, false);
         let mixed_ccx = count_ccx(&b.ops[start..]);
+        let mixed_peak = b.peak_qubits as usize;
 
         let mut b = B::new();
         let src = b.alloc_qubits(N);
@@ -667,6 +670,7 @@ fn chunked_shift_prescaler_reopens_small_scale_absorption_win() {
         let start = b.ops.len();
         mul_by_const_acc_chunked_shifts_for_cost(&mut b, &src, scale, &acc, p);
         let chunked_ccx = count_ccx(&b.ops[start..]);
+        let chunked_peak = b.peak_qubits as usize;
 
         let mut b = B::new();
         let v = b.alloc_qubits(N);
@@ -684,7 +688,9 @@ fn chunked_shift_prescaler_reopens_small_scale_absorption_win() {
             "{label} scale prescaler: mixed_ccx={mixed_ccx}, chunked_ccx={chunked_ccx}, correction_loop_ccx={correction_loop_ccx}, projected_delta={projected_delta}"
         );
         println!("METRIC scale_absorb_{label}_mixed_prescale_ccx={mixed_ccx}");
+        println!("METRIC scale_absorb_{label}_mixed_prescale_peak_qubits={mixed_peak}");
         println!("METRIC scale_absorb_{label}_chunked_prescale_ccx={chunked_ccx}");
+        println!("METRIC scale_absorb_{label}_chunked_prescale_peak_qubits={chunked_peak}");
         println!("METRIC scale_absorb_{label}_correction_loop_ccx={correction_loop_ccx}");
         println!("METRIC scale_absorb_{label}_chunked_projected_delta={projected_delta}");
         assert!(chunked_ccx < mixed_ccx / 2, "chunked sparse shifts should strongly improve the local prescaler");

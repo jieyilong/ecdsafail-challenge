@@ -6472,6 +6472,97 @@ fn mul_by_const_acc_exact_adds_fast_shifts(
     mul_by_const_acc_impl(b, x, c, acc, p, subtract, false, true);
 }
 
+enum SparseConstShiftUndo {
+    Doubles(usize),
+    Chunk(usize, Vec<QubitId>, QubitId, QubitId),
+}
+
+fn shift_tmp_up_for_sparse_const(
+    b: &mut B,
+    tmp: &[QubitId],
+    p: U256,
+    mut delta: usize,
+    undo: &mut Vec<SparseConstShiftUndo>,
+) {
+    while delta >= 22 {
+        let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, tmp, p, 22);
+        undo.push(SparseConstShiftUndo::Chunk(22, spill, flag_inv, ovf));
+        delta -= 22;
+    }
+    if delta >= 12 {
+        let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, tmp, p, delta);
+        undo.push(SparseConstShiftUndo::Chunk(delta, spill, flag_inv, ovf));
+    } else if delta > 0 {
+        for _ in 0..delta {
+            mod_double_inplace_fast(b, tmp, p);
+        }
+        undo.push(SparseConstShiftUndo::Doubles(delta));
+    }
+}
+
+fn undo_sparse_const_shifts(b: &mut B, tmp: &[QubitId], p: U256, undo: Vec<SparseConstShiftUndo>) {
+    for item in undo.into_iter().rev() {
+        match item {
+            SparseConstShiftUndo::Doubles(k) => {
+                for _ in 0..k {
+                    mod_halve_inplace_fast(b, tmp, p);
+                }
+            }
+            SparseConstShiftUndo::Chunk(k, spill, flag_inv, ovf) => {
+                mod_shift_right_by_k(b, tmp, p, k, spill, flag_inv, ovf);
+            }
+        }
+    }
+}
+
+/// `acc ±= x * c mod p` using exact q-q add/sub at sparse constant bits, but
+/// jumping between distant bit positions with the Solinas k-bit shifter instead
+/// of one modular double per zero bit.  This is intended for secp256k1 scale
+/// constants like `2^404 = 2^148 * (2^32 + 977)`.
+fn mul_by_const_acc_chunked_shifts(
+    b: &mut B,
+    x: &[QubitId],
+    c: U256,
+    acc: &[QubitId],
+    p: U256,
+    subtract: bool,
+) {
+    let n = x.len();
+    if c == U256::ZERO {
+        return;
+    }
+
+    let tmp = b.alloc_qubits(n);
+    for i in 0..n {
+        b.cx(x[i], tmp[i]);
+    }
+
+    let mut positions = Vec::new();
+    for i in 0..256 {
+        if bit(c, i) {
+            positions.push(i);
+        }
+    }
+
+    let mut undo = Vec::new();
+    let mut cur = 0usize;
+    for pos in positions {
+        shift_tmp_up_for_sparse_const(b, &tmp, p, pos - cur, &mut undo);
+        cur = pos;
+        if subtract {
+            mod_sub_qq(b, acc, &tmp, p);
+        } else {
+            mod_add_qq(b, acc, &tmp, p);
+        }
+    }
+
+    undo_sparse_const_shifts(b, &tmp, p, undo);
+    for i in 0..n {
+        b.cx(x[i], tmp[i]);
+    }
+    b.free_vec(&tmp);
+}
+
 fn mul_by_const_acc_impl(
     b: &mut B,
     x: &[QubitId],
@@ -8130,6 +8221,29 @@ fn kaliski_forward_prescaled_mixed(
     iters: usize,
     scale: U256,
 ) {
+    kaliski_forward_prescaled_kind(b, v_in, st, p, iters, scale, false);
+}
+
+fn kaliski_forward_prescaled_chunked(
+    b: &mut B,
+    v_in: &[QubitId],
+    st: &KaliskiState,
+    p: U256,
+    iters: usize,
+    scale: U256,
+) {
+    kaliski_forward_prescaled_kind(b, v_in, st, p, iters, scale, true);
+}
+
+fn kaliski_forward_prescaled_kind(
+    b: &mut B,
+    v_in: &[QubitId],
+    st: &KaliskiState,
+    p: U256,
+    iters: usize,
+    scale: U256,
+    chunked: bool,
+) {
     let n = v_in.len();
     debug_assert!(iters <= st.m_hist.len());
 
@@ -8138,7 +8252,11 @@ fn kaliski_forward_prescaled_mixed(
             b.x(st.u[i]);
         }
     }
-    mul_by_const_acc_exact_adds_fast_shifts(b, v_in, scale, &st.v_w, p, false);
+    if chunked {
+        mul_by_const_acc_chunked_shifts(b, v_in, scale, &st.v_w, p, false);
+    } else {
+        mul_by_const_acc_exact_adds_fast_shifts(b, v_in, scale, &st.v_w, p, false);
+    }
     b.x(st.s[0]);
     b.x(st.f_flag);
 
@@ -8161,6 +8279,29 @@ fn kaliski_backward_prescaled_mixed(
     iters: usize,
     scale: U256,
 ) {
+    kaliski_backward_prescaled_kind(b, v_in, st, p, iters, scale, false);
+}
+
+fn kaliski_backward_prescaled_chunked(
+    b: &mut B,
+    v_in: &[QubitId],
+    st: &KaliskiState,
+    p: U256,
+    iters: usize,
+    scale: U256,
+) {
+    kaliski_backward_prescaled_kind(b, v_in, st, p, iters, scale, true);
+}
+
+fn kaliski_backward_prescaled_kind(
+    b: &mut B,
+    v_in: &[QubitId],
+    st: &KaliskiState,
+    p: U256,
+    iters: usize,
+    scale: U256,
+    chunked: bool,
+) {
     let n = v_in.len();
     debug_assert!(iters <= st.m_hist.len());
 
@@ -8176,7 +8317,11 @@ fn kaliski_backward_prescaled_mixed(
 
     b.x(st.f_flag);
     b.x(st.s[0]);
-    mul_by_const_acc_exact_adds_fast_shifts(b, v_in, scale, &st.v_w, p, true);
+    if chunked {
+        mul_by_const_acc_chunked_shifts(b, v_in, scale, &st.v_w, p, true);
+    } else {
+        mul_by_const_acc_exact_adds_fast_shifts(b, v_in, scale, &st.v_w, p, true);
+    }
     for i in 0..n {
         if bit(p, i) {
             b.x(st.u[i]);
@@ -8191,6 +8336,27 @@ fn with_kal_inv_raw_prescaled_mixed<F: FnOnce(&mut B, &[QubitId])>(
     iters: usize,
     body: F,
 ) {
+    with_kal_inv_raw_prescaled_kind(b, v_in, p, iters, false, body);
+}
+
+fn with_kal_inv_raw_prescaled_chunked<F: FnOnce(&mut B, &[QubitId])>(
+    b: &mut B,
+    v_in: &[QubitId],
+    p: U256,
+    iters: usize,
+    body: F,
+) {
+    with_kal_inv_raw_prescaled_kind(b, v_in, p, iters, true, body);
+}
+
+fn with_kal_inv_raw_prescaled_kind<F: FnOnce(&mut B, &[QubitId])>(
+    b: &mut B,
+    v_in: &[QubitId],
+    p: U256,
+    iters: usize,
+    chunked: bool,
+    body: F,
+) {
     let n = v_in.len();
     let mut st = alloc_kaliski_state(b, n, iters);
     let scale = pow_mod_2_k(p, iters);
@@ -8201,7 +8367,11 @@ fn with_kal_inv_raw_prescaled_mixed<F: FnOnce(&mut B, &[QubitId])>(
     let free_s = !keep_full_state
         && std::env::var("KAL_FREE_S").ok().as_deref() != Some("0");
 
-    kaliski_forward_prescaled_mixed(b, v_in, &st, p, iters, scale);
+    if chunked {
+        kaliski_forward_prescaled_chunked(b, v_in, &st, p, iters, scale);
+    } else {
+        kaliski_forward_prescaled_mixed(b, v_in, &st, p, iters, scale);
+    }
 
     if !keep_v {
         b.free_vec(&st.v_w);
@@ -8244,7 +8414,11 @@ fn with_kal_inv_raw_prescaled_mixed<F: FnOnce(&mut B, &[QubitId])>(
         }
     }
 
-    kaliski_backward_prescaled_mixed(b, v_in, &st, p, iters, scale);
+    if chunked {
+        kaliski_backward_prescaled_chunked(b, v_in, &st, p, iters, scale);
+    } else {
+        kaliski_backward_prescaled_mixed(b, v_in, &st, p, iters, scale);
+    }
     free_kaliski_state(b, st);
 }
 
@@ -8645,10 +8819,16 @@ fn build_standard_point_add(
     let pair2_branch_inv = std::env::var("KAL_PAIR2_BRANCH_INV_ROLL").ok().as_deref() == Some("1");
     let prescale_pair1 = std::env::var("KAL_PRESCALE_PAIR1_SAFE").ok().as_deref() == Some("1");
     let prescale_pair1_mixed = std::env::var("KAL_PRESCALE_PAIR1_MIXED").ok().as_deref() == Some("1");
+    let prescale_pair1_chunked = std::env::var("KAL_PRESCALE_PAIR1_CHUNKED").ok().as_deref() == Some("1");
     let prescale_pair1_folded = std::env::var("KAL_PRESCALE_PAIR1_FOLDED").ok().as_deref() == Some("1");
+    let prescale_pair1_folded_chunked =
+        std::env::var("KAL_PRESCALE_PAIR1_FOLDED_CHUNKED").ok().as_deref() == Some("1");
     let prescale_pair2 = std::env::var("KAL_PRESCALE_PAIR2_SAFE").ok().as_deref() == Some("1");
     let prescale_pair2_mixed = std::env::var("KAL_PRESCALE_PAIR2_MIXED").ok().as_deref() == Some("1");
+    let prescale_pair2_chunked = std::env::var("KAL_PRESCALE_PAIR2_CHUNKED").ok().as_deref() == Some("1");
     let prescale_pair2_folded = std::env::var("KAL_PRESCALE_PAIR2_FOLDED").ok().as_deref() == Some("1");
+    let prescale_pair2_folded_chunked =
+        std::env::var("KAL_PRESCALE_PAIR2_FOLDED_CHUNKED").ok().as_deref() == Some("1");
     let by_pair1_centered = std::env::var("BY_CENTERED_PAIR1_REPLACE").ok().as_deref() == Some("1");
     let by_pair2_centered = std::env::var("BY_CENTERED_PAIR2_REPLACE").ok().as_deref() == Some("1");
     let by_pair2_scaled_product = std::env::var("BY_SCALED_PAIR2_PRODUCT_REPLACE").ok().as_deref() == Some("1");
@@ -8822,29 +9002,54 @@ fn build_standard_point_add(
                 *lam_cell.borrow_mut() = Some(lam_inner);
             },
         );
-    } else if prescale_pair1 || prescale_pair1_mixed || prescale_pair1_folded {
+    } else if prescale_pair1
+        || prescale_pair1_mixed
+        || prescale_pair1_chunked
+        || prescale_pair1_folded
+        || prescale_pair1_folded_chunked
+    {
         // Scale absorption probe: Kaliski raw output is `-v^-1 * 2^iters`.
         // Feed `v = 2^iters * dx` so the exposed raw inverse is exactly
         // `-dx^-1`; this deletes the pair1 correction-halving loop.
-        if prescale_pair1_folded {
-            b.set_phase("pair1_kaliski_forward_prescaled_folded");
-            with_kal_inv_raw_prescaled_mixed(b, &tx, p, pair1_iters, |b, inv_raw| {
-                let lam_inner = b.alloc_qubits(N);
-                b.set_phase("pair1_prescale_mul1");
-                mod_mul_write_into_zero_acc_schoolbook(b, &lam_inner, &ty, inv_raw, p);
-                b.set_phase("pair1_prescale_mul2");
-                mod_mul_add_into_acc_schoolbook(b, &ty, &lam_inner, &tx, p);
-                b.set_phase("pair1_kaliski_backward_prescaled_folded");
-                *lam_cell.borrow_mut() = Some(lam_inner);
-            });
+        if prescale_pair1_folded || prescale_pair1_folded_chunked {
+            if prescale_pair1_folded_chunked {
+                b.set_phase("pair1_kaliski_forward_prescaled_folded_chunked");
+                with_kal_inv_raw_prescaled_chunked(b, &tx, p, pair1_iters, |b, inv_raw| {
+                    let lam_inner = b.alloc_qubits(N);
+                    b.set_phase("pair1_prescale_mul1");
+                    mod_mul_write_into_zero_acc_schoolbook(b, &lam_inner, &ty, inv_raw, p);
+                    b.set_phase("pair1_prescale_mul2");
+                    mod_mul_add_into_acc_schoolbook(b, &ty, &lam_inner, &tx, p);
+                    b.set_phase("pair1_kaliski_backward_prescaled_folded_chunked");
+                    *lam_cell.borrow_mut() = Some(lam_inner);
+                });
+            } else {
+                b.set_phase("pair1_kaliski_forward_prescaled_folded");
+                with_kal_inv_raw_prescaled_mixed(b, &tx, p, pair1_iters, |b, inv_raw| {
+                    let lam_inner = b.alloc_qubits(N);
+                    b.set_phase("pair1_prescale_mul1");
+                    mod_mul_write_into_zero_acc_schoolbook(b, &lam_inner, &ty, inv_raw, p);
+                    b.set_phase("pair1_prescale_mul2");
+                    mod_mul_add_into_acc_schoolbook(b, &ty, &lam_inner, &tx, p);
+                    b.set_phase("pair1_kaliski_backward_prescaled_folded");
+                    *lam_cell.borrow_mut() = Some(lam_inner);
+                });
+            }
         } else {
             // SAFE path uses exact Cuccaro arithmetic because the generic fast
             // prescaler was classically correct but alt-seed phase-unsafe. The
-            // MIXED path keeps fast shifts but exact q-q add/sub.
+            // MIXED path keeps fast shifts but exact q-q add/sub. CHUNKED keeps
+            // the exact q-q add/sub contract but replaces long scale walks with
+            // Solinas k-bit shifts between sparse set-bit positions.  The
+            // full folded-chunked harness is phase-clean and saves Toffoli, but
+            // its current shift scratch peaks above the 2800q gate, so keep it
+            // opt-in until the shifted prescaler is fused or made lower-peak.
             let scaled_tx = b.alloc_qubits(N);
             let scale = pow_mod_2_k(p, pair1_iters);
             b.set_phase("pair1_prescale_den_safe");
-            if prescale_pair1_mixed {
+            if prescale_pair1_chunked {
+                mul_by_const_acc_chunked_shifts(b, &tx, scale, &scaled_tx, p, false);
+            } else if prescale_pair1_mixed {
                 mul_by_const_acc_exact_adds_fast_shifts(b, &tx, scale, &scaled_tx, p, false);
             } else {
                 mul_by_const_acc_phase_clean(b, &tx, scale, &scaled_tx, p, false);
@@ -8860,7 +9065,9 @@ fn build_standard_point_add(
                 *lam_cell.borrow_mut() = Some(lam_inner);
             });
             b.set_phase("pair1_unprescale_den_safe");
-            if prescale_pair1_mixed {
+            if prescale_pair1_chunked {
+                mul_by_const_acc_chunked_shifts(b, &tx, scale, &scaled_tx, p, true);
+            } else if prescale_pair1_mixed {
                 mul_by_const_acc_exact_adds_fast_shifts(b, &tx, scale, &scaled_tx, p, true);
             } else {
                 mul_by_const_acc_phase_clean(b, &tx, scale, &scaled_tx, p, true);
@@ -8925,22 +9132,39 @@ fn build_standard_point_add(
             b.set_phase("pair2_branch_inv_cleanup");
             mod_sub_qb(b, &ty, &oy, p);
         });
-    } else if prescale_pair2 || prescale_pair2_mixed || prescale_pair2_folded {
+    } else if prescale_pair2
+        || prescale_pair2_mixed
+        || prescale_pair2_chunked
+        || prescale_pair2_folded
+        || prescale_pair2_folded_chunked
+    {
         // Pair2 scale absorption: feed `2^iters * (Rx-Qx)` so the raw inverse
         // is exact and the lam-doubling correction loop disappears.
-        if prescale_pair2_folded {
-            with_kal_inv_raw_prescaled_mixed(b, &tx, p, pair2_iters, |b, inv_raw| {
-                b.set_phase("pair2_prescale_mul");
-                mod_mul_add_into_acc_schoolbook(b, &lam, inv_raw, &ty, p);
-                b.set_phase("pair2_prescale_cleanup");
-                mod_sub_qb(b, &ty, &oy, p);
-                b.set_phase("pair2_kaliski_backward_prescaled_folded");
-            });
+        if prescale_pair2_folded || prescale_pair2_folded_chunked {
+            if prescale_pair2_folded_chunked {
+                with_kal_inv_raw_prescaled_chunked(b, &tx, p, pair2_iters, |b, inv_raw| {
+                    b.set_phase("pair2_prescale_mul");
+                    mod_mul_add_into_acc_schoolbook(b, &lam, inv_raw, &ty, p);
+                    b.set_phase("pair2_prescale_cleanup");
+                    mod_sub_qb(b, &ty, &oy, p);
+                    b.set_phase("pair2_kaliski_backward_prescaled_folded_chunked");
+                });
+            } else {
+                with_kal_inv_raw_prescaled_mixed(b, &tx, p, pair2_iters, |b, inv_raw| {
+                    b.set_phase("pair2_prescale_mul");
+                    mod_mul_add_into_acc_schoolbook(b, &lam, inv_raw, &ty, p);
+                    b.set_phase("pair2_prescale_cleanup");
+                    mod_sub_qb(b, &ty, &oy, p);
+                    b.set_phase("pair2_kaliski_backward_prescaled_folded");
+                });
+            }
         } else {
             let scaled_tx = b.alloc_qubits(N);
             let scale = pow_mod_2_k(p, pair2_iters);
             b.set_phase("pair2_prescale_den_safe");
-            if prescale_pair2_mixed {
+            if prescale_pair2_chunked {
+                mul_by_const_acc_chunked_shifts(b, &tx, scale, &scaled_tx, p, false);
+            } else if prescale_pair2_mixed {
                 mul_by_const_acc_exact_adds_fast_shifts(b, &tx, scale, &scaled_tx, p, false);
             } else {
                 mul_by_const_acc_phase_clean(b, &tx, scale, &scaled_tx, p, false);
@@ -8953,7 +9177,9 @@ fn build_standard_point_add(
                 b.set_phase("pair2_kaliski_backward_prescaled_safe");
             });
             b.set_phase("pair2_unprescale_den_safe");
-            if prescale_pair2_mixed {
+            if prescale_pair2_chunked {
+                mul_by_const_acc_chunked_shifts(b, &tx, scale, &scaled_tx, p, true);
+            } else if prescale_pair2_mixed {
                 mul_by_const_acc_exact_adds_fast_shifts(b, &tx, scale, &scaled_tx, p, true);
             } else {
                 mul_by_const_acc_phase_clean(b, &tx, scale, &scaled_tx, p, true);
