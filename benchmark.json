@@ -4,8 +4,8 @@
   "description": "Optimize the qubit-toffoli product for a reversible circuit that adds a quantum elliptic curve point to a classical elliptic curve point.",
   "category": "rust",
   "direction": "-",
-  "editablePaths": ["src"],
+  "editablePaths": ["src/point_add"],
   "setupCommand": ["bash", "-lc", "cargo fetch"],
   "benchmarkCommand": ["bash", "-lc", "cargo run --release --bin experiment"],
-  "scorePath": "score.txt"
+  "scorePath": "score.json"
 }

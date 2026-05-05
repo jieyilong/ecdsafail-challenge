@@ -304,10 +304,13 @@ fn append_results_row(
 }
 
 fn write_score(avg_tof: f64, qubits: u32) {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/score.txt");
-    let score = avg_tof * f64::from(qubits);
-    if let Err(e) = std::fs::write(path, format!("{score:.3}\n")) {
-        eprintln!("warning: failed to write score.txt: {e}");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/score.json");
+    let toffoli = avg_tof.round() as u64;
+    let body = format!(
+        "{{\n  \"score\": {toffoli},\n  \"metrics\": {{\n    \"toffoli\": {toffoli},\n    \"qubits\": {qubits}\n  }}\n}}\n"
+    );
+    if let Err(e) = std::fs::write(path, body) {
+        eprintln!("warning: failed to write score.json: {e}");
     }
 }
 
