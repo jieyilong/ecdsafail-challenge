@@ -1744,7 +1744,11 @@ fn mod_halve_inplace_fast_with_dirty(
         b.free(q_clean2[0]);
         b.free(q_clean2[1]);
         let _ = c_u64; // unused, c_low is the right value
-    } else if std::env::var("KAL_DIRECT_CONST_HALVE").ok().as_deref() == Some("1") {
+    } else if std::env::var("KAL_DIRECT_CONST_HALVE")
+        .ok()
+        .map(|v| v != "0")
+        .unwrap_or(true)
+    {
         csub_nbit_const_direct_fast(b, v, c, ovf);
     } else {
         csub_nbit_const_fast(b, v, c, ovf);
