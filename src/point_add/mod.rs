@@ -546,6 +546,16 @@ fn pair1_mul2_karatsuba_enabled(n: usize) -> bool {
         && env_flag_enabled("KAL_PAIR1_MUL2_KARATSUBA", true)
 }
 
+fn pair2_mul_karatsuba_enabled(n: usize) -> bool {
+    let min_n = std::env::var("POINT_ADD_KARATSUBA_MIN_N")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(256);
+    point_add_karatsuba_enabled()
+        && n >= min_n
+        && env_flag_enabled("KAL_PAIR2_MUL_KARATSUBA", true)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Cuccaro ripple-carry adder
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3380,6 +3390,24 @@ fn pair1_mul2_add_into_acc(
 ) {
     if pair1_mul2_karatsuba_enabled(acc.len()) {
         mod_mul_add_into_acc_karatsuba_lowq(b, acc, x, y, p);
+    } else {
+        mod_mul_add_into_acc_schoolbook(b, acc, x, y, p);
+    }
+}
+
+fn pair2_mul_add_into_acc(
+    b: &mut B,
+    acc: &[QubitId],
+    x: &[QubitId],
+    y: &[QubitId],
+    p: U256,
+) {
+    if pair2_mul_karatsuba_enabled(acc.len()) {
+        if env_flag_enabled("KAL_PAIR2_MUL_KARATSUBA_LOWQ", false) {
+            mod_mul_add_into_acc_karatsuba_lowq(b, acc, x, y, p);
+        } else {
+            mod_mul_add_into_acc_karatsuba(b, acc, x, y, p);
+        }
     } else {
         mod_mul_add_into_acc_schoolbook(b, acc, x, y, p);
     }
@@ -9509,7 +9537,7 @@ fn build_standard_point_add(
                         mod_double_inplace_fast(b, &lam, p);
                     }
                     b.set_phase("pair2_mul");
-                    mod_mul_add_into_acc_schoolbook(b, &lam, inv_raw, &ty, p);
+                    pair2_mul_add_into_acc(b, &lam, inv_raw, &ty, p);
                     b.set_phase("pair2_cleanup");
                     mod_sub_qb(b, &ty, &oy, p);
                     b.set_phase("pair2_kaliski_backward");
