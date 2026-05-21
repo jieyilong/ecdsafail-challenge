@@ -221,4 +221,237 @@ mod tests {
         assert_eq!(dx, U256::from(106u64));
         assert_eq!(dy, U256::from(425u64));
     }
+
+    /// H212-LUO-CLASSICAL-REPLAY-LAND — single-iteration falsification probe
+    /// for the Luo length-register-coupling reversibility claim, evaluated
+    /// at real secp256k1 inputs by replaying our concrete Kaliski iteration.
+    ///
+    /// Question (per research-205-213): does the candidate Luo "key"
+    ///     (Λ_uv_pre, Λ_rs_pre, ΔΛ_uv, ΔΛ_rs, W1_lsb_pre, W2_lsb_pre, f_pre)
+    /// where Λ_uv = bit_len(u) + bit_len(v_w), Λ_rs = bit_len(r) + bit_len(s),
+    /// uniquely determine the per-iter branch tuple (a_f, m_i, add_f_step4)?
+    ///
+    /// Verdict semantics:
+    ///   - collisions = 0 ⇒ NOT_FALSIFIED (Luo reversibility door OPEN; A203
+    ///     stays demoted/medium with this measurement codified).
+    ///   - collisions ≥ 1 ⇒ FALSIFIED (Luo register-sharing reversibility
+    ///     does not hold at our primitive level; A203 closes).
+    ///
+    /// This is intentionally measurement-only — no `assert!` on collisions.
+    #[test]
+    fn luo_length_register_branch_determinism_at_real_secp256k1_inputs() {
+        use sha3::{
+            digest::{ExtendableOutput, Update, XofReader},
+            Shake128,
+        };
+        use std::collections::HashMap;
+
+        // Bit-length semantics sanity (the very first risk flagged by the
+        // hypothesis): U256::bit_len() returns position-of-highest-set-bit+1,
+        // so 0 → 0 and SECP256K1_P → 256.
+        assert_eq!(U256::ZERO.bit_len(), 0, "U256::ZERO.bit_len() must be 0");
+        assert_eq!(
+            SECP256K1_P.bit_len(),
+            256,
+            "SECP256K1_P.bit_len() must be 256 for n=256 secp256k1"
+        );
+
+        // Local Shake128-deterministic element generator (mirrors
+        // kaliski_classical_replay::random_element so this test is self-
+        // contained and does not depend on a private item).
+        fn random_element(seed: u64) -> U256 {
+            let mut h = Shake128::default();
+            h.update(&seed.to_le_bytes());
+            let mut reader = h.finalize_xof();
+            loop {
+                let mut buf = [0u8; 32];
+                reader.read(&mut buf);
+                let v = U256::from_be_bytes(buf);
+                if v != U256::ZERO && v < SECP256K1_P {
+                    return v;
+                }
+            }
+        }
+
+        // Inline Kaliski-iter branch-tuple extractor — mirrors
+        // `kaliski_classical_replay::tests::kaliski_iter_with_af` but also
+        // returns `add_f_step4`. This is the Kaliski-circuit-equivalent of
+        // Luo's (a_k, b_k, q_k) at our primitive level. See risks #2 of the
+        // hypothesis for the structural mapping argument.
+        fn kaliski_iter_branch_tuple(
+            u: &mut U256,
+            v_w: &mut U256,
+            r: &mut U256,
+            s: &mut U256,
+            f: &mut u8,
+            p: U256,
+        ) -> (u8, u8, u8) {
+            let is_zero = if *v_w == U256::ZERO { 1u8 } else { 0 };
+            let mut m_i: u8 = 0;
+            if *f == 1 && is_zero == 1 {
+                m_i ^= 1;
+            }
+            *f ^= m_i;
+            let u0 = (u.as_limbs()[0] & 1) as u8;
+            let v0 = (v_w.as_limbs()[0] & 1) as u8;
+            let mut a_f: u8 = 0;
+            if *f == 1 && u0 == 0 {
+                a_f ^= 1;
+            }
+            if *f == 1 && u0 == 1 && v0 == 0 {
+                m_i ^= 1;
+            }
+            let b_f = a_f ^ m_i;
+            let l_gt = if *u > *v_w { 1u8 } else { 0 };
+            let add_f_step2 = (*f & l_gt) as u8;
+            let delta = add_f_step2 & (1 ^ b_f);
+            a_f ^= delta;
+            m_i ^= delta;
+            if a_f == 1 {
+                std::mem::swap(u, v_w);
+                std::mem::swap(r, s);
+            }
+            let add_f_step4 = *f & (1 ^ b_f);
+            if add_f_step4 == 1 {
+                *v_w = v_w.wrapping_sub(*u);
+                *s = s.wrapping_add(*r);
+            }
+            *v_w = *v_w >> 1;
+            let r2 = r.wrapping_add(*r);
+            *r = if r2 >= p || r2 < *r {
+                r2.wrapping_sub(p)
+            } else {
+                r2
+            };
+            if a_f == 1 {
+                std::mem::swap(u, v_w);
+                std::mem::swap(r, s);
+            }
+            (a_f, m_i, add_f_step4)
+        }
+
+        const N_INPUTS: usize = 200;
+        const ITERS: usize = 407;
+        let expected_samples = N_INPUTS * ITERS;
+
+        // Primary key includes f_pre. Secondary key omits f_pre to answer
+        // the variant-probe question (suggestedVerification #3).
+        type Key = (u16, u16, i16, i16, u8, u8, u8);
+        type KeyNoF = (u16, u16, i16, i16, u8, u8);
+        type Val = (u8, u8, u8);
+
+        let mut tbl: HashMap<Key, Val> = HashMap::new();
+        let mut tbl_no_f: HashMap<KeyNoF, Val> = HashMap::new();
+        let mut collisions: usize = 0;
+        let mut collisions_no_f: usize = 0;
+        let mut samples: usize = 0;
+        let mut first_few: Vec<(Key, Val, Val)> = Vec::new();
+
+        for seed in 0..N_INPUTS as u64 {
+            let v_in = random_element(seed + 1);
+            let mut u = SECP256K1_P;
+            let mut v_w = v_in;
+            let mut r = U256::ZERO;
+            let mut s = U256::from(1u64);
+            let mut f: u8 = 1;
+            for _ in 0..ITERS {
+                // Pre-iter Luo length registers.
+                let luv_pre_u = u.bit_len() as u16;
+                let luv_pre_v = v_w.bit_len() as u16;
+                let lrs_pre_r = r.bit_len() as u16;
+                let lrs_pre_s = s.bit_len() as u16;
+                let w1_lsb = (u.as_limbs()[0] & 1) as u8;
+                let w2_lsb = (v_w.as_limbs()[0] & 1) as u8;
+                let f_pre = f;
+
+                let (af, mi, add4) =
+                    kaliski_iter_branch_tuple(&mut u, &mut v_w, &mut r, &mut s, &mut f, SECP256K1_P);
+
+                let luv_post_u = u.bit_len() as u16;
+                let luv_post_v = v_w.bit_len() as u16;
+                let lrs_post_r = r.bit_len() as u16;
+                let lrs_post_s = s.bit_len() as u16;
+
+                let luv_pre = luv_pre_u + luv_pre_v;
+                let lrs_pre = lrs_pre_r + lrs_pre_s;
+                let dluv = (luv_post_u as i16 + luv_post_v as i16)
+                    - (luv_pre_u as i16 + luv_pre_v as i16);
+                let dlrs = (lrs_post_r as i16 + lrs_post_s as i16)
+                    - (lrs_pre_r as i16 + lrs_pre_s as i16);
+
+                let key: Key = (luv_pre, lrs_pre, dluv, dlrs, w1_lsb, w2_lsb, f_pre);
+                let key_no_f: KeyNoF = (luv_pre, lrs_pre, dluv, dlrs, w1_lsb, w2_lsb);
+                let val: Val = (af, mi, add4);
+
+                match tbl.get(&key) {
+                    None => {
+                        tbl.insert(key, val);
+                    }
+                    Some(&prev) if prev != val => {
+                        collisions += 1;
+                        if first_few.len() < 4 {
+                            first_few.push((key, prev, val));
+                        }
+                    }
+                    _ => {}
+                }
+                match tbl_no_f.get(&key_no_f) {
+                    None => {
+                        tbl_no_f.insert(key_no_f, val);
+                    }
+                    Some(&prev) if prev != val => {
+                        collisions_no_f += 1;
+                    }
+                    _ => {}
+                }
+                samples += 1;
+            }
+        }
+
+        // Sanity #1 from hypothesis: kaliski_run on seed=1 should produce the
+        // modular inverse v_in^{-1} mod p in the final s value (post 407
+        // iters; Kaliski terminates within ≤2n iters). We do not have
+        // direct access to s here in the loop above (it was consumed during
+        // the per-iter replay), so re-run via the public helper for the
+        // first seed only and confirm correctness.
+        {
+            use crate::point_add::kaliski_classical_replay::kaliski_run;
+            let v_in1 = random_element(1);
+            let (_m_hist, snaps) = kaliski_run(v_in1, SECP256K1_P, ITERS);
+            // After Kaliski terminates, s holds v_in^{-1} mod p (possibly up
+            // to a sign/2^k factor depending on the variant). We don't
+            // verify the exact algebra here — kaliski_classical_replay's own
+            // tests cover that — we just check the snapshot scaffolding
+            // produced ITERS entries and the f flag did terminate.
+            assert_eq!(snaps.len(), ITERS, "kaliski_run snapshot scaffold broken");
+            let terminated = snaps.iter().any(|sn| sn.4 == 0);
+            assert!(
+                terminated,
+                "kaliski_run never terminated in {} iters — replay scaffold broken",
+                ITERS
+            );
+        }
+
+        // Greppable, deterministic output for coordinator/researcher.
+        println!("LUO_TOTAL_SAMPLES={}", samples);
+        assert_eq!(samples, expected_samples, "sample count drift");
+        println!("LUO_DISTINCT_KEYS={}", tbl.len());
+        println!("LUO_DISTINCT_KEYS_NO_F={}", tbl_no_f.len());
+        println!("LUO_COLLISIONS={}", collisions);
+        println!("LUO_COLLISIONS_NO_F={}", collisions_no_f);
+        if collisions > 0 {
+            println!("LUO_REVERSIBILITY_VERDICT=FALSIFIED");
+            for (k, prev, cur) in &first_few {
+                println!(
+                    "  collision key={:?} prev_branch={:?} new_branch={:?}",
+                    k, prev, cur
+                );
+            }
+        } else {
+            println!("LUO_REVERSIBILITY_VERDICT=NOT_FALSIFIED");
+        }
+        // NOTE: intentionally NO `assert!(collisions == 0)` — this is a
+        // measurement, not a correctness gate. The coordinator reads the
+        // printed verdict and updates the approach ledger A203.
+    }
 }
