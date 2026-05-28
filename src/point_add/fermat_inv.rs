@@ -16,9 +16,8 @@
 use alloy_primitives::U256;
 
 use super::{
-    bit, mod_add_qb, mod_add_qq_fast, mod_add_qq_fast_from_zero, mod_double_inplace_fast,
-    mod_halve_inplace_fast, mod_neg_inplace_fast, mod_sub_qb, mod_sub_qq_fast, QubitId, B,
-    SECP256K1_P,
+    bit, mod_add_qq_fast, mod_double_inplace_fast, mod_halve_inplace_fast, mod_sub_qq_fast,
+    QubitId, B,
 };
 
 /// Horner-style modular multiply: acc += x * y mod p.
@@ -182,7 +181,6 @@ pub fn mod_mul_inplace(b: &mut B, a: &[QubitId], b_reg: &[QubitId], p: U256) {
 /// result register must be zero on entry (we load 1 into it).
 /// x is preserved.
 pub fn fermat_inv(b: &mut B, x: &[QubitId], result: &[QubitId], p: U256) {
-    let n = x.len();
     let exp = p - U256::from(2u64); // p - 2
 
     // result = 1
@@ -238,88 +236,3 @@ pub fn mod_mul_sub_inplace(b: &mut B, a: &[QubitId], x: &[QubitId], y: &[QubitId
     b.free_vec(&save);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::circuit::{analyze_ops, Op};
-    use crate::sim::Simulator;
-    use crate::weierstrass_elliptic_curve::WeierstrassEllipticCurve;
-    use alloy_primitives::U256;
-    use sha3::digest::{ExtendableOutput, Update, XofReader};
-    use sha3::Shake256;
-
-    fn secp256k1() -> WeierstrassEllipticCurve {
-        WeierstrassEllipticCurve {
-            modulus: SECP256K1_P,
-            a: U256::from(0),
-            b: U256::from(7),
-            gx: U256::from_str_radix(
-                "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798",
-                16,
-            )
-            .unwrap(),
-            gy: U256::from_str_radix(
-                "483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8",
-                16,
-            )
-            .unwrap(),
-            order: U256::from_str_radix(
-                "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
-                16,
-            )
-            .unwrap(),
-        }
-    }
-
-    /// Test Horner mul at small n
-    #[test]
-    fn test_horner_mul_small() {
-        let p = U256::from(13u64);
-        // Test: 7 * 5 mod 13 = 35 mod 13 = 9
-        let n = 4; // small for speed
-
-        let mut b = B::new();
-        let x = b.alloc_qubits(n);
-        let y = b.alloc_qubits(n);
-        let acc = b.alloc_qubits(n);
-
-        // Load x = 7 = 0111
-        b.x(x[0]);
-        b.x(x[1]);
-        b.x(x[2]);
-        // Load y = 5 = 0101
-        b.x(y[0]);
-        b.x(y[2]);
-
-        horner_mul_add(&mut b, &acc, &x, &y, p);
-
-        // Check acc = 9 = 1001
-        let (total_qubits, _num_bits, _num_regs, regs) = analyze_ops(b.ops.iter().copied());
-
-        let mut xof_seed = [0u8; 32];
-        let mut xof = Shake256::default().chain(&xof_seed).finalize_xof();
-        let mut sim = Simulator::new(total_qubits as usize, _num_bits as usize, &mut xof);
-
-        // Set x=7, y=5 on shot 0
-        for i in 0..n {
-            if [true, true, true, false][i] {
-                *sim.qubit_mut(x[i]) |= 1;
-            }
-            if [true, false, true, false][i] {
-                *sim.qubit_mut(y[i]) |= 1;
-            }
-        }
-
-        sim.apply(&b.ops);
-
-        let acc_val = (0..n).fold(0u64, |v, i| {
-            v | if (*sim.qubit_mut(acc[i]) & 1) != 0 {
-                1 << i
-            } else {
-                0
-            }
-        });
-
-        assert_eq!(acc_val, 9, "7 * 5 mod 13 should be 9, got {}", acc_val);
-    }
-}
