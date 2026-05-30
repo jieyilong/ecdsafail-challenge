@@ -1917,6 +1917,85 @@ fn mod_add_qq_fast_from_zero(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256)
     let _ = (acc_ext, a_ext);
 }
 
+/// Low-scratch peak variant of `mod_add_qq_fast`. Identical arithmetic, but the
+/// Solinas `+c` / `-c` corrections (c = 2^256 - p = 2^32 + 977, sparse) are done
+/// with the register-free direct const adders (`cadd_/csub_nbit_const_direct_fast`)
+/// instead of `load_const` + a full-width q-q add. This drops the per-call scratch
+/// from ~(n+1 loaded-const register + n carries) to ~(n carries), saving ~256
+/// qubits at the call site. Toffoli is ~neutral for sparse c (the direct const
+/// adders carry the same length sweep; only the loaded register disappears).
+/// Used at the Karatsuba Solinas fold, which owns the 2710 peak.
+fn mod_add_qq_fast_lowscratch(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256) {
+    let n = acc.len();
+    assert_eq!(n, a.len());
+    debug_assert_eq!(n, 256);
+
+    let (acc_ext, acc_ovf) = ext_reg(b, acc);
+    let (a_ext, a_ovf) = ext_reg(b, a);
+
+    // Step 1: (n+1)-bit operand add (measurement-based Cuccaro, unchanged).
+    add_nbit_qq_fast(b, &a_ext, &acc_ext);
+
+    let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
+    // Step 2: unconditional +c via register-free direct const add. A |1> control
+    // makes the controlled primitive unconditional (X/CX/CZ are free Cliffords).
+    let one = b.alloc_qubit();
+    b.x(one);
+    cadd_nbit_const_direct_fast(b, &acc_ext, c, one);
+    b.x(one);
+    b.free(one);
+
+    let flag = b.alloc_qubit();
+    b.cx(acc_ovf, flag);
+    b.x(flag);
+    // Step 3: if flag=0, undo the +c (register-free conditional const sub).
+    csub_nbit_const_direct_fast(b, &acc_ext, c, flag);
+    b.x(flag);
+    b.cx(flag, acc_ovf);
+    cmp_lt_into_fast(b, &acc_ext[..n], &a_ext[..n], flag);
+    b.free(flag);
+
+    unext_reg(b, a_ovf);
+    unext_reg(b, acc_ovf);
+    let _ = (acc_ext, a_ext);
+}
+
+/// Low-scratch peak variant of `mod_add_qq_fast_from_zero` (acc == 0 on entry).
+/// Same register-free Solinas correction as `mod_add_qq_fast_lowscratch`.
+fn mod_add_qq_fast_from_zero_lowscratch(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256) {
+    let n = acc.len();
+    assert_eq!(n, a.len());
+    debug_assert_eq!(n, 256);
+
+    let (acc_ext, acc_ovf) = ext_reg(b, acc);
+    let (a_ext, a_ovf) = ext_reg(b, a);
+
+    // acc is 0 on entry. CX-copy a into acc (0 CCX). Top bits both 0.
+    for i in 0..n {
+        b.cx(a[i], acc[i]);
+    }
+
+    let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
+    let one = b.alloc_qubit();
+    b.x(one);
+    cadd_nbit_const_direct_fast(b, &acc_ext, c, one);
+    b.x(one);
+    b.free(one);
+
+    let flag = b.alloc_qubit();
+    b.cx(acc_ovf, flag);
+    b.x(flag);
+    csub_nbit_const_direct_fast(b, &acc_ext, c, flag);
+    b.x(flag);
+    b.cx(flag, acc_ovf);
+    cmp_lt_into_fast(b, &acc_ext[..n], &a_ext[..n], flag);
+    b.free(flag);
+
+    unext_reg(b, a_ovf);
+    unext_reg(b, acc_ovf);
+    let _ = (acc_ext, a_ext);
+}
+
 /// Low-peak variant of `mod_mul_write_into_zero_acc_schoolbook`: uses
 /// `schoolbook_mul_into_addsub_lowq` + `_inverse_lowq` instead of the fast
 /// variants, saving ~n qubits at peak at the cost of ~n extra Toffolis per
@@ -2842,12 +2921,12 @@ fn mod_mul_add_into_acc_karatsuba_with_tmp_ext(
 
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
     let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
-    mod_add_qq_fast(b, acc, &lo, p);
-    mod_add_qq_fast(b, acc, &hi, p);
+    mod_add_qq_fast_lowscratch(b, acc, &lo, p);
+    mod_add_qq_fast_lowscratch(b, acc, &hi, p);
     for _ in 0..4 {
         mod_double_inplace_fast(b, &hi, p);
     }
-    mod_add_qq_fast(b, acc, &hi, p);
+    mod_add_qq_fast_lowscratch(b, acc, &hi, p);
     for _ in 0..2 {
         mod_double_inplace_fast(b, &hi, p);
     }
@@ -2855,7 +2934,7 @@ fn mod_mul_add_into_acc_karatsuba_with_tmp_ext(
     for _ in 0..4 {
         mod_double_inplace_fast(b, &hi, p);
     }
-    mod_add_qq_fast(b, acc, &hi, p);
+    mod_add_qq_fast_lowscratch(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
     mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
@@ -2899,14 +2978,14 @@ fn mod_mul_write_into_zero_acc_karatsuba_with_tmp_ext(
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
     let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
     b.set_phase("sol_addlo");
-    mod_add_qq_fast_from_zero(b, acc, &lo, p);
+    mod_add_qq_fast_from_zero_lowscratch(b, acc, &lo, p);
     b.set_phase("sol_add0");
-    mod_add_qq_fast(b, acc, &hi, p);
+    mod_add_qq_fast_lowscratch(b, acc, &hi, p);
     for _ in 0..4 {
         mod_double_inplace_fast(b, &hi, p);
     }
     b.set_phase("sol_add4");
-    mod_add_qq_fast(b, acc, &hi, p);
+    mod_add_qq_fast_lowscratch(b, acc, &hi, p);
     for _ in 0..2 {
         mod_double_inplace_fast(b, &hi, p);
     }
@@ -2916,7 +2995,7 @@ fn mod_mul_write_into_zero_acc_karatsuba_with_tmp_ext(
         mod_double_inplace_fast(b, &hi, p);
     }
     b.set_phase("sol_add10");
-    mod_add_qq_fast(b, acc, &hi, p);
+    mod_add_qq_fast_lowscratch(b, acc, &hi, p);
     b.set_phase("kara_solinas_shift22L");
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
     b.set_phase("kara_solinas_post32_add");
