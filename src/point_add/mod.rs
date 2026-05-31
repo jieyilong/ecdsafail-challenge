@@ -411,23 +411,6 @@ fn point_add_karatsuba_enabled() -> bool {
     env_flag_enabled("POINT_ADD_KARATSUBA", true)
 }
 
-// Exhaustive-audit Toffoli wins (2026-05-30). Each defaults ON once verified.
-// Gated independently so the adversary can bisect a rejection by flipping one
-// gate to "0".
-fn audit_shift22_pos0_cx() -> bool {
-    env_flag_enabled("AUDIT_SHIFT22_POS0_CX", true)
-}
-
-// AUDIT GROUP A: Solinas-fold call-site primitive swaps. The pos-32
-// `mod_add_qq`/`mod_sub_qq` slow folds (bracketed by mod_shift_left/right_by_k)
-// become the low-scratch fast variants — same operands, fewer Toffoli, fewer
-// scratch (register-free direct const correction => peak-neutral/lower). NOT
-// applied to the pair1 sister mod_mul_write_into_zero_acc_karatsuba_with_tmp_ext
-// pos-32 add, which is intentionally slow to protect the 2708 peak.
-fn audit_sol_folds() -> bool {
-    env_flag_enabled("AUDIT_SOL_FOLDS", true)
-}
-
 fn pair1_mul1_karatsuba_enabled(n: usize) -> bool {
     let min_n = std::env::var("POINT_ADD_KARATSUBA_MIN_N")
         .ok()
@@ -762,28 +745,6 @@ fn mod_sub_qq(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256) {
     // (every ancilla is driven to |0⟩ before its R).
     let a_copy: Vec<QubitId> = a.to_vec();
     emit_inverse(b, move |b| mod_add_qq(b, acc, &a_copy, p));
-}
-
-// AUDIT GROUP A dispatch: the pos-32 Solinas fold add/sub. Slow `mod_add_qq`
-// becomes the register-free low-scratch fast variant when the gate is on.
-// Defined here (forward-declares mod_add_qq_fast_lowscratch / mod_sub_qq_fast
-// which live below) so all fold call sites share one substitution point.
-#[inline]
-fn sol_fold_add_qq(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256) {
-    if audit_sol_folds() {
-        mod_add_qq_fast_lowscratch(b, acc, a, p);
-    } else {
-        mod_add_qq(b, acc, a, p);
-    }
-}
-
-#[inline]
-fn sol_fold_sub_qq(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256) {
-    if audit_sol_folds() {
-        mod_sub_qq_fast(b, acc, a, p);
-    } else {
-        mod_sub_qq(b, acc, a, p);
-    }
 }
 
 /// Fast `acc := (acc - a) mod p`. Direct sub + conditional add-p + flag
@@ -1400,19 +1361,6 @@ fn mod_shift_left_by_k(
     let mut v_ext = v.to_vec();
     v_ext.push(ovf);
     let cuccaro_op = |b: &mut B, pos: usize, is_sub: bool| {
-        // AUDIT #1: at pos==0 on the plain-Cuccaro (lowq) path the operation is
-        // v_ext += spill where v_ext[0..k] is provably |0> (Step-1 left-shift
-        // zeroed the low k bits) and spill is nonzero only in bits [0..k).  No
-        // carry can propagate, so the n+1-wide Cuccaro degenerates to k CX
-        // copies.  CX is self-inverse, so the same body serves the reverse call.
-        // Guarded by lowq_shift22() because the _fast variants use measured
-        // uncompute (the CX-copy is invalid there).
-        if pos == 0 && lowq_shift22() && audit_shift22_pos0_cx() {
-            for i in 0..k {
-                b.cx(spill[i], v_ext[i]);
-            }
-            return;
-        }
         let pad_width = n + 1 - pos;
         let padded = b.alloc_qubits(pad_width);
         for i in 0..k.min(pad_width) {
@@ -1519,15 +1467,6 @@ fn mod_shift_right_by_k(
 
     // Reverse step 2: inverse of the consolidated op list (5 ops, in reverse order, flipped signs).
     let cuccaro_op = |b: &mut B, pos: usize, is_sub: bool| {
-        // AUDIT #1 (reverse): exact gate-inverse of the forward pos==0 CX-copy.
-        // At this point the forward pos!=0 folds + reduction are fully undone, so
-        // v_ext[0..k] again equals spill; k CX subtract it back to |0>.
-        if pos == 0 && lowq_shift22() && audit_shift22_pos0_cx() {
-            for i in 0..k {
-                b.cx(spill[i], v_ext[i]);
-            }
-            return;
-        }
         let pad_width = n + 1 - pos;
         let padded = b.alloc_qubits(pad_width);
         for i in 0..k.min(pad_width) {
@@ -1595,13 +1534,6 @@ fn mod_shift_left_by_k_lowq(
     let mut v_ext = v.to_vec();
     v_ext.push(ovf);
     let cuccaro_op = |b: &mut B, pos: usize, is_sub: bool| {
-        // AUDIT #1: pos==0 add is v_ext += spill into zeroed low k bits -> k CX.
-        if pos == 0 && audit_shift22_pos0_cx() {
-            for i in 0..k {
-                b.cx(spill[i], v_ext[i]);
-            }
-            return;
-        }
         let pad_width = n + 1 - pos;
         let padded = b.alloc_qubits(pad_width);
         for i in 0..k.min(pad_width) {
@@ -1666,13 +1598,6 @@ fn mod_shift_right_by_k_lowq(
     b.free(flag_inv);
 
     let cuccaro_op = |b: &mut B, pos: usize, is_sub: bool| {
-        // AUDIT #1 (reverse): exact gate-inverse of the forward pos==0 CX-copy.
-        if pos == 0 && audit_shift22_pos0_cx() {
-            for i in 0..k {
-                b.cx(spill[i], v_ext[i]);
-            }
-            return;
-        }
         let pad_width = n + 1 - pos;
         let padded = b.alloc_qubits(pad_width);
         for i in 0..k.min(pad_width) {
@@ -2114,7 +2039,7 @@ fn mod_mul_write_into_zero_acc_schoolbook_lowq(
     }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    sol_fold_add_qq(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -2161,7 +2086,7 @@ fn mod_mul_write_into_zero_acc_schoolbook(
     }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    sol_fold_add_qq(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     b.set_phase("sol_halve_tail");
     for _ in 0..10 {
@@ -2900,7 +2825,7 @@ fn mod_mul_add_into_acc_karatsuba_lowq_with_tmp_ext(
     }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    sol_fold_add_qq(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -3011,7 +2936,7 @@ fn mod_mul_add_into_acc_karatsuba_with_tmp_ext(
     }
     mod_add_qq_fast_lowscratch(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    sol_fold_add_qq(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -3074,11 +2999,9 @@ fn mod_mul_write_into_zero_acc_karatsuba_with_tmp_ext(
     b.set_phase("kara_solinas_shift22L");
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
     b.set_phase("kara_solinas_post32_add");
-    // PEAK-PROTECTED (pair1 sister): keep the slow non-fast mod_add at this peak
-    // site (after shift_left, with extra locals alive) to save 256 carry qubits.
-    // AUDIT GROUP A deliberately does NOT swap this one — fast here breaks 2708.
-    let acc_peak_protected = acc;
-    mod_add_qq(b, acc_peak_protected, &hi, p);
+    // Use non-fast mod_add at peak site (after shift_left, with extra locals alive)
+    // to save 256 carry qubits at the expense of ~n Toffoli.
+    mod_add_qq(b, acc, &hi, p);
     b.set_phase("kara_solinas_shift22R");
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     b.set_phase("kara_solinas_post_halve");
@@ -3305,7 +3228,7 @@ fn mod_mul_write_into_zero_acc_karatsuba2(
     }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    sol_fold_add_qq(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -3354,7 +3277,7 @@ fn mod_mul_add_into_acc_schoolbook(
     }
     mod_add_qq_fast(b, acc, &hi, p); // position 10
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    sol_fold_add_qq(b, acc, &hi, p); // position 32
+    mod_add_qq(b, acc, &hi, p); // position 32
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     b.set_phase("sol_halve_tail");
     for _ in 0..10 {
@@ -3461,7 +3384,7 @@ fn squaring_add_to_acc_schoolbook(b: &mut B, acc: &[QubitId], x: &[QubitId], p: 
     }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    sol_fold_add_qq(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -3477,13 +3400,7 @@ fn mod_add_solinas_ext_product(b: &mut B, acc: &[QubitId], tmp_ext: &[QubitId], 
     debug_assert_eq!(tmp_ext.len(), 2 * n);
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
     let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
-    // AUDIT #6: sole caller passes a freshly alloc'd (|0>) `breg`, so the first
-    // operand add into the zero accumulator is a CX-copy (256 CCX -> 0).
-    if audit_sol_folds() {
-        mod_add_qq_fast_from_zero(b, acc, &lo, p);
-    } else {
-        mod_add_qq_fast(b, acc, &lo, p);
-    }
+    mod_add_qq_fast(b, acc, &lo, p);
     mod_add_qq_fast(b, acc, &hi, p);
     for _ in 0..4 {
         mod_double_inplace_fast(b, &hi, p);
@@ -3498,7 +3415,7 @@ fn mod_add_solinas_ext_product(b: &mut B, acc: &[QubitId], tmp_ext: &[QubitId], 
     }
     mod_add_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    sol_fold_add_qq(b, acc, &hi, p);
+    mod_add_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -3526,7 +3443,7 @@ fn mod_sub_solinas_ext_product(b: &mut B, acc: &[QubitId], tmp_ext: &[QubitId], 
     }
     mod_sub_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    sol_fold_sub_qq(b, acc, &hi, p);
+    mod_sub_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -3650,7 +3567,7 @@ fn squaring_sub_from_acc_schoolbook(b: &mut B, acc: &[QubitId], x: &[QubitId], p
     }
     mod_sub_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k(b, &hi, p, 22);
-    sol_fold_sub_qq(b, acc, &hi, p);
+    mod_sub_qq(b, acc, &hi, p);
     mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -3694,7 +3611,7 @@ fn squaring_sub_from_acc_schoolbook_lowq_shift22(
     }
     mod_sub_qq_fast(b, acc, &hi, p);
     let (spill, flag_inv, ovf) = mod_shift_left_by_k_lowq(b, &hi, p, 22);
-    sol_fold_sub_qq(b, acc, &hi, p);
+    mod_sub_qq(b, acc, &hi, p);
     mod_shift_right_by_k_lowq(b, &hi, p, 22, spill, flag_inv, ovf);
     for _ in 0..10 {
         mod_halve_inplace_fast(b, &hi, p);
@@ -4092,6 +4009,31 @@ fn r_small_threshold() -> usize {
         .unwrap_or(R_SMALL_THRESHOLD)
 }
 
+/// (r,s) cswap boundary-merge: defer step9(k) and fuse it with step3(k+1) on
+/// the (r,s) Bezout channel via the pure-unitary identity
+/// `cswap(p)·cswap(q) = cswap(p⊕q)`. A persistent `frame` parity qubit carries
+/// the deferred step9 control (= a_k, the iter's swap decision) across the
+/// iteration boundary, allocated only over the boundary span (step6_7_8 →
+/// next step3) so it is never live during step4 → peak-neutral. −274k CCX.
+/// Default ON; `KAL_CSWAP_RS_MERGE=0` restores the byte-identical eager path.
+/// Only active for the default coeff=None channel.
+fn kal_cswap_rs_merge_enabled() -> bool {
+    std::env::var("KAL_CSWAP_RS_MERGE").ok().as_deref() != Some("0")
+}
+
+// DIAGNOSTIC: gate the (r,s) boundary-merge in the GENERIC (non-bulk) Kaliski
+// path independently, to bisect a phase/correctness regression between the
+// bulk-prefix iterations and the generic tail iterations.
+fn kal_cswap_rs_merge_generic_enabled() -> bool {
+    kal_cswap_rs_merge_enabled()
+        && std::env::var("KAL_CSWAP_RS_MERGE_GENERIC").ok().as_deref() != Some("0")
+}
+// DIAGNOSTIC: gate the merge in the BULK path independently.
+fn kal_cswap_rs_merge_bulk_enabled() -> bool {
+    kal_cswap_rs_merge_enabled()
+        && std::env::var("KAL_CSWAP_RS_MERGE_BULK").ok().as_deref() != Some("0")
+}
+
 /// For nonzero secp256k1 inputs, the first 256 Kaliski iterations are always
 /// nonterminal, so `f = 1` and `v_w != 0` at step entry are guaranteed.
 ///
@@ -4211,20 +4153,8 @@ fn bulk_prefix_caps(pair: KalPair) -> BulkPrefixCaps {
         && env_usize("KAL_PAIR1_BULK3_FWD_ITERS").is_none()
         && env_usize("KAL_PAIR1_BULK3_BK_ITERS").is_none()
     {
-        forward = 398;
-        backward = 398;
-    }
-
-    if matches!(pair, KalPair::Pair2)
-        && env_usize("KAL_BULK3_ITERS").is_none()
-        && env_usize("KAL_BULK3_FWD_ITERS").is_none()
-        && env_usize("KAL_BULK3_BK_ITERS").is_none()
-        && env_usize("KAL_PAIR2_BULK3_ITERS").is_none()
-        && env_usize("KAL_PAIR2_BULK3_FWD_ITERS").is_none()
-        && env_usize("KAL_PAIR2_BULK3_BK_ITERS").is_none()
-    {
-        forward = 396;
-        backward = 396;
+        forward = 394;
+        backward = 394;
     }
 
     BulkPrefixCaps { forward, backward }
@@ -6561,7 +6491,11 @@ fn kaliski_iteration_bulk_prefix3(
     m_i: QubitId,
     iter_idx: usize,
     coeff: Option<(&[QubitId], &[QubitId])>,
+    frame: &mut Option<QubitId>,
+    is_last: bool,
 ) {
+    // (r,s) cswap boundary-merge is only valid on the default coeff=None channel.
+    let merge_rs = coeff.is_none() && kal_cswap_rs_merge_bulk_enabled();
     let a_f = b.alloc_qubit();
     let b_f = b.alloc_qubit();
     let add_f = b.alloc_qubit();
@@ -6627,8 +6561,34 @@ fn kaliski_iteration_bulk_prefix3(
     } else {
         u.len()
     };
-    for j in 0..rs_width_step3 {
-        cswap(b, a_f, r[j], s[j]);
+    // (r,s) STEP 3 — merged with the deferred STEP 9 of the previous iteration
+    // when merge_rs and an incoming frame parity is present.
+    if let (true, Some(frame_in)) = (merge_rs, *frame) {
+        // frame_in = a_{k-1} (previous iter's deferred step9 control).
+        // Merged cswap control = a_{k-1} ⊕ a_k. Build into a_f (free CX),
+        // emit one cswap (width = min(k+1,n) = step9(k-1) width = step3(k)
+        // width), then restore a_f to a_k. After: physical = canonical-post
+        // step3(k).
+        b.cx(frame_in, a_f); // a_f = a_{k-1} ⊕ a_k
+        for j in 0..rs_width_step3 {
+            cswap(b, a_f, r[j], s[j]);
+        }
+        b.cx(frame_in, a_f); // a_f = a_k (restored)
+        // Reset frame_in (= a_{k-1}) to |0⟩ via the step10 reroute of the
+        // previous iter, evaluated on the now-canonical (r,s) with a_k (= a_f)
+        // as the select bit (distinct qubit from frame_in → no self-control):
+        //   a_{k-1} = NOT(a_k ? r[0] : s[0])
+        // frame_in ^= NOT(a_f ? r[0] : s[0]):
+        b.cx(s[0], frame_in);
+        b.x(frame_in); // frame_in ^= NOT s[0]
+        b.ccx(a_f, r[0], frame_in);
+        b.ccx(a_f, s[0], frame_in); // frame_in ^= a_f & (r[0] ^ s[0])
+        b.free(frame_in); // frame_in now |0⟩
+        *frame = None;
+    } else {
+        for j in 0..rs_width_step3 {
+            cswap(b, a_f, r[j], s[j]);
+        }
     }
     if let Some((cr, cs)) = coeff {
         b.set_phase("kal_bulk_coeff_step3_cswap");
@@ -6732,17 +6692,30 @@ fn kaliski_iteration_bulk_prefix3(
     } else {
         u.len()
     };
-    for j in 0..rs_width_step9 {
-        cswap(b, a_f, r[j], s[j]);
+    if merge_rs && !is_last {
+        // DEFER the (r,s) STEP 9 cswap: carry a_k as the outgoing frame parity
+        // (allocated here, consumed by the next iter's merged step3). This
+        // qubit is NOT live during STEP 4 (allocated after step6_7_8, freed at
+        // the next step3 before step4) → peak-neutral. a_f (= a_k) is then
+        // reset to |0⟩ for free using the frame copy as select.
+        let frame_out = b.alloc_qubit();
+        b.cx(a_f, frame_out); // frame_out = a_k
+        b.cx(frame_out, a_f); // a_f = a_k ^ a_k = 0
+        *frame = Some(frame_out);
+    } else {
+        // Eager (r,s) STEP 9 (edge: last iter, or merge disabled), then STEP 10.
+        for j in 0..rs_width_step9 {
+            cswap(b, a_f, r[j], s[j]);
+        }
+        if let Some((cr, cs)) = coeff {
+            b.set_phase("kal_bulk_coeff_step9_cswap");
+            coeff_channel_cswap(b, a_f, cr, cs);
+        }
+        // STEP 10: uncompute a via a ^= NOT s[0].
+        b.x(s[0]);
+        b.cx(s[0], a_f);
+        b.x(s[0]);
     }
-    if let Some((cr, cs)) = coeff {
-        b.set_phase("kal_bulk_coeff_step9_cswap");
-        coeff_channel_cswap(b, a_f, cr, cs);
-    }
-
-    b.x(s[0]);
-    b.cx(s[0], a_f);
-    b.x(s[0]);
 
     b.x(f1);
     b.free(f1);
@@ -6763,8 +6736,12 @@ fn kaliski_iteration(
     f: QubitId,
     iter_idx: usize,
     coeff: Option<(&[QubitId], &[QubitId])>,
+    frame: &mut Option<QubitId>,
+    is_last: bool,
 ) {
     let n = u.len();
+    // (r,s) cswap boundary-merge is only valid on the default coeff=None channel.
+    let merge_rs = coeff.is_none() && kal_cswap_rs_merge_enabled();
     // Iter-local flags (zero at iter start and iter end): alloc fresh here
     // so they don't live during body (which sees lower peak by -3 qubits).
     let a_f = b.alloc_qubit();
@@ -6846,8 +6823,26 @@ fn kaliski_iteration(
         cswap(b, a_f, u[j], v_w[j]);
     }
     let rs_width_step3 = if iter_idx + 1 < n { iter_idx + 1 } else { n };
-    for j in 0..rs_width_step3 {
-        cswap(b, a_f, r[j], s[j]);
+    // (r,s) STEP 3 — merged with the deferred STEP 9 of the previous iter when
+    // merge_rs and an incoming frame parity is present. (See bulk variant.)
+    if let (true, Some(frame_in)) = (merge_rs, *frame) {
+        b.cx(frame_in, a_f); // a_f = a_{k-1} ⊕ a_k
+        for j in 0..rs_width_step3 {
+            cswap(b, a_f, r[j], s[j]);
+        }
+        b.cx(frame_in, a_f); // a_f = a_k (restored)
+        // Reset frame_in (= a_{k-1}) to |0⟩ via prev iter's step10 reroute,
+        // a_k (= a_f) as select: frame_in ^= NOT(a_f ? r[0] : s[0]).
+        b.cx(s[0], frame_in);
+        b.x(frame_in);
+        b.ccx(a_f, r[0], frame_in);
+        b.ccx(a_f, s[0], frame_in);
+        b.free(frame_in);
+        *frame = None;
+    } else {
+        for j in 0..rs_width_step3 {
+            cswap(b, a_f, r[j], s[j]);
+        }
     }
     if let Some((cr, cs)) = coeff {
         b.set_phase("kal_coeff_step3_cswap");
@@ -6974,21 +6969,25 @@ fn kaliski_iteration(
         cswap(b, a_f, u[j], v_w[j]);
     }
     let rs_width_step9 = if iter_idx + 2 < n { iter_idx + 2 } else { n };
-    for j in 0..rs_width_step9 {
-        cswap(b, a_f, r[j], s[j]);
+    if merge_rs && !is_last {
+        // DEFER the (r,s) STEP 9: carry a_k as the outgoing frame parity.
+        let frame_out = b.alloc_qubit();
+        b.cx(a_f, frame_out); // frame_out = a_k
+        b.cx(frame_out, a_f); // a_f = 0 (reset via frame copy)
+        *frame = Some(frame_out);
+    } else {
+        for j in 0..rs_width_step9 {
+            cswap(b, a_f, r[j], s[j]);
+        }
+        if let Some((cr, cs)) = coeff {
+            b.set_phase("kal_coeff_step9_cswap");
+            coeff_channel_cswap(b, a_f, cr, cs);
+        }
+        // ─── STEP 10: uncompute a via `a ^= NOT s[0]` ───
+        b.x(s[0]);
+        b.cx(s[0], a_f);
+        b.x(s[0]);
     }
-    if let Some((cr, cs)) = coeff {
-        b.set_phase("kal_coeff_step9_cswap");
-        coeff_channel_cswap(b, a_f, cr, cs);
-    }
-
-    // ─── STEP 10: uncompute a via `a ^= NOT s[0]` ───
-    // After STEP 9's swap, the invariant (from qrisp) is that
-    //   a == NOT s[0]
-    // Hence `cx(NOT s[0], a)` zeros a.
-    b.x(s[0]);
-    b.cx(s[0], a_f);
-    b.x(s[0]);
 
     // Free iter-local flags (all at 0 now).
     b.free(add_f);
@@ -7250,8 +7249,20 @@ fn kaliski_forward_with_coeff_caps(
 
     // ─── Iterations ───
     let use_bulk_prefix3 = bulk_prefix_enabled();
+    // When the bulk path merges but the generic path does not, the frame must
+    // NOT cross the bulk→generic boundary: the last bulk iter applies its step9
+    // eagerly (treated as "last") so no frame is handed to the generic tail.
+    let merge_boundary_break = use_bulk_prefix3
+        && kal_cswap_rs_merge_bulk_enabled()
+        && !kal_cswap_rs_merge_generic_enabled()
+        && bulk_caps.forward < iters;
+    let mut frame: Option<QubitId> = None;
     for i in 0..iters {
+        let mut is_last = i + 1 == iters;
         if use_bulk_prefix3 && i < bulk_caps.forward {
+            if merge_boundary_break && i + 1 == bulk_caps.forward {
+                is_last = true;
+            }
             kaliski_iteration_bulk_prefix3(
                 b,
                 p,
@@ -7262,6 +7273,8 @@ fn kaliski_forward_with_coeff_caps(
                 st.m_hist[i],
                 i,
                 coeff,
+                &mut frame,
+                is_last,
             );
         } else {
             kaliski_iteration(
@@ -7275,9 +7288,12 @@ fn kaliski_forward_with_coeff_caps(
                 st.f_flag,
                 i,
                 coeff,
+                &mut frame,
+                is_last,
             );
         }
     }
+    debug_assert!(frame.is_none(), "kaliski forward frame not consumed");
 
     // After the loop for nonzero v_in, classical invariants give:
     //   u = 1, v_w = 0, f = 0, a = b = add = 0
@@ -7353,27 +7369,42 @@ fn kaliski_iteration_bulk_prefix3_backward(
     s: &[QubitId],
     m_i: QubitId,
     iter_idx: usize,
+    frame: &mut Option<QubitId>,
+    is_last: bool,
 ) {
     let n = u.len();
+    // (r,s) cswap boundary-merge — bulk backward is always coeff=None.
+    let merge_rs = kal_cswap_rs_merge_bulk_enabled();
     let a_f = b.alloc_qubit();
     let b_f = b.alloc_qubit();
     let add_f = b.alloc_qubit();
 
     let _kal_saved_phase = b.phase;
 
-    // Reverse STEP 10.
-    b.set_phase("bk_bulk_step10");
-    b.x(s[0]);
-    b.cx(s[0], a_f);
-    b.x(s[0]);
-
-    // Reverse STEP 9.
-    b.set_phase("bk_bulk_step9_cswap");
+    // Reverse STEP 10 + STEP 9 (r,s).
     let rs_width_step9 = if iter_idx + 2 < n { iter_idx + 2 } else { n };
-    for j in (0..rs_width_step9).rev() {
-        cswap(b, a_f, r[j], s[j]);
+    if merge_rs && !is_last {
+        // Reverse of forward step9-defer: recreate a_f = a_k from the incoming
+        // frame parity, then zero+free the frame.
+        b.set_phase("bk_bulk_step9_cswap");
+        let frame_in = frame.expect("merged backward expects an incoming frame");
+        b.cx(frame_in, a_f); // a_f = a_k
+        b.cx(a_f, frame_in); // frame = 0
+        b.free(frame_in);
+        *frame = None;
+    } else {
+        // Eager reverse STEP 10 then STEP 9 (r,s) — edge (last iter) / merge off.
+        b.set_phase("bk_bulk_step10");
+        b.x(s[0]);
+        b.cx(s[0], a_f);
+        b.x(s[0]);
+        b.set_phase("bk_bulk_step9_cswap");
+        for j in (0..rs_width_step9).rev() {
+            cswap(b, a_f, r[j], s[j]);
+        }
     }
-    // Late-iter truncation mirrors forward step9.
+    // Reverse STEP 9 (u,v) — always eager.
+    b.set_phase("bk_bulk_step9_cswap");
     let uv_width_step9 = if iter_idx < n { n } else { 2 * n - iter_idx };
     for j in (0..uv_width_step9).rev() {
         cswap(b, a_f, u[j], v_w[j]);
@@ -7463,8 +7494,28 @@ fn kaliski_iteration_bulk_prefix3_backward(
     // Reverse STEP 3.
     b.set_phase("bk_bulk_step3_cswap");
     let rs_width_step3 = if iter_idx + 1 < n { iter_idx + 1 } else { n };
-    for j in (0..rs_width_step3).rev() {
-        cswap(b, a_f, r[j], s[j]);
+    // Reverse of the forward (r,s) STEP 3. When merged, recreate the outgoing
+    // frame parity (= a_{k-1}) and hand it to the previous (backward-later) iter.
+    // Iter 0's forward step3 is an explicit edge (no incoming frame), so its
+    // reverse is the plain eager cswap.
+    if merge_rs && iter_idx != 0 {
+        let frame_out = b.alloc_qubit();
+        // Reverse reroute (recreate frame_out = a_{k-1}), a_f = a_k as select.
+        b.ccx(a_f, s[0], frame_out);
+        b.ccx(a_f, r[0], frame_out);
+        b.x(frame_out);
+        b.cx(s[0], frame_out);
+        // Reverse the merged cswap: control a_{k-1} ⊕ a_k.
+        b.cx(frame_out, a_f); // a_f = a_{k-1} ⊕ a_k
+        for j in (0..rs_width_step3).rev() {
+            cswap(b, a_f, r[j], s[j]);
+        }
+        b.cx(frame_out, a_f); // a_f = a_k (restored)
+        *frame = Some(frame_out);
+    } else {
+        for j in (0..rs_width_step3).rev() {
+            cswap(b, a_f, r[j], s[j]);
+        }
     }
     // Late-iter truncation mirrors forward step3.
     let uv_width_step3 = if iter_idx < n { n } else { 2 * n - iter_idx };
@@ -7522,8 +7573,12 @@ fn kaliski_iteration_backward(
     m_i: QubitId,
     f: QubitId,
     iter_idx: usize,
+    frame: &mut Option<QubitId>,
+    is_last: bool,
 ) {
     let n = u.len();
+    // (r,s) cswap boundary-merge — generic backward is always coeff=None here.
+    let merge_rs = kal_cswap_rs_merge_generic_enabled();
     // Iter-local flags alloc'd fresh (zero at iter start in the backward
     // direction). They are zeroed and freed at iter end to match forward.
     let a_f = b.alloc_qubit();
@@ -7531,20 +7586,29 @@ fn kaliski_iteration_backward(
     let add_f = b.alloc_qubit();
 
     let _kal_saved_phase = b.phase;
-    b.set_phase("bk_step10");
-    // Reverse STEP 10
-    // Matches forward's gated update.
-    b.x(s[0]);
-    b.ccx(f, s[0], a_f);
-    b.x(s[0]);
-
-    // ── Reverse STEP 9 ─────────────────────────────────────────────────
+    // ── Reverse STEP 10 + STEP 9 (r,s) ─────────────────────────────────
     let rs_width_step9 = if iter_idx + 2 < n { iter_idx + 2 } else { n };
+    if merge_rs && !is_last {
+        // Reverse of forward step9-defer: recreate a_f = a_k from incoming frame.
+        b.set_phase("bk_step9_cswap");
+        let frame_in = frame.expect("merged backward expects an incoming frame");
+        b.cx(frame_in, a_f); // a_f = a_k
+        b.cx(a_f, frame_in); // frame = 0
+        b.free(frame_in);
+        *frame = None;
+    } else {
+        b.set_phase("bk_step10");
+        // Reverse STEP 10. Matches forward's gated update.
+        b.x(s[0]);
+        b.ccx(f, s[0], a_f);
+        b.x(s[0]);
+        b.set_phase("bk_step9_cswap");
+        for j in (0..rs_width_step9).rev() {
+            cswap(b, a_f, r[j], s[j]);
+        }
+    }
     let uv_width = if iter_idx < n { n } else { 2 * n - iter_idx };
     b.set_phase("bk_step9_cswap");
-    for j in (0..rs_width_step9).rev() {
-        cswap(b, a_f, r[j], s[j]);
-    }
     for j in (0..uv_width).rev() {
         cswap(b, a_f, u[j], v_w[j]);
     }
@@ -7644,8 +7708,25 @@ fn kaliski_iteration_backward(
     // Reverse STEP 3 ─────────────────────────────────────────────────
     let rs_width_step3 = if iter_idx + 1 < n { iter_idx + 1 } else { n };
     let uv_width = if iter_idx < n { n } else { 2 * n - iter_idx };
-    for j in (0..rs_width_step3).rev() {
-        cswap(b, a_f, r[j], s[j]);
+    // Reverse of forward (r,s) STEP 3: recreate the outgoing frame parity when
+    // merged. Iter 0 forward step3 was an explicit edge → plain eager reverse.
+    if merge_rs && iter_idx != 0 {
+        let frame_out = b.alloc_qubit();
+        // Reverse reroute (recreate frame_out = a_{k-1}), a_f = a_k as select.
+        b.ccx(a_f, s[0], frame_out);
+        b.ccx(a_f, r[0], frame_out);
+        b.x(frame_out);
+        b.cx(s[0], frame_out);
+        b.cx(frame_out, a_f); // a_f = a_{k-1} ⊕ a_k
+        for j in (0..rs_width_step3).rev() {
+            cswap(b, a_f, r[j], s[j]);
+        }
+        b.cx(frame_out, a_f); // a_f = a_k (restored)
+        *frame = Some(frame_out);
+    } else {
+        for j in (0..rs_width_step3).rev() {
+            cswap(b, a_f, r[j], s[j]);
+        }
     }
     for j in (0..uv_width).rev() {
         cswap(b, a_f, u[j], v_w[j]);
@@ -7754,8 +7835,17 @@ fn kaliski_backward_caps(
 
     let use_bulk_prefix3 = bulk_prefix_enabled();
     // ─── Reverse iterations (in reverse order) ───
+    let merge_boundary_break = use_bulk_prefix3
+        && kal_cswap_rs_merge_bulk_enabled()
+        && !kal_cswap_rs_merge_generic_enabled()
+        && bulk_caps.backward < iters;
+    let mut frame: Option<QubitId> = None;
     for i in (0..iters).rev() {
+        let mut is_last = i + 1 == iters;
         if use_bulk_prefix3 && i < bulk_caps.backward {
+            if merge_boundary_break && i + 1 == bulk_caps.backward {
+                is_last = true;
+            }
             kaliski_iteration_bulk_prefix3_backward(
                 b,
                 p,
@@ -7765,6 +7855,8 @@ fn kaliski_backward_caps(
                 &st.s,
                 st.m_hist[i],
                 i,
+                &mut frame,
+                is_last,
             );
         } else {
             kaliski_iteration_backward(
@@ -7777,9 +7869,12 @@ fn kaliski_backward_caps(
                 st.m_hist[i],
                 st.f_flag,
                 i,
+                &mut frame,
+                is_last,
             );
         }
     }
+    debug_assert!(frame.is_none(), "kaliski backward frame not consumed");
 
     // ─── Reverse Init ───
     b.x(st.f_flag);
@@ -8829,7 +8924,9 @@ fn kaliski_forward_alias_v_w_caps(
     b.x(st.f_flag);
 
     let use_bulk_prefix3 = bulk_prefix_enabled();
+    let mut frame: Option<QubitId> = None;
     for i in 0..iters {
+        let is_last = i + 1 == iters;
         if use_bulk_prefix3 && i < bulk_caps.forward {
             kaliski_iteration_bulk_prefix3(
                 b,
@@ -8841,6 +8938,8 @@ fn kaliski_forward_alias_v_w_caps(
                 st.m_hist[i],
                 i,
                 None,
+                &mut frame,
+                is_last,
             );
         } else {
             kaliski_iteration(
@@ -8854,9 +8953,12 @@ fn kaliski_forward_alias_v_w_caps(
                 st.f_flag,
                 i,
                 None,
+                &mut frame,
+                is_last,
             );
         }
     }
+    debug_assert!(frame.is_none(), "kaliski alias forward frame not consumed");
 }
 
 fn kaliski_backward_alias_v_w_caps(
@@ -8869,7 +8971,9 @@ fn kaliski_backward_alias_v_w_caps(
     debug_assert!(iters <= st.m_hist.len());
 
     let use_bulk_prefix3 = bulk_prefix_enabled();
+    let mut frame: Option<QubitId> = None;
     for i in (0..iters).rev() {
+        let is_last = i + 1 == iters;
         if use_bulk_prefix3 && i < bulk_caps.backward {
             kaliski_iteration_bulk_prefix3_backward(
                 b,
@@ -8880,6 +8984,8 @@ fn kaliski_backward_alias_v_w_caps(
                 &st.s,
                 st.m_hist[i],
                 i,
+                &mut frame,
+                is_last,
             );
         } else {
             kaliski_iteration_backward(
@@ -8892,9 +8998,12 @@ fn kaliski_backward_alias_v_w_caps(
                 st.m_hist[i],
                 st.f_flag,
                 i,
+                &mut frame,
+                is_last,
             );
         }
     }
+    debug_assert!(frame.is_none(), "kaliski alias backward frame not consumed");
 
     b.x(st.f_flag);
     b.x(st.s[0]);
@@ -9020,7 +9129,9 @@ fn kaliski_forward_prescaled_kind(
 
     let use_bulk_prefix3 = bulk_prefix_enabled();
     let bulk_prefix_iters = bulk_prefix_safe_iters();
+    let mut frame: Option<QubitId> = None;
     for i in 0..iters {
+        let is_last = i + 1 == iters;
         if use_bulk_prefix3 && i < bulk_prefix_iters {
             kaliski_iteration_bulk_prefix3(
                 b,
@@ -9032,6 +9143,8 @@ fn kaliski_forward_prescaled_kind(
                 st.m_hist[i],
                 i,
                 None,
+                &mut frame,
+                is_last,
             );
         } else {
             kaliski_iteration(
@@ -9045,9 +9158,12 @@ fn kaliski_forward_prescaled_kind(
                 st.f_flag,
                 i,
                 None,
+                &mut frame,
+                is_last,
             );
         }
     }
+    debug_assert!(frame.is_none(), "kaliski prescaled forward frame not consumed");
 }
 
 fn kaliski_backward_prescaled_mixed(
@@ -9086,7 +9202,9 @@ fn kaliski_backward_prescaled_kind(
 
     let use_bulk_prefix3 = bulk_prefix_enabled();
     let bulk_prefix_iters = bulk_prefix_safe_iters();
+    let mut frame: Option<QubitId> = None;
     for i in (0..iters).rev() {
+        let is_last = i + 1 == iters;
         if use_bulk_prefix3 && i < bulk_prefix_iters {
             kaliski_iteration_bulk_prefix3_backward(
                 b,
@@ -9097,6 +9215,8 @@ fn kaliski_backward_prescaled_kind(
                 &st.s,
                 st.m_hist[i],
                 i,
+                &mut frame,
+                is_last,
             );
         } else {
             kaliski_iteration_backward(
@@ -9109,9 +9229,12 @@ fn kaliski_backward_prescaled_kind(
                 st.m_hist[i],
                 st.f_flag,
                 i,
+                &mut frame,
+                is_last,
             );
         }
     }
+    debug_assert!(frame.is_none(), "kaliski prescaled backward frame not consumed");
 
     b.x(st.f_flag);
     b.x(st.s[0]);
