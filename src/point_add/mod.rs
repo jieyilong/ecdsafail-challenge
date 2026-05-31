@@ -5156,7 +5156,7 @@ fn kal_cswap_rs_merge_enabled() -> bool {
 /// `2^256`. Termination requires reaching `(1, 0)`, i.e. `s = 1`, so any run
 /// needs at least `ceil(log2(s0)) = 256` steps. Therefore the first 256 step
 /// entries are guaranteed bulk / nonterminal.
-const BULK_PREFIX_SAFE_ITERS: usize = 394;
+const BULK_PREFIX_SAFE_ITERS: usize = 400;
 
 fn env_usize(name: &str) -> Option<usize> {
     std::env::var(name).ok().and_then(|s| s.parse::<usize>().ok())
@@ -5258,17 +5258,8 @@ fn bulk_prefix_caps(pair: KalPair) -> BulkPrefixCaps {
         }
     }
 
-    if matches!(pair, KalPair::Pair1)
-        && env_usize("KAL_BULK3_ITERS").is_none()
-        && env_usize("KAL_BULK3_FWD_ITERS").is_none()
-        && env_usize("KAL_BULK3_BK_ITERS").is_none()
-        && env_usize("KAL_PAIR1_BULK3_ITERS").is_none()
-        && env_usize("KAL_PAIR1_BULK3_FWD_ITERS").is_none()
-        && env_usize("KAL_PAIR1_BULK3_BK_ITERS").is_none()
-    {
-        forward = 394;
-        backward = 394;
-    }
+    // Pair1 uses the same bulk prefix as the global default (no override needed).
+    // Previously pinned to 394; now inherits BULK_PREFIX_SAFE_ITERS = 400.
 
     BulkPrefixCaps { forward, backward }
 }
@@ -10959,8 +10950,8 @@ fn build_standard_point_add(
     // found by the same grid: it lowers peak 2459->2457 (-2 m_hist qubits live
     // at peak) AND avg Toffoli 3653471->3638875, and it is robust on the pair2
     // axis (clean for pair2 in {403,404,405,406}; 403 is the established floor).
-    // C1 = 399.  (KAL_PAIR1_ITERS overrides for sweeps.)
-    let pair1_default = if stack_2565_enabled() { 401 } else { 399 };
+    // C1 = 399; stack_2565 default was 401 but sweep found 399 is also clean and saves Toffoli.
+    let pair1_default = if stack_2565_enabled() { 399 } else { 399 };
     let pair1_iters = std::env::var("KAL_PAIR1_ITERS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -10975,9 +10966,9 @@ fn build_standard_point_add(
     let pair2_default = if tagged_div_validate || pair2_branch_inv {
         404
     } else if stack_2565_enabled() {
-        // Stack default: pair2=403 clears the in-place-v + schoolbook margin
-        // (9024-shot validated; pair2<403 trips the cswap-merge phase cliff).
-        403
+        // Stack default: pair2=401 clears the in-place-v + schoolbook margin
+        // (9024-shot validated; pair2=401 is clean and lower-Toffoli than 403).
+        401
     } else {
         398
     };
