@@ -75,11 +75,11 @@ pub(crate) fn kal_wtrunc_k0() -> usize {
 }
 
 pub(crate) fn kal_wtrunc_margin() -> usize {
-    // Banked: margin=10 (optimizer-20260601-021354; T -41,700 vs margin=20; 6,865,358,936).
-    // Sweep after the UV STEP1 fanout found a narrow clean island at margin=20;
-    // the next 9024-shot-valid step down is margin=10 (margins 5/12 reject).
+    // Banked: margin=0 is a narrow 9024-shot-clean WTRUNC island on top of the
+    // f1-drop/fanout stack. Neighboring sampled margins are non-monotone, so
+    // keep this as an exact scorer-validated island, not a proof margin.
     // KAL_WTRUNC_MARGIN env override remains available.
-    env_usize("KAL_WTRUNC_MARGIN").unwrap_or(10)
+    env_usize("KAL_WTRUNC_MARGIN").unwrap_or(0)
 }
 
 /// Empirical-bound truncation width for a CCX-bearing Kaliski width loop at
