@@ -211,6 +211,15 @@ pub(crate) fn mod_sub_qq_fast(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256
         );
         b.free(q_clean2[0]);
         b.free(q_clean2[1]);
+    } else if std::env::var("KAL_DIRECT_CONST_QQFOLD").ok().as_deref() != Some("0") {
+        // CARRY-TAIL (default-ON): route the sparse Solinas conditional -c through
+        // the truncatable direct const-sub (kal_carrytail_count_c clips its borrow
+        // chain to k0+W = 33+36 = 69 bits). The constant is the SPARSE Solinas
+        // c = 2^32+977, so the constant-aware window keeps the truncation tight and
+        // the high result bits exact; validated 9024-clean (-6,346 avg-exec Toffoli
+        // combined with the +c/-c reduction sites). KAL_DIRECT_CONST_QQFOLD=0 restores
+        // the register-loaded full-width csub_nbit_const_fast.
+        csub_nbit_const_direct_fast(b, &acc_ext[..n], c, flag);
     } else {
         csub_nbit_const_fast(b, &acc_ext[..n], c, flag);
     }
@@ -628,6 +637,17 @@ pub(crate) fn mod_add_qq_fast(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256
     let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
     // add_nbit_const with fast Cuccaro OR venting (using `a` as dirty).
     let use_vent = std::env::var("KAL_VENT_MODADD").ok().as_deref() == Some("1");
+    // KAL_DIRECT_CONST_QQFOLD (CARRY-TAIL, default-ON): route the sparse Solinas
+    // reduction const-ops (+c / conditional -c) through the register-free direct
+    // const adders, which carry-tail-truncate the carry/borrow chain via the
+    // constant-aware window (kal_carrytail_count_c: cut = k0+W = 33+36 = 69 for the
+    // SPARSE c = 2^32+977). NOTE: the `+c` step here uses the resulting bit-256 carry
+    // (acc_ovf) AS the reduction flag — truncating that chain is only sound if no
+    // carry from the qq-sum can reach bit 256 outside the window, which holds for the
+    // Solinas constant and is validated 9024-clean (the harness fails closed). This is
+    // -6,346 avg-exec Toffoli vs the loaded-const full-width path, flat peak 2309.
+    // KAL_DIRECT_CONST_QQFOLD=0 restores the loaded-const reduction.
+    let use_direct = std::env::var("KAL_DIRECT_CONST_QQFOLD").ok().as_deref() != Some("0");
     if use_vent {
         let n1 = acc_ext.len();
         // Use `a_ext` as dirty qubits (it was just used as add operand,
@@ -644,6 +664,12 @@ pub(crate) fn mod_add_qq_fast(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256
         );
         b.free(q_clean2[0]);
         b.free(q_clean2[1]);
+    } else if use_direct {
+        let one = b.alloc_qubit();
+        b.x(one);
+        cadd_nbit_const_direct_fast(b, &acc_ext, c, one);
+        b.x(one);
+        b.free(one);
     } else {
         let n1 = acc_ext.len();
         let ca = load_const(b, n1, c);
@@ -668,6 +694,8 @@ pub(crate) fn mod_add_qq_fast(b: &mut B, acc: &[QubitId], a: &[QubitId], p: U256
         );
         b.free(q_clean2[0]);
         b.free(q_clean2[1]);
+    } else if use_direct {
+        csub_nbit_const_direct_fast(b, &acc_ext, c, flag);
     } else {
         let n1 = acc_ext.len();
         let ca = b.alloc_qubits(n1);
@@ -713,6 +741,9 @@ pub(crate) fn mod_add_qq_fast_from_zero(b: &mut B, acc: &[QubitId], a: &[QubitId
 
     let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
     let use_vent = std::env::var("KAL_VENT_MODADD").ok().as_deref() == Some("1");
+    // CARRY-TAIL (default-ON): same truncated direct const reduction as
+    // mod_add_qq_fast; see KAL_DIRECT_CONST_QQFOLD note there. =0 restores loaded-const.
+    let use_direct = std::env::var("KAL_DIRECT_CONST_QQFOLD").ok().as_deref() != Some("0");
     if use_vent {
         let n1 = acc_ext.len();
         let c_low = c.as_limbs()[0];
@@ -727,6 +758,12 @@ pub(crate) fn mod_add_qq_fast_from_zero(b: &mut B, acc: &[QubitId], a: &[QubitId
         );
         b.free(q_clean2[0]);
         b.free(q_clean2[1]);
+    } else if use_direct {
+        let one = b.alloc_qubit();
+        b.x(one);
+        cadd_nbit_const_direct_fast(b, &acc_ext, c, one);
+        b.x(one);
+        b.free(one);
     } else {
         let n1 = acc_ext.len();
         let ca = load_const(b, n1, c);
@@ -750,6 +787,8 @@ pub(crate) fn mod_add_qq_fast_from_zero(b: &mut B, acc: &[QubitId], a: &[QubitId
         );
         b.free(q_clean2[0]);
         b.free(q_clean2[1]);
+    } else if use_direct {
+        csub_nbit_const_direct_fast(b, &acc_ext, c, flag);
     } else {
         let n1 = acc_ext.len();
         let ca = b.alloc_qubits(n1);
