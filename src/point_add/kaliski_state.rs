@@ -164,19 +164,21 @@ pub(crate) fn majfold_sub_enabled() -> bool {
 }
 
 pub(crate) fn kal_carrytail_w() -> usize {
-    // Banked clean island: SUB W=59 (paired with WTRUNC margin=3). The carry-tail
-    // SUB borrow chain runs to bit 33+59=92, far above the 3M-MC max realizable
-    // sub-borrow run (19, i.e. bit 51) → arithmetically exact. Below the SUB-borrow
-    // safety floor the truncation itself is sound; the validity constraint is the
-    // Fiat-Shamir ISLAND LOTTERY: each W value re-rolls the test inputs, and only
-    // some W land a 9024-clean island at margin=3. Full isolated-eval W-sweep at
-    // m=3 (each = trusted eval_circuit over 9024 shots) found the clean islands
-    // W∈{82,75,69,59,49}; W=49 is the deepest clean island found (2,836,803 avg-exec
-    // T × 2309 peak = 6,550,178,127, 0/0 over 9024). Borrow chain to bit 33+49=82,
-    // far above the 3M-MC max realizable sub-borrow run (19, bit 51) → exact; the
-    // validity constraint is the Fiat-Shamir island lottery. margin=3 floor (m=2 FAILs).
+    // Banked clean island: SUB W=36 (paired with WTRUNC K0=26, margin=3, MAJ-fold
+    // SUB on). The carry-tail SUB borrow chain runs to bit 33+36=69, far above the
+    // 3M-MC max realizable sub-borrow run (19, i.e. bit 51) → arithmetically exact
+    // (18-bit safety). Below the SUB-borrow safety floor the truncation itself is
+    // sound; the validity constraint is the Fiat-Shamir ISLAND LOTTERY: each W
+    // value re-rolls the test inputs, and only some W land a 9024-clean island at
+    // the (K0=26, margin=3, MAJ-fold) base. The MAJ-fold SUB commit (8f897c0)
+    // re-rolled the island (1 CCX/borrow vs 3), reopening the carry-tail W door
+    // below the prior W=49 floor. Full isolated-eval W-sweep on the MAJ-fold island
+    // (each = trusted eval_circuit over 9024 shots) found NEW clean islands at
+    // W∈{49,36}; W=36 is the deepest clean island found (2,818,561 avg-exec T ×
+    // 2309 peak = 6,508,057,349, 0/0 over 9024). W∈{45,42,40,38,35,34,33,32,31,30,
+    // 29,28,27,26,25,24} all FAIL the island lottery on this base. margin=3 floor.
     // KAL_CARRYTAIL_W env override remains.
-    env_usize("KAL_CARRYTAIL_W").unwrap_or(49)
+    env_usize("KAL_CARRYTAIL_W").unwrap_or(36)
 }
 
 pub(crate) fn kal_carrytail_k0() -> usize {
