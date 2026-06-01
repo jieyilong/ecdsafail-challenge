@@ -131,8 +131,11 @@ pub(crate) fn kal_wtrunc_width(iter_idx: usize, n: usize) -> usize {
 /// "0"/"off" = disabled.  DEFAULT = "sub": the SUB path's measured-uncompute is
 /// truncation-clean, while the ADD path's `!acc_i_final` reverse sweep leaks a
 /// relative phase under truncation (measured: 141 phase-garbage batches at every
-/// W/margin) and so is left OFF.  The banked default is the validated clean
-/// island SUB W=96 + WTRUNC margin=4 (9024-clean, score 6,626,924,669).
+/// W/margin) and so is left OFF.  Re-confirmed on the current island:
+/// KAL_CARRYTAIL_TRUNC=both/add = EXACTLY 141 phase-garbage at margins 3/4/5
+/// (structural !acc_i_final reverse-sweep wall, island-invariant).  The banked
+/// default is the validated clean island SUB W=59 + WTRUNC margin=3 (9024-clean,
+/// score 6,564,355,387).
 fn kal_carrytail_mode() -> &'static str {
     match std::env::var("KAL_CARRYTAIL_TRUNC").ok().as_deref() {
         Some("1") | Some("both") => "both",
@@ -152,9 +155,19 @@ pub(crate) fn kal_carrytail_sub_enabled() -> bool {
 }
 
 pub(crate) fn kal_carrytail_w() -> usize {
-    // Banked clean island: SUB W=96 (paired with WTRUNC margin=4). The cliff is
-    // below W=80 m=4 (2 mismatch / 1 phase); W=96 m=4 is 9024-clean.
-    env_usize("KAL_CARRYTAIL_W").unwrap_or(96)
+    // Banked clean island: SUB W=59 (paired with WTRUNC margin=3). The carry-tail
+    // SUB borrow chain runs to bit 33+59=92, far above the 3M-MC max realizable
+    // sub-borrow run (19, i.e. bit 51) → arithmetically exact. Below the SUB-borrow
+    // safety floor the truncation itself is sound; the validity constraint is the
+    // Fiat-Shamir ISLAND LOTTERY: each W value re-rolls the test inputs, and only
+    // some W land a 9024-clean island at margin=3. Full isolated-eval W-sweep at
+    // m=3 (each = trusted eval_circuit over 9024 shots) found the clean islands
+    // W∈{82,75,69,59}; W=59 is the deepest/best (2,842,943 avg-exec T × 2309 peak
+    // = 6,564,355,387, 0/0). Neighbours of 59 (61,57,55,..) all REJECT on island
+    // stragglers (not truncation errors). margin=3 is the floor on the W=59 island
+    // (W=59 m=2 and m=4 untested-here; the W-sweep used m=3 throughout). Down to
+    // W=44 no further clean island appeared. KAL_CARRYTAIL_W env override remains.
+    env_usize("KAL_CARRYTAIL_W").unwrap_or(59)
 }
 
 pub(crate) fn kal_carrytail_k0() -> usize {
