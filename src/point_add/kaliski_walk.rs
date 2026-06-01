@@ -113,10 +113,15 @@ pub(crate) fn kaliski_iteration_bulk_prefix3(
 
     b.set_phase("kal_bulk_step3_cswap");
     // Late-iter truncation: bitlen(u)+bitlen(v_w) ≤ 2n-iter_idx (Kaliski invariant).
-    let uv_width_step3 = if iter_idx < u.len() {
-        u.len()
-    } else {
-        2 * u.len() - iter_idx
+    let uv_width_step3 = {
+        let invariant = if iter_idx < u.len() {
+            u.len()
+        } else {
+            2 * u.len() - iter_idx
+        };
+        // UV-CSWAP truncation: bits above the W-TRUNC bitlen envelope are |0> on
+        // both u and v_w, so swapping them is identity → narrow the loop.
+        kal_uv_cswap_width(iter_idx, u.len(), invariant)
     };
     if let Some(frame_in) = uv_frame_in {
         // Merge previous STEP-9 uv swap with this STEP-3 uv swap. Control is
@@ -281,10 +286,13 @@ pub(crate) fn kaliski_iteration_bulk_prefix3(
 
     b.set_phase("kal_bulk_step9_cswap");
     // Late-iter truncation: same uv-width bound as step3.
-    let uv_width_step9 = if iter_idx < u.len() {
-        u.len()
-    } else {
-        2 * u.len() - iter_idx
+    let uv_width_step9 = {
+        let invariant = if iter_idx < u.len() {
+            u.len()
+        } else {
+            2 * u.len() - iter_idx
+        };
+        kal_uv_cswap_width(iter_idx, u.len(), invariant)
     };
     if !uv_merge_out {
         for j in 0..uv_width_step9 {
@@ -730,7 +738,10 @@ pub(crate) fn kaliski_iteration_bulk_prefix3_backward(
     }
     // Reverse STEP 9 (u,v) — always eager.
     b.set_phase("bk_bulk_step9_cswap");
-    let uv_width_step9 = if iter_idx < n { n } else { 2 * n - iter_idx };
+    let uv_width_step9 = {
+        let invariant = if iter_idx < n { n } else { 2 * n - iter_idx };
+        kal_uv_cswap_width(iter_idx, n, invariant)
+    };
     if !uv_merge_out {
         for j in (0..uv_width_step9).rev() {
             cswap(b, a_f, u[j], v_w[j]);
@@ -838,7 +849,10 @@ pub(crate) fn kaliski_iteration_bulk_prefix3_backward(
     b.set_phase("bk_bulk_step3_cswap");
     let rs_width_step3 = if iter_idx + 1 < n { iter_idx + 1 } else { n };
     // Late-iter truncation mirrors forward step3.
-    let uv_width_step3 = if iter_idx < n { n } else { 2 * n - iter_idx };
+    let uv_width_step3 = {
+        let invariant = if iter_idx < n { n } else { 2 * n - iter_idx };
+        kal_uv_cswap_width(iter_idx, n, invariant)
+    };
     // Reverse of the forward (r,s) STEP 3. When merged, recreate the outgoing
     // frame parity (= a_{k-1}) and hand it to the previous (backward-later) iter.
     // Iter 0's forward step3 is an explicit edge (no incoming frame), so its

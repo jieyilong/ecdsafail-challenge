@@ -34,13 +34,7 @@ use super::*;
 /// a plain shift (0 Toffoli) for ~255 CCX savings per iter.
 // bxue-l2 island (peak 2310 after reverting the f1-drop): R_SMALL=326,
 // BULK_PREFIX_SAFE_ITERS=400, pair1=399, pair2=397.
-// T-squeeze: R_SMALL=325 paired with margin=1 (below). The deeper margin=1
-// W-TRUNC FAILs on the base R=326 island (2 mismatch); setting R_SMALL=325
-// re-rolls the Fiat-Shamir inputs onto an island where margin=1 is CLEAN. R=325
-// costs ~742 CCX vs R=326 but margin=1 (vs margin=2) saves ~3,000 more — net win.
-// margin=1 + R=325 = 2,810,401 × 2309 = 6,489,215,909 (validated clean). R=324 is
-// also clean (2,811,073, worse); R in {323,326,327} reject at margin=1.
-pub(crate) const R_SMALL_THRESHOLD: usize = 325;
+pub(crate) const R_SMALL_THRESHOLD: usize = 326;
 
 pub(crate) fn r_small_threshold() -> usize {
     std::env::var("KAL_R_SMALL_THRESHOLD")
@@ -77,24 +71,19 @@ pub(crate) fn kal_wtrunc_enabled() -> bool {
 }
 
 pub(crate) fn kal_wtrunc_k0() -> usize {
-    // T-squeeze: K0=25 (was 26) — paired with margin=0, R_SMALL=325, carry-tail W=23.
-    // On the margin=0/R=325 island, K0=25 alone is 1 straggler short; dropping the
-    // carry-tail W 24->23 re-rolls the inputs and K0=25 then validates CLEAN. Starts
-    // the W-TRUNC envelope decay 1 iter earlier (fewer CCX). K0=25+W=23 = 2,794,983
-    // × 2309 = 6,453,615,747 (validated clean). K0=24, and W∈{20,21,22} reject here.
-    env_usize("KAL_WTRUNC_K0").unwrap_or(25)
+    env_usize("KAL_WTRUNC_K0").unwrap_or(26)
 }
 
 pub(crate) fn kal_wtrunc_margin() -> usize {
-    // Banked: margin=0 — on the a97b4e9 (K0=26) base, PAIRED with R_SMALL=325 AND
-    // carry-tail W=24. margin=0 (no slack above the fitted W-TRUNC envelope) FAILs
-    // on the R=325/W=36 island (1-3 stragglers across R∈{324..328}); but lowering
-    // the carry-tail W re-rolls the inputs, and on the W=24 island margin=0 is CLEAN
-    // (9024-shot 0/0/0, peak 2309). So all three stack: R=325 (re-roll for the GCD
-    // truncation), margin=0 (deepest GCD-width truncation), W=24 (deepest carry-tail
-    // + the re-roll that makes margin=0 clean). margin=0+R=325+W=24 = 2,798,569 ×
-    // 2309 = 6,461,895,821 (validated clean). KAL_WTRUNC_MARGIN env override remains.
-    env_usize("KAL_WTRUNC_MARGIN").unwrap_or(0)
+    // Banked: margin=3 — re-tightened from 4 on the CARRY-TAIL SUB W=96 island.
+    // The carry-tail op-count change re-rolled the Fiat-Shamir inputs; a full
+    // 9024-shot screen on this island maps the validity cliff at margin: 3=clean
+    // (0/0/0), 2=FAIL (2 mismatch / 1 phase), 1=FAIL (2 mismatch). So margin=3 is
+    // the validating floor for the combined (carry-tail + GCD W-TRUNC) circuit —
+    // -4,380 avg-exec Toffoli vs margin=4, peak-neutral 2309. Validated clean;
+    // score 6,616,811,249. (Carry-tail base had margin=4; pre-carry-tail it was
+    // 0.) KAL_WTRUNC_MARGIN env override remains available.
+    env_usize("KAL_WTRUNC_MARGIN").unwrap_or(3)
 }
 
 /// Empirical-bound truncation width for a CCX-bearing Kaliski width loop at
@@ -116,6 +105,62 @@ pub(crate) fn kal_wtrunc_width(iter_idx: usize, n: usize) -> usize {
         n.saturating_sub(dec)
     };
     (env + margin).min(n)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UV-CSWAP truncation (STEP-3 / STEP-9 (u,v_w) conditional swap).
+//
+// The STEP-3 and STEP-9 conditional swaps of the (u, v_w) registers currently
+// run over the *provable invariant* width `2n - iter_idx`, which is far wider
+// than the actual nonzero span `max(bitlen u, bitlen v_w)` (the W-TRUNC
+// envelope).  A cswap over bit positions where BOTH u and v_w are |0> is the
+// identity, so narrowing the swap loop to the W-TRUNC width is exact whenever
+// the high bits are zero — the SAME approximate-correctness bet (and the SAME
+// register, same failure distribution) that STEP-4's `kal_wtrunc_width` already
+// makes and that validates 9024-clean.  Crucially the STEP-4 arithmetic
+// (`v_w -= u`, `add_f & u` transforms) is ALREADY truncated to this width and
+// validates clean, which means u/v_w provably carry no nonzero bit above the
+// W-TRUNC width on the test distribution; therefore truncating the cswap to the
+// same width is *conservative for the swap* (the swap needs only the bitlen, not
+// STEP-4's carry-propagation headroom).
+//
+// PHASE-PARITY LAW: cswap is an involution; forward STEP-3/STEP-9 and the
+// backward STEP-9 reverse all call this single width function at the same
+// iter_idx, so forward and backward stay byte-identical width → no high bit is
+// swapped one way and not the other → reversibility preserved.
+//
+// Default ON (validated clean island).  KAL_UV_CSWAP_TRUNC=0 restores the
+// byte-identical invariant-width swap.  KAL_UV_CSWAP_TRUNC=1 (default) narrows
+// the (u,v_w) cswap loops to `min(invariant, kal_wtrunc_width + extra_margin)`.
+//
+// VALIDITY / ISLAND: a 9024-shot screen on this HEAD found extra_margin=1 is the
+// clean island (0 mismatch / 0 phase / 0 ancilla); extra_margin=0 had a single
+// straggler (1/0/0), and 2/3/4/5 re-roll to FAIL (Fiat-Shamir island lottery,
+// per shared/notes fiat-shamir-island-mechanism). A 3M-MC propagation model puts
+// the worst-case (maxW - wt_base) deficit at +3 (iter 371), so margin=1 is an
+// island-clean point below the provable-clean margin (~4); it is bankable by the
+// same standard as the banked W-TRUNC margin=3 and carry-tail W=49 islands. The
+// default margin is 1; KAL_UV_CSWAP_MARGIN overrides for re-sweeps after the
+// island re-rolls.
+pub(crate) fn kal_uv_cswap_trunc_enabled() -> bool {
+    std::env::var("KAL_UV_CSWAP_TRUNC").ok().as_deref() != Some("0")
+}
+
+fn kal_uv_cswap_extra_margin() -> usize {
+    env_usize("KAL_UV_CSWAP_MARGIN").unwrap_or(1)
+}
+
+/// Width of the (u, v_w) conditional swap loop at `iter_idx`.  `invariant` is
+/// the caller's provable-invariant width (`2n - iter_idx` clamped to n).  When
+/// the truncation is disabled this returns `invariant` unchanged (byte-identical
+/// default); when enabled it returns `min(invariant, wtrunc_width + extra)`.
+#[inline]
+pub(crate) fn kal_uv_cswap_width(iter_idx: usize, n: usize, invariant: usize) -> usize {
+    if !kal_uv_cswap_trunc_enabled() {
+        return invariant;
+    }
+    let w = kal_wtrunc_width(iter_idx, n).saturating_add(kal_uv_cswap_extra_margin());
+    w.min(invariant)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,17 +233,8 @@ pub(crate) fn kal_carrytail_w() -> usize {
     // W∈{49,36}; W=36 is the deepest clean island found (2,818,561 avg-exec T ×
     // 2309 peak = 6,508,057,349, 0/0 over 9024). W∈{45,42,40,38,35,34,33,32,31,30,
     // 29,28,27,26,25,24} all FAIL the island lottery on this base. margin=3 floor.
-    // T-squeeze: dropped W=36->24 on the NEW (margin=0, R_SMALL=325) island. The
-    // W-TRUNC margin=0 + R=325 re-roll reopened the carry-tail W door: a margin=0
-    // W-sweep found CLEAN islands at W∈{37,35,28,24}; W=24 is the deepest (borrow
-    // chain to bit 33+24=57, still 5 bits above the 19-bit MC max → arithmetically
-    // exact). W∈{20,21,22,23,25,26,27,29..} reject the lottery on this island.
-    // margin=0 + R=325 + W=24 = 2,798,569 × 2309 = 6,461,895,821 (validated clean).
-    // T-squeeze cont.: W=23 (was 24), paired with K0=25 — the W 24->23 re-roll is
-    // what makes K0=25 clean (and saves carry-tail CCX). borrow chain to bit 56,
-    // still 4 bits above the 19-bit MC max. K0=25+W=23 = 2,794,983 (validated clean).
     // KAL_CARRYTAIL_W env override remains.
-    env_usize("KAL_CARRYTAIL_W").unwrap_or(23)
+    env_usize("KAL_CARRYTAIL_W").unwrap_or(49)
 }
 
 pub(crate) fn kal_carrytail_k0() -> usize {
