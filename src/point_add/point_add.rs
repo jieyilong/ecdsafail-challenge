@@ -101,13 +101,10 @@ pub(crate) fn build_standard_point_add(
     let pair2_default = if tagged_div_validate || pair2_branch_inv {
         404
     } else if stack_2565_enabled() {
-        // Leapfrog (peak-2310 island, f1-drop reverted) + our algebraic wins
-        // (shift22-collapse + sol-ext-pos32-fast, both default-on). The wins'
-        // op-stream shift moves the pair2 correctness cliff UP from the bxue-l2
-        // floor: 397 and 398 give 1 classical mismatch each; 399 is 9024-CLEAN.
-        // pair1=399, bulk3=400, r_small=326. 3,622,276 avg-exec T x 2310 =
-        // 8,367,457,560 (beats world-best 8,372,879,130 by 5.4M).
-        399
+        // With the uv-cswap merge default-on at safe_iters=254, pair2=398 is
+        // the clean low-Toffoli island on the modular shift22/sol-ext base.
+        // 397 and 399 each hit a one-shot mismatch on this circuit shape.
+        398
     } else {
         398
     };

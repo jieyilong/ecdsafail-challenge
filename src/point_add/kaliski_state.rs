@@ -55,6 +55,22 @@ pub(crate) fn kal_cswap_rs_merge_enabled() -> bool {
     std::env::var("KAL_CSWAP_RS_MERGE").ok().as_deref() != Some("0")
 }
 
+pub(crate) fn kal_cswap_uv_merge_enabled() -> bool {
+    // Defer the matching (u,v_w) step9 swap and fuse it with the next bulk
+    // iteration's step3 swap using the same frame parity as the banked (r,s)
+    // merge.  Default-on after 9024-shot validation at the conservative
+    // equality-free prefix; set KAL_CSWAP_UV_MERGE=0 to disable.
+    std::env::var("KAL_CSWAP_UV_MERGE").ok().as_deref() != Some("0")
+}
+
+pub(crate) fn kal_cswap_uv_merge_safe_iters() -> usize {
+    // The cheap l_gt correction `gt ^= frame` is valid only while u != v_w is
+    // guaranteed. With gcd=1, equality implies (u,v_w)=(1,1), which can appear
+    // near the terminal precursor. 254 is the highest clean 9024-shot prefix
+    // on the modular shift22/sol-ext island; keep tunable for future sweeps.
+    env_usize("KAL_CSWAP_UV_MERGE_SAFE_ITERS").unwrap_or(254)
+}
+
 /// For nonzero secp256k1 inputs, the first 256 Kaliski iterations are always
 /// nonterminal, so `f = 1` and `v_w != 0` at step entry are guaranteed.
 ///

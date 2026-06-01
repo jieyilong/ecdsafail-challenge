@@ -27,6 +27,11 @@ pub(crate) fn kaliski_iteration_bulk_prefix3(
 ) {
     // (r,s) cswap boundary-merge is only valid on the default coeff=None channel.
     let merge_rs = coeff.is_none() && kal_cswap_rs_merge_enabled();
+    let merge_uv = merge_rs && kal_cswap_uv_merge_enabled();
+    let uv_safe_iters = kal_cswap_uv_merge_safe_iters();
+    let uv_merge_in = merge_uv && iter_idx < uv_safe_iters;
+    let uv_merge_out = merge_uv && !is_last && iter_idx + 1 < uv_safe_iters;
+    let uv_frame_in = if uv_merge_in { *frame } else { None };
     let gz = gz_step4_slow();
     let gz_dbl = gz_double_direct();
     let a_f = b.alloc_qubit();
@@ -54,6 +59,15 @@ pub(crate) fn kaliski_iteration_bulk_prefix3(
     b.x(v_w[0]);
     b.ccx(u[0], v_w[0], m_i); // m_i = u0 & !v0
     b.x(v_w[0]);
+    if let Some(frame_in) = uv_frame_in {
+        // The previous iter's deferred STEP-9 (u,v_w) swap means physical
+        // u/v are conditionally exchanged by frame_in. Correct STEP-1 flags
+        // to canonical basis by toggling on frame_in & (u0 xor v0).
+        b.cx(v_w[0], u[0]);
+        b.ccx(frame_in, u[0], a_f);
+        b.ccx(frame_in, u[0], m_i);
+        b.cx(v_w[0], u[0]);
+    }
     b.cx(a_f, b_f);
     b.cx(m_i, b_f); // b_f = a_f xor m_i
 
@@ -67,6 +81,11 @@ pub(crate) fn kaliski_iteration_bulk_prefix3(
     };
     let l_gt = b.alloc_qubit();
     with_gt(b, &u[..cmp_width], &v_w[..cmp_width], l_gt, |b| {
+        if let Some(frame_in) = uv_frame_in {
+            // `with_gt` computed physical_gt. In the equality-free early prefix,
+            // canonical_gt = physical_gt xor frame_in.
+            b.cx(frame_in, l_gt);
+        }
         b.x(b_f);
         let t = b.alloc_qubit();
         b.ccx(l_gt, b_f, t);
@@ -80,6 +99,9 @@ pub(crate) fn kaliski_iteration_bulk_prefix3(
         b.free(t);
         // add_dummy scaffold (self-cancelling noop) skipped.
         b.x(b_f);
+        if let Some(frame_in) = uv_frame_in {
+            b.cx(frame_in, l_gt);
+        }
     });
     b.free(l_gt);
 
@@ -90,8 +112,18 @@ pub(crate) fn kaliski_iteration_bulk_prefix3(
     } else {
         2 * u.len() - iter_idx
     };
-    for j in 0..uv_width_step3 {
-        cswap(b, a_f, u[j], v_w[j]);
+    if let Some(frame_in) = uv_frame_in {
+        // Merge previous STEP-9 uv swap with this STEP-3 uv swap. Control is
+        // a_{k-1} xor a_k, built transiently in a_f.
+        b.cx(frame_in, a_f);
+        for j in 0..uv_width_step3 {
+            cswap(b, a_f, u[j], v_w[j]);
+        }
+        b.cx(frame_in, a_f);
+    } else {
+        for j in 0..uv_width_step3 {
+            cswap(b, a_f, u[j], v_w[j]);
+        }
     }
     let rs_width_step3 = if iter_idx + 1 < u.len() {
         iter_idx + 1
@@ -243,8 +275,10 @@ pub(crate) fn kaliski_iteration_bulk_prefix3(
     } else {
         2 * u.len() - iter_idx
     };
-    for j in 0..uv_width_step9 {
-        cswap(b, a_f, u[j], v_w[j]);
+    if !uv_merge_out {
+        for j in 0..uv_width_step9 {
+            cswap(b, a_f, u[j], v_w[j]);
+        }
     }
     let rs_width_step9 = if iter_idx + 2 < u.len() {
         iter_idx + 2
@@ -646,6 +680,10 @@ pub(crate) fn kaliski_iteration_bulk_prefix3_backward(
     let n = u.len();
     // (r,s) cswap boundary-merge — bulk backward is always coeff=None.
     let merge_rs = kal_cswap_rs_merge_enabled();
+    let merge_uv = merge_rs && kal_cswap_uv_merge_enabled();
+    let uv_safe_iters = kal_cswap_uv_merge_safe_iters();
+    let uv_merge_in = merge_uv && iter_idx < uv_safe_iters;
+    let uv_merge_out = merge_uv && !is_last && iter_idx + 1 < uv_safe_iters;
     let gz = gz_step4_slow();
     let a_f = b.alloc_qubit();
     let b_f = b.alloc_qubit();
@@ -678,8 +716,10 @@ pub(crate) fn kaliski_iteration_bulk_prefix3_backward(
     // Reverse STEP 9 (u,v) — always eager.
     b.set_phase("bk_bulk_step9_cswap");
     let uv_width_step9 = if iter_idx < n { n } else { 2 * n - iter_idx };
-    for j in (0..uv_width_step9).rev() {
-        cswap(b, a_f, u[j], v_w[j]);
+    if !uv_merge_out {
+        for j in (0..uv_width_step9).rev() {
+            cswap(b, a_f, u[j], v_w[j]);
+        }
     }
 
     // Reverse STEP 8+7 and STEP 6.
@@ -777,6 +817,8 @@ pub(crate) fn kaliski_iteration_bulk_prefix3_backward(
     // Reverse STEP 3.
     b.set_phase("bk_bulk_step3_cswap");
     let rs_width_step3 = if iter_idx + 1 < n { iter_idx + 1 } else { n };
+    // Late-iter truncation mirrors forward step3.
+    let uv_width_step3 = if iter_idx < n { n } else { 2 * n - iter_idx };
     // Reverse of the forward (r,s) STEP 3. When merged, recreate the outgoing
     // frame parity (= a_{k-1}) and hand it to the previous (backward-later) iter.
     // Iter 0's forward step3 is an explicit edge (no incoming frame), so its
@@ -793,6 +835,11 @@ pub(crate) fn kaliski_iteration_bulk_prefix3_backward(
         for j in (0..rs_width_step3).rev() {
             cswap(b, a_f, r[j], s[j]);
         }
+        if uv_merge_in {
+            for j in (0..uv_width_step3).rev() {
+                cswap(b, a_f, u[j], v_w[j]);
+            }
+        }
         b.cx(frame_out, a_f); // a_f = a_k (restored)
         *frame = Some(frame_out);
     } else {
@@ -800,11 +847,12 @@ pub(crate) fn kaliski_iteration_bulk_prefix3_backward(
             cswap(b, a_f, r[j], s[j]);
         }
     }
-    // Late-iter truncation mirrors forward step3.
-    let uv_width_step3 = if iter_idx < n { n } else { 2 * n - iter_idx };
-    for j in (0..uv_width_step3).rev() {
-        cswap(b, a_f, u[j], v_w[j]);
+    if !(uv_merge_in && merge_rs && iter_idx != 0) {
+        for j in (0..uv_width_step3).rev() {
+            cswap(b, a_f, u[j], v_w[j]);
+        }
     }
+    let uv_frame_out = if uv_merge_in { *frame } else { None };
 
     // Reverse STEP 2.
     b.set_phase("bk_bulk_step2");
@@ -812,6 +860,9 @@ pub(crate) fn kaliski_iteration_bulk_prefix3_backward(
     let cmp_width = if iter_idx < n { n } else { 2 * n - iter_idx };
     let l_gt = b.alloc_qubit();
     with_gt(b, &u[..cmp_width], &v_w[..cmp_width], l_gt, |b| {
+        if let Some(frame_out) = uv_frame_out {
+            b.cx(frame_out, l_gt);
+        }
         b.x(b_f);
         let t = b.alloc_qubit();
         b.ccx(l_gt, b_f, t);
@@ -824,6 +875,9 @@ pub(crate) fn kaliski_iteration_bulk_prefix3_backward(
         b.cz_if(l_gt, b_f, tm);
         b.free(t);
         b.x(b_f);
+        if let Some(frame_out) = uv_frame_out {
+            b.cx(frame_out, l_gt);
+        }
     });
     b.free(l_gt);
 
@@ -831,6 +885,12 @@ pub(crate) fn kaliski_iteration_bulk_prefix3_backward(
     b.set_phase("bk_bulk_step1");
     b.cx(m_i, b_f);
     b.cx(a_f, b_f);
+    if let Some(frame_out) = uv_frame_out {
+        b.cx(v_w[0], u[0]);
+        b.ccx(frame_out, u[0], m_i);
+        b.ccx(frame_out, u[0], a_f);
+        b.cx(v_w[0], u[0]);
+    }
     b.x(v_w[0]);
     b.ccx(u[0], v_w[0], m_i);
     b.x(v_w[0]);
