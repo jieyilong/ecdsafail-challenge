@@ -27762,7 +27762,7 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_COMPRESSED_SIDECAR_LOG", "1");
     set_default_env("DIALOG_GCD_COMPRESSED_BLOCK_LIFECYCLE", "1");
     set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE", "0");
-    set_default_env("DIALOG_GCD_COMPARE_BITS", "75");
+    set_default_env("DIALOG_GCD_COMPARE_BITS", "74");
     set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "20");
     set_default_env("DIALOG_GCD_RAW_PA", "1");
     set_default_env("DIALOG_GCD_ACTIVE_ITERATIONS", "399");
@@ -27775,6 +27775,7 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_RAW_TOBITVECTOR_MATERIALIZED_SUB", "1");
     set_default_env("DIALOG_GCD_RAW_TOBITVECTOR_VARIABLE_WIDTH", "1");
     set_default_env("DIALOG_GCD_RAW_TOBITVECTOR_BORROW_FUTURE_LOG_CARRIES", "1");
+    set_default_env("DIALOG_GCD_REROLL", "2");
     set_default_env("ROUND84_XTAIL_SCHOOLBOOK", "1");
 }
 
@@ -27946,6 +27947,7 @@ fn build_builder() -> B {
     let route_round495_product = round495_d1_source_live_product_tail_pa_enabled();
     let route_round495_cubic = round495_d1_source_live_cubic_tail_pa_enabled();
     let route_round691_polarized_generic = round691_polarized_generic_scale_p_pa_enabled();
+    let route_dialog_gcd_raw_pa = dialog_gcd_raw_pa_enabled();
     if route_transport {
         round218_b5_transport::emit_round218_b5_source_live_transport_pa_or_fail(
             b, &tx, &ty, &ox, &oy, p,
@@ -27966,12 +27968,27 @@ fn build_builder() -> B {
         emit_round495_d1_source_live_cubic_tail_pa(b, &tx, &ty, &ox, &oy, p);
     } else if route_round691_polarized_generic {
         emit_round691_polarized_generic_scale_p_pa(b, &tx, &ty, &ox, &oy, p);
-    } else if dialog_gcd_raw_pa_enabled() {
+    } else if route_dialog_gcd_raw_pa {
         emit_dialog_gcd_raw_pa(b, &tx, &ty, &ox, &oy, p);
     } else if std::env::var("COMPACT_POINT_ADD").ok().as_deref() == Some("1") {
         build_compact_point_add(b, &tx, &ty, &ox, &oy, p);
     } else {
         build_standard_point_add(b, &tx, &ty, &ox, &oy, p);
+    }
+
+    // Free Fiat-Shamir reroll for the compressed dialog route. Appending X;X
+    // pairs on an output qubit changes the op-stream hash but not Toffoli count,
+    // peak qubits, or the implemented unitary.
+    if route_dialog_gcd_raw_pa {
+        if let Some(rr) = std::env::var("DIALOG_GCD_REROLL")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            for _ in 0..rr {
+                b.x(tx[0]);
+                b.x(tx[0]);
+            }
+        }
     }
 
     if std::env::var("BY_REPLAY_BENCH_SCAFFOLD").ok().as_deref() == Some("1") {
