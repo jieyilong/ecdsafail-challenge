@@ -32,12 +32,11 @@ use super::*;
 /// (since max(r,s) doubles per iter starting from max=1, so max ≤ 2^iter_idx).
 /// In that range, mod_double(r)'s Solinas cadd is identity — replace with
 /// a plain shift (0 Toffoli) for ~255 CCX savings per iter.
-// C* island retune: R_SMALL=325 is the full-verified threshold for the current
-// dialog-fold + affine-recompute op stream when paired with KAL_REROLL=10.
-// It saves four correction-free r-doubling iterations versus R=321.  R=326
-// looked clean in 512-shot screening, but full 9024-shot validation rejected
-// multiple rerolls with classical mismatches / phase garbage.
-pub(crate) const R_SMALL_THRESHOLD: usize = 325;
+// C* island retune: R_SMALL=326 saves five correction-free r-doubling iterations
+// vs R=321 (one more than the prior R=325). Clean at KAL_REROLL=254 (0/0/0 over
+// 9024 shots, validated by full benchmark.sh). R=327 had no clean reroll in 0-255
+// screen (every rr hit at least 1 classical mismatch + phase garbage).
+pub(crate) const R_SMALL_THRESHOLD: usize = 326;
 
 pub(crate) fn r_small_threshold() -> usize {
     std::env::var("KAL_R_SMALL_THRESHOLD")
