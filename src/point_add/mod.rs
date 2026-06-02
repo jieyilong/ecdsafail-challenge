@@ -29692,7 +29692,11 @@ fn configure_ecdsafail_submission_route() {
     // Branch comparator width tightened 61 -> 59 (−1,600 executed Toffoli),
     // stacked on the chunked-apply + round763 + acc=19 base via the 2-D reroll
     // island (DIALOG_REROLL=0, DIALOG_POST_SUB_REROLL=10). Validated 0/0/0 @ 1567.
-    set_default_env("DIALOG_GCD_COMPARE_BITS", "58");
+    // Branch comparator width tightened 58 -> 57 on the 1466 hosted-comparator
+    // route (single dodgeable width truncation beyond the cb58 frontier; -1,016
+    // avg-executed Toffoli). Composed on active398 it re-rolls the FS island,
+    // retuned below. Peak-neutral at 1466.
+    set_default_env("DIALOG_GCD_COMPARE_BITS", "57");
     set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "19");
     set_default_env("DIALOG_GCD_RAW_PA", "1");
     set_default_env("DIALOG_GCD_ACTIVE_ITERATIONS", "398");
@@ -29801,8 +29805,10 @@ fn configure_ecdsafail_submission_route() {
     // T-cut on the 1466q hosted-comparator route: the active398 island composes
     // with one more branch-compare bit cut. A 2-D reroll search lands 52/28
     // clean 0/0/0 over all 9024 shots at 1466q and 1,729,241 Toffoli.
-    set_default_env("DIALOG_REROLL", "52");
-    set_default_env("DIALOG_POST_SUB_REROLL", "28");
+    // cb57 op-stream re-rolls the FS island vs the cb58 frontier (52/28); a
+    // full-9024 2-D reroll search over the baked binary lands (3,32) clean 0/0/0.
+    set_default_env("DIALOG_REROLL", "3");
+    set_default_env("DIALOG_POST_SUB_REROLL", "32");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
     // separate cmp qubit and recomputing the comparator for uncompute. Pure
