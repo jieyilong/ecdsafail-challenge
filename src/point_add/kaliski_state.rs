@@ -38,7 +38,15 @@ use super::*;
 // cswap-base a25248f margin=0 island (with K0=26/R=326 only W=26 is clean at
 // 2,574,129; dropping to K0=25 needs the R=325 re-roll → 2,570,415). R=324/326/327
 // reject at this depth. Stacks: margin=0 + K0=25 + R=325 + W=26 = 5,935,088,235.
-pub(crate) const R_SMALL_THRESHOLD: usize = 321;
+// OPTIMIZER R_SMALL=327: on the 2002-qubit nandy-technologies base (0435f04),
+// bumping the r-small threshold 321->327 lets six more early r-doubling iterations
+// skip their Solinas correction (mod_double's cadd is identity while max(r,s) <
+// 2^iter), netting -1,248 avg-exec Toffoli. The op-count change re-rolls the
+// Fiat-Shamir island; a 0-127 KAL_SCREEN sweep found a clean island at rr=34
+// (avg-exec 2,576,303 T × 2002 peak = 5,157,758,606, screened 0/0/0 over 9024
+// shots). The baked KAL_REROLL default (=34, see mod.rs) is CO-TUNED to this
+// threshold; re-search if any scored op changes the op stream.
+pub(crate) const R_SMALL_THRESHOLD: usize = 327;
 
 pub(crate) fn r_small_threshold() -> usize {
     std::env::var("KAL_R_SMALL_THRESHOLD")
@@ -550,10 +558,9 @@ pub(crate) fn kal_cswap_uv_merge_enabled() -> bool {
 pub(crate) fn kal_cswap_uv_merge_safe_iters() -> usize {
     // The cheap l_gt correction `gt ^= frame` is valid only while u != v_w is
     // guaranteed. With gcd=1, equality implies (u,v_w)=(1,1), which can appear
-    // near the terminal precursor. 256 is the highest clean 9024-shot prefix
-    // on the dirty-SHIFT22 + slack=0 + mfw232 island; paired with KAL_REROLL=38.
-    // Each +1 UV merge step saves ~384 avg-exec Toffoli at flat peak 2002.
-    env_usize("KAL_CSWAP_UV_MERGE_SAFE_ITERS").unwrap_or(256)
+    // near the terminal precursor. 254 is the highest clean 9024-shot prefix
+    // on the modular shift22/sol-ext island; keep tunable for future sweeps.
+    env_usize("KAL_CSWAP_UV_MERGE_SAFE_ITERS").unwrap_or(254)
 }
 
 /// For nonzero secp256k1 inputs, the first 256 Kaliski iterations are always
