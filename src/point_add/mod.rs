@@ -28405,7 +28405,7 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE", "1");
     set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN", "8");
     set_default_env("KAL_DOUBLE_CARRY_TRUNC_W", "24");
-    set_default_env("DIALOG_GCD_COMPARE_BITS", "63");
+    set_default_env("DIALOG_GCD_COMPARE_BITS", "62");
     set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "20");
     set_default_env("DIALOG_GCD_RAW_PA", "1");
     set_default_env("DIALOG_GCD_ACTIVE_ITERATIONS", "399");
@@ -28428,11 +28428,11 @@ fn configure_ecdsafail_submission_route() {
     // difference, mirroring the already-measured apply ADD. ~n Toffoli instead
     // of ~2n per call; peak-neutral (same carry lane the ADD already uses).
     set_default_env("DIALOG_GCD_MEASURED_APPLY_SUB", "1");
-    // COMPARE_BITS tightening: narrow the GCD comparator window 75 -> 63 and
-    // co-tune the Fiat-Shamir reroll (1 -> 5) to land a clean 9024-shot island.
-    // Pure Toffoli reduction (1981734 -> 1952382), peak-neutral at 1698.
+    // Fused-branch + carry-tail-truncated stream retune: narrow the global
+    // comparator cap 63 -> 62 and reroll 5 -> 0. Pure Toffoli reduction
+    // (1704086 -> 1703258), peak-neutral at 1698.
     // (Validated 0/0/0 over 9024 via eval_circuit.)
-    set_default_env("DIALOG_REROLL", "5");
+    set_default_env("DIALOG_REROLL", "0");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
     // separate cmp qubit and recomputing the comparator for uncompute. Pure
