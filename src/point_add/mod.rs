@@ -6190,16 +6190,38 @@ fn squaring_sub_from_acc_karatsuba(b: &mut B, acc: &[QubitId], x: &[QubitId], p:
         mod_dbl(b, &hi);
     }
     mod_sub(b, acc, &hi);
-    let (spill, flag_inv, ovf) = if shift_fast {
-        mod_shift_left_by_k(b, &hi, p, 22)
+    // 2^32 Solinas term: `acc -= hi·2^32`. Two value-identical realizations,
+    // selected by KARA_SOL_SHIFT22_DOUBLES:
+    //  • DOUBLES (default ON): 22 mod-p doublings → sub → 22 mod-p halvings.
+    //    Uses the direct-const dbl/hlv lanes (255-wide carry sweep, NO spill
+    //    register), so this block allocates none of the shift's 24 persistent
+    //    flags. That removes the SOLE global peak binder (the shift parked
+    //    spill(22)+ovf+flag_inv = 24 qubits live across the mid sub, whose
+    //    const-correction transient ≈load_const(257) coexisting with them hit
+    //    1567). Square phase drops to 1543; global peak 1567 → 1558. Cost
+    //    +4,788 avg executed Toffoli for −9 peak ⇒ score 2,638,694,805 →
+    //    2,630,999,274. Validated 0/0/0 over 9024 (co-tuned reroll below).
+    //  • SHIFT (=0): original shift-by-22 path (binds peak at 1567).
+    if std::env::var("KARA_SOL_SHIFT22_DOUBLES").ok().as_deref() == Some("1") {
+        for _ in 0..22 {
+            mod_dbl(b, &hi);
+        }
+        mod_sub(b, acc, &hi);
+        for _ in 0..22 {
+            mod_hlv(b, &hi);
+        }
     } else {
-        mod_shift_left_by_k_lowq(b, &hi, p, 22)
-    };
-    mod_sub_qq(b, acc, &hi, p);
-    if shift_fast {
-        mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
-    } else {
-        mod_shift_right_by_k_lowq(b, &hi, p, 22, spill, flag_inv, ovf);
+        let (spill, flag_inv, ovf) = if shift_fast {
+            mod_shift_left_by_k(b, &hi, p, 22)
+        } else {
+            mod_shift_left_by_k_lowq(b, &hi, p, 22)
+        };
+        mod_sub_qq(b, acc, &hi, p);
+        if shift_fast {
+            mod_shift_right_by_k(b, &hi, p, 22, spill, flag_inv, ovf);
+        } else {
+            mod_shift_right_by_k_lowq(b, &hi, p, 22, spill, flag_inv, ovf);
+        }
     }
     for _ in 0..10 {
         mod_hlv(b, &hi);
@@ -29259,7 +29281,11 @@ fn configure_ecdsafail_submission_route() {
     // stacked on the chunked-apply + round763 + apply-clean19 base via the
     // 2-D reroll island (DIALOG_REROLL=1, DIALOG_POST_SUB_REROLL=14).
     // Validated 0/0/0 @ 1567q and 1,682,963 avg executed Toffoli.
-    set_default_env("DIALOG_GCD_COMPARE_BITS", "58");
+    // COMPARE_BITS=59 (not 58): the KARA_SOL_SHIFT22_DOUBLES op-stream's clean
+    // 2-D reroll island sits at cb59 + REROLL=13/POST_SUB=14; cb58 had no clean
+    // island in a 96-cell 2-D reroll scan. The −9 peak from doublings dominates
+    // the +952 Toffoli of cb59-vs-cb58.
+    set_default_env("DIALOG_GCD_COMPARE_BITS", "59");
     set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "19");
     set_default_env("DIALOG_GCD_RAW_PA", "1");
     set_default_env("DIALOG_GCD_ACTIVE_ITERATIONS", "399");
@@ -29299,9 +29325,13 @@ fn configure_ecdsafail_submission_route() {
     // trims boundary-clear comparators while staying peak-safe (1567q).
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_BLOCKS", "2");
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT", "70");
+    // ROUND84 x-tail square 2^32-term: replace shift-by-22 with 22 mod-p
+    // doublings + sub + 22 halvings. Removes the shift's 24 persistent spill
+    // flags that bound the global peak at 1567 → peak 1558 (−9), +4,788 Toffoli.
+    set_default_env("KARA_SOL_SHIFT22_DOUBLES", "1");
     // Compare58 requires a fresh Fiat-Shamir island: 1/14 validates 0/0/0 over
     // 9024 at 1567q and 1,682,963 avg executed Toffoli.
-    set_default_env("DIALOG_REROLL", "1");
+    set_default_env("DIALOG_REROLL", "13");
     set_default_env("DIALOG_POST_SUB_REROLL", "14");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
