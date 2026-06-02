@@ -262,15 +262,16 @@ pub fn build() -> Vec<Op> {
     // into a searchable axis: hold a tighter-than-floor truncation and sweep
     // `rr` until the resulting input set validates 0/0/0. Default 0 = no-op.
     {
-        // Baked default rr=28 is CO-TUNED to the SHIFT22_FOLD_DIRTY + uvmerge255
-        // op stream (K0=21, margin=0, ctW=19, affine mfw234): a full 9024-shot
-        // screen found clean islands at rr={28,35,139,199}. rr=28 validates at
-        // avg-exec 2,575,283 T × 2006 peak = 5,166,017,698. Re-search this value
-        // whenever any scored op or structural merge changes the op stream.
+        // Baked default rr=47 is CO-TUNED to the slack=0 + mfw=232 op stream: it
+        // lands a clean 9024 Fiat-Shamir island for that stream (avg-exec
+        // 2,577,551 T × 2002 peak = 5,160,257,102, validated 0/0/0; rr=56 is an
+        // equivalent alternate clean island). Re-search this value whenever any
+        // scored op (slack/mfw/truncation knob / structural edit) changes the op
+        // stream. (Prior baked rr=3 was co-tuned to the slack=4/mfw=234 2006 stream.)
         let rr: usize = std::env::var("KAL_REROLL")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(28);
+            .unwrap_or(47);
         for _ in 0..rr {
             b.x(tx[0]);
             b.x(tx[0]);

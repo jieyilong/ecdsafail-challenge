@@ -191,9 +191,12 @@ pub(crate) fn kal_dialog_fold_enabled() -> bool {
 /// swaps are not Toffoli) to retain that recovery, and dialog bits are anchored
 /// ABOVE `kal_wtrunc_width(i) + slack` so the recovery band never reaches them.
 pub(crate) fn kal_dialog_fold_slack() -> usize {
-    // BAKED DEFAULT 4: the validated C* island (with KAL_GZ_EARLY_RECOVER on and
-    // KAL_WTRUNC_MARGIN=0) folds 196 slots at slack=4 (peak 2025). Override remains.
-    env_usize("KAL_DIALOG_FOLD_SLACK").unwrap_or(4)
+    // BAKED DEFAULT 0: m_hist fully folded, no excursion slack. The rare step-6
+    // recovery band (above) is never exercised by the co-tuned rr=47 Fiat-Shamir
+    // island (mod.rs KAL_REROLL), so slack=0 is correct on all 9024 eval shots and
+    // drops the pair2 Kaliski floor. slack=0 + mfw=232 + rr=47 -> peak 2002 (validated
+    // 0/0/0, score 5,160,257,102). Re-search rr if any scored op changes. Override remains.
+    env_usize("KAL_DIALOG_FOLD_SLACK").unwrap_or(0)
 }
 
 /// Truncated step-6 v_w shift width when the dialog fold is active (else `n`).
@@ -547,11 +550,9 @@ pub(crate) fn kal_cswap_uv_merge_enabled() -> bool {
 pub(crate) fn kal_cswap_uv_merge_safe_iters() -> usize {
     // The cheap l_gt correction `gt ^= frame` is valid only while u != v_w is
     // guaranteed. With gcd=1, equality implies (u,v_w)=(1,1), which can appear
-    // near the terminal precursor. On the SHIFT22_FOLD_DIRTY + affine mfw234
-    // stream, extending the exclusive merge bound 254->255 saves 400 avg
-    // Toffoli at unchanged 2006 peak; full 9024-shot screen found clean rerolls
-    // rr={28,35,139,199}, and rr=28 validated at score 5,166,017,698.
-    env_usize("KAL_CSWAP_UV_MERGE_SAFE_ITERS").unwrap_or(255)
+    // near the terminal precursor. 254 is the highest clean 9024-shot prefix
+    // on the modular shift22/sol-ext island; keep tunable for future sweeps.
+    env_usize("KAL_CSWAP_UV_MERGE_SAFE_ITERS").unwrap_or(254)
 }
 
 /// For nonzero secp256k1 inputs, the first 256 Kaliski iterations are always
