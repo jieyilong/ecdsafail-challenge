@@ -63,7 +63,7 @@ pub(crate) fn shift22_spill_carrytail_cut() -> usize {
     let w = std::env::var("SHIFT22_SPILL_W")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(33);
+        .unwrap_or(41);
     22usize.saturating_add(w)
 }
 
