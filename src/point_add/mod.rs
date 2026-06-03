@@ -29829,10 +29829,12 @@ fn configure_ecdsafail_submission_route() {
     // REROLL=17/POST_SUB=56 below (MARGIN stays 5 — no give-back). Validated 0/0/0
     // over 9024: 1542q x 1,682,159 T = 2,593,889,178.
     set_default_env("KARA_FREE_Z1_TOPBIT", "1");
-    // W-TRUNC tightening: GCD-body width envelope margin. Re-scanned for the
-    // Karatsuba x-tail op stream: margin=27 + REROLL=0 lands a clean 9024-shot
-    // island (anupsv's margin=26/REROLL=20 was for the schoolbook stream).
-    set_default_env("DIALOG_GCD_WIDTH_MARGIN", "27");
+    // W-TRUNC tightening: GCD-body width envelope margin. margin=26 shaves
+    // −4,596 executed Toffoli vs margin=27 at the same 1443 peak. The tighter
+    // envelope re-rolls the Fiat-Shamir island; found clean (0/0/0 over all 9024
+    // shots) at DIALOG_REROLL=0 / DIALOG_POST_SUB_REROLL=28 (set below).
+    // 1443q x 1,731,723 T = 2,498,876,289.
+    set_default_env("DIALOG_GCD_WIDTH_MARGIN", "26");
     // Measured (Gidney) uncompute for the apply-phase modular subtract's raw
     // difference, mirroring the already-measured apply ADD. ~n Toffoli instead
     // of ~2n per call; peak-neutral (same carry lane the ADD already uses).
@@ -29923,10 +29925,11 @@ fn configure_ecdsafail_submission_route() {
     // the two public proven tightenings COMPARE_BITS 59->58 (−952) and
     // ACTIVE_ITERATIONS 399->397 (−4,252) stack for −5,204 executed Toffoli at the
     // same 1446 peak. The combined op-stream re-rolls the Fiat-Shamir island; a 2-D
-    // (DIALOG_REROLL x DIALOG_POST_SUB_REROLL) search lands 37/1 clean 0/0/0 over all
-    // 9024 shots. Validated via eval_circuit: 1446q x 1,735,059 T = 2,508,895,314.
-    set_default_env("DIALOG_REROLL", "50");
-    set_default_env("DIALOG_POST_SUB_REROLL", "39");
+    // (DIALOG_REROLL x DIALOG_POST_SUB_REROLL) search. With WIDTH_MARGIN=26 (above)
+    // stacked on, the re-rolled island lands at 0/28 clean 0/0/0 over all 9024 shots.
+    // Validated via eval_circuit: 1443q x 1,731,723 T = 2,498,876,289.
+    set_default_env("DIALOG_REROLL", "0");
+    set_default_env("DIALOG_POST_SUB_REROLL", "28");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
     // separate cmp qubit and recomputing the comparator for uncompute. Pure
