@@ -29919,7 +29919,11 @@ fn configure_ecdsafail_submission_route() {
     // PA9024 compare-schedule margin retuned with ACTIVE_ITERATIONS=396 and
     // APPLY_CLEAN_COMPARE_BITS=21. The wider margin gives back a little Toffoli
     // but lands the 1438q clean island at DIALOG_REROLL=3 / POST_SUB=51 below.
-    set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN", "7");
+    // sm5: compare-schedule margin 7 -> 5 narrows the per-step comparator on the
+    // low/mid-width GCD steps (below the 57 cap) for -452 executed Toffoli,
+    // peak-neutral at 1434q, orthogonal to compare57. The late-game lineage ran
+    // margin=5; the base had reverted to 7. Clean island at REROLL=1844/POST_SUB=3532.
+    set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN", "5");
     set_default_env("KAL_DOUBLE_CARRY_TRUNC_W", "20");
     set_default_env("KAL_FOLD_CARRY_TRUNC_W", "20");
     set_default_env("DIALOG_GCD_ROUND763_DEDUP", "1");
@@ -30075,8 +30079,8 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT2", "130");
     // Active-396 island: compare_bits=58 + apply_clean=21 + schedule margin=8
     // validates 0/0/0 over all 9024 shots at 1438q x 1,736,773 T.
-    set_default_env("DIALOG_REROLL", "6458");
-    set_default_env("DIALOG_POST_SUB_REROLL", "2553");
+    set_default_env("DIALOG_REROLL", "1844");
+    set_default_env("DIALOG_POST_SUB_REROLL", "3532");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
     // separate cmp qubit and recomputing the comparator for uncompute. Pure
