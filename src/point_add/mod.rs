@@ -31321,7 +31321,7 @@ fn configure_ecdsafail_submission_route() {
     // PA9024_COMPARE_SCHEDULE_MARGIN 8->7: -5,576 executed Toffoli at the 1434
     // peak. Re-rolled Fiat-Shamir island lands clean (0/0/0 over 9024) at
     // DIALOG_REROLL=0 / DIALOG_POST_SUB_REROLL=44. 1434q x 1,733,573 T = 2,485,943,682.
-    set_default_env("DIALOG_GCD_WIDTH_MARGIN", "18");
+    set_default_env("DIALOG_GCD_WIDTH_MARGIN", "17");
     // Measured (Gidney) uncompute for the apply-phase modular subtract's raw
     // difference, mirroring the already-measured apply ADD. ~n Toffoli instead
     // of ~2n per call; peak-neutral (same carry lane the ADD already uses).
@@ -31437,7 +31437,7 @@ fn configure_ecdsafail_submission_route() {
     // clean island: validated 0/0/0 over all 9024 shots at 1350q x 1,763,987 T.
     // Fiat-Shamir island for the K=2 apply rebalance above: 0/0/0 over all
     // 9024 shots at 1390q x 1,630,487 T.
-    set_default_env("DIALOG_TAIL_NONCE", "141744616447148");
+    set_default_env("DIALOG_TAIL_NONCE", "177449118471529");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
     // separate cmp qubit and recomputing the comparator for uncompute. Pure
