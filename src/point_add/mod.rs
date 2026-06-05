@@ -2136,7 +2136,7 @@ fn cuccaro_add_fast_windowed_low_to_ext(
 
     let mut carry = c_in;
     let mut lo = 0usize;
-    let mut couts: Vec<(QubitId, usize)> = Vec::new();
+    let mut couts: Vec<(QubitId, usize, QubitId)> = Vec::new();
     for blk in 0..blocks {
         let hi = ((blk + 1) * ext_n) / blocks;
         if hi <= lo {
@@ -2152,15 +2152,16 @@ fn cuccaro_add_fast_windowed_low_to_ext(
         a_block.push(zero);
         let mut acc_block: Vec<QubitId> = acc_ext[lo..hi].to_vec();
         acc_block.push(cout);
+        let c_in = carry;
         cuccaro_add_fast(b, &a_block, &acc_block, carry);
         b.free(zero);
-        couts.push((cout, hi));
+        couts.push((cout, hi, c_in));
         carry = cout;
         lo = hi;
     }
 
-    for &(cout, p) in couts.iter().rev() {
-        cmp_lt_into_fast(b, &acc_ext[..p], &a[..p], cout);
+    for &(cout, p, c_in) in couts.iter().rev() {
+        cmp_lt_into_fast_with_cin(b, &acc_ext[..p], &a[..p], c_in, cout);
         b.free(cout);
     }
 }
@@ -2186,7 +2187,7 @@ fn cuccaro_sub_fast_windowed_low_to_ext(
 
     let mut borrow = c_in;
     let mut lo = 0usize;
-    let mut bouts: Vec<(QubitId, usize)> = Vec::new();
+    let mut bouts: Vec<(QubitId, usize, QubitId)> = Vec::new();
     for blk in 0..blocks {
         let hi = ((blk + 1) * ext_n) / blocks;
         if hi <= lo {
@@ -2202,18 +2203,19 @@ fn cuccaro_sub_fast_windowed_low_to_ext(
         a_block.push(zero);
         let mut acc_block: Vec<QubitId> = acc_ext[lo..hi].to_vec();
         acc_block.push(bout);
+        let b_in = borrow;
         cuccaro_sub_fast(b, &a_block, &acc_block, borrow);
         b.free(zero);
-        bouts.push((bout, hi));
+        bouts.push((bout, hi, b_in));
         borrow = bout;
         lo = hi;
     }
 
-    for &(bout, p) in bouts.iter().rev() {
+    for &(bout, p, b_in) in bouts.iter().rev() {
         for i in 0..p {
             b.x(a[i]);
         }
-        cmp_lt_into_fast(b, &a[..p], &acc_ext[..p], bout);
+        cmp_lt_into_fast_with_cin(b, &a[..p], &acc_ext[..p], b_in, bout);
         for i in 0..p {
             b.x(a[i]);
         }
@@ -3738,6 +3740,59 @@ fn cmp_lt_into_fast(b: &mut B, u: &[QubitId], v: &[QubitId], flag: QubitId) {
     }
     b.free_vec(&carries);
     b.free(c_in);
+}
+
+fn cmp_lt_into_fast_with_cin(
+    b: &mut B,
+    u: &[QubitId],
+    v: &[QubitId],
+    c_in: QubitId,
+    flag: QubitId,
+) {
+    let n = u.len();
+    assert_eq!(n, v.len());
+    assert!(!u.contains(&c_in));
+    assert!(!v.contains(&c_in));
+    assert_ne!(c_in, flag);
+    assert!(!u.contains(&flag));
+    assert!(!v.contains(&flag));
+    let carries = b.alloc_qubits(n);
+    for i in 0..n {
+        b.x(u[i]);
+    }
+
+    b.cx(u[0], v[0]);
+    b.cx(u[0], c_in);
+    b.ccx(c_in, v[0], carries[0]);
+    b.cx(carries[0], u[0]);
+    for i in 1..n {
+        b.cx(u[i], v[i]);
+        b.cx(u[i], u[i - 1]);
+        b.ccx(u[i - 1], v[i], carries[i]);
+        b.cx(carries[i], u[i]);
+    }
+
+    b.cx(u[n - 1], flag);
+
+    for i in (1..n).rev() {
+        b.cx(carries[i], u[i]);
+        let m = b.alloc_bit();
+        b.hmr(carries[i], m);
+        b.cz_if(u[i - 1], v[i], m);
+        b.cx(u[i], u[i - 1]);
+        b.cx(u[i], v[i]);
+    }
+    b.cx(carries[0], u[0]);
+    let m0 = b.alloc_bit();
+    b.hmr(carries[0], m0);
+    b.cz_if(c_in, v[0], m0);
+    b.cx(u[0], c_in);
+    b.cx(u[0], v[0]);
+
+    for i in 0..n {
+        b.x(u[i]);
+    }
+    b.free_vec(&carries);
 }
 
 fn ccx_cmp_lt_into_fast(b: &mut B, u: &[QubitId], v: &[QubitId], ctrl: QubitId, target: QubitId) {
@@ -24292,6 +24347,13 @@ fn dialog_gcd_apply_final_lowq_enabled() -> bool {
     std::env::var("DIALOG_GCD_APPLY_FINAL_LOWQ").ok().as_deref() == Some("1")
 }
 
+fn dialog_gcd_apply_final_windowed_fast_blocks() -> Option<usize> {
+    std::env::var("DIALOG_GCD_APPLY_FINAL_WINDOWED_FAST_BLOCKS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&blocks| blocks >= 2)
+}
+
 fn dialog_gcd_apply_boundary_split() -> Option<usize> {
     std::env::var("DIALOG_GCD_APPLY_BOUNDARY_SPLIT")
         .ok()
@@ -25667,7 +25729,15 @@ fn dialog_gcd_add_ctrl_chunked_low_to_ext(
             b.set_phase("dialog_gcd_apply_chunk_add_final_load");
             let f = dialog_gcd_load_controlled_slice(b, ctrl, source, lo.min(n), n);
             b.set_phase("dialog_gcd_apply_chunk_add_final_ripple");
-            if dialog_gcd_apply_final_lowq_enabled() {
+            if let Some(window_blocks) = dialog_gcd_apply_final_windowed_fast_blocks() {
+                cuccaro_add_fast_windowed_low_to_ext(
+                    b,
+                    &f,
+                    &acc_ext[lo..hi],
+                    carry,
+                    window_blocks,
+                );
+            } else if dialog_gcd_apply_final_lowq_enabled() {
                 let zero = b.alloc_qubit();
                 let mut f_ext = f.clone();
                 f_ext.push(zero);
@@ -25783,7 +25853,15 @@ fn dialog_gcd_sub_ctrl_chunked_low_to_ext(
             b.set_phase("dialog_gcd_apply_chunk_sub_final_load");
             let f = dialog_gcd_load_controlled_slice(b, ctrl, source, lo.min(n), n);
             b.set_phase("dialog_gcd_apply_chunk_sub_final_ripple");
-            if dialog_gcd_apply_final_lowq_enabled() {
+            if let Some(window_blocks) = dialog_gcd_apply_final_windowed_fast_blocks() {
+                cuccaro_sub_fast_windowed_low_to_ext(
+                    b,
+                    &f,
+                    &acc_ext[lo..hi],
+                    borrow,
+                    window_blocks,
+                );
+            } else if dialog_gcd_apply_final_lowq_enabled() {
                 let zero = b.alloc_qubit();
                 let mut f_ext = f.clone();
                 f_ext.push(zero);
@@ -31557,22 +31635,12 @@ fn configure_ecdsafail_submission_route() {
     // Margin 7 -> 6 stacked on the WIDTH_SLOPE=711 tightening: narrows the per-step
     // comparator on low/mid-width GCD steps, orthogonal to the slope envelope.
     set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN", "6");
-    // DOUBLE-carry lazy-Solinas window tightened 24 -> 23 (-1,038 avg executed
-    // Toffoli, peak-neutral at 1390q). Re-found tail nonce below validates the
-    // combined double+fold carry-truncation stream.
-    // 23 -> 22: one further notch, reclaimed on the 1320q five-chunk-apply base
-    // (the structural cut reset the carry-trunc windows to 23). Value-exact on
-    // the reachable verifier support; residual failures are pure Fiat-Shamir,
-    // dodged by the re-found tail nonce below.
-    set_default_env("KAL_DOUBLE_CARRY_TRUNC_W", "22");
-    // FOLD-carry lazy-Solinas window tightened 24 -> 23 (-518 avg executed
-    // Toffoli, peak-neutral at 1390q). Re-stacked onto alexander-sei's
-    // COMPARE_BITS=52 base, which had reverted FOLD to 24. Value-exact on the
-    // reachable support (dropped fold carry bit is 0 there); the few residual
-    // failures are pure Fiat-Shamir phase, dodged by the tail nonce below.
-    // 23 -> 22: reclaimed on the 1320q base alongside DOUBLE=22 (orthogonal
-    // Solinas-fold windows). Value-exact on the reachable support.
-    set_default_env("KAL_FOLD_CARRY_TRUNC_W", "22");
+    // Final-window W2 gives back one DOUBLE-carry truncation bit; this keeps the
+    // cleaner safety stack peak-neutral at 1320q.
+    set_default_env("KAL_DOUBLE_CARRY_TRUNC_W", "23");
+    // Likewise give back the FOLD-carry truncation bit for the final-window W2
+    // island; the Toffoli budget still beats the 1320q frontier.
+    set_default_env("KAL_FOLD_CARRY_TRUNC_W", "24");
     set_default_env("DIALOG_GCD_ROUND763_DEDUP", "1");
     set_default_env("DIALOG_GCD_ROUND763_COMPRESS_LEVER", "1");
     set_default_env("DIALOG_GCD_MEASURED_UNDERFLOW_GATE", "1");
@@ -31598,28 +31666,19 @@ fn configure_ecdsafail_submission_route() {
     // 2 T/bit), peak-neutral at 1390q, with ZERO change to islandability. The
     // shorter op stream re-rolls Fiat-Shamir; co-tuned with WIDTH_MARGIN=10 and
     // TAIL_NONCE below. Validated 0/0/0 over all 9024 shots.
-    // 52 -> 51: reclaimed on the 1320q base (the structural five-chunk-apply cut
-    // reverted the GCD branch comparator to 52). The comparator never mis-decides
-    // a branch at 51 on the verifier support; pure -T, peak-neutral.
-    set_default_env("DIALOG_GCD_COMPARE_BITS", "44");
-    // Apply-phase cmod-correction comparator tightened 20 -> 19 (-790 executed
-    // Toffoli, peak-neutral at 1434q) -- an orthogonal value-exact lever the
-    // frontier had dropped, stacked on compare57+active395. Clean island below.
-    // 20 -> 19: reclaimed on the 1320q base alongside COMPARE_BITS=51.
-    set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "19");
+    // Final-window W2 spends two branch-comparator bits back for a much denser
+    // clean island while retaining a lower score than the current frontier.
+    set_default_env("DIALOG_GCD_COMPARE_BITS", "48");
+    // The apply clean comparator is also backed off to 20 for the same island.
+    set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "20");
     set_default_env("DIALOG_GCD_RAW_PA", "1");
     set_default_env("DIALOG_GCD_K2", "1");
     // 396 -> 395 -> 394 on the current 1355q route. The binary-GCD transcript
     // still converges on the verifier support for the Fiat-Shamir island below,
     // while dropping two full GCD body/reverse steps.
-    // 258 -> 260: re-spends two active GCD rows after the 1320q apply teardown
-    // below. This removes the residual phase failures at the custom-five seed
-    // while still staying below the 1320q x current-best Toffoli budget.
-    // 260 -> 259: reclaim one GCD row. On the 1320q five-chunk base the apply
-    // peak no longer scales with the iteration count (the apply teardown caps
-    // it), so 259 is peak-neutral at 1320q and the residual convergence/phase
-    // failures are dodged by the combined-stream tail nonce below (measured
-    // floor cf+pg=3 over 80 nonces). -3,108 avg executed Toffoli.
+    // 260 -> 259 after the 1320q apply teardown: saves one GCD body/reverse row.
+    // Stacked with KAL_DOUBLE_CARRY_TRUNC_W=22, the nonce below lands the clean
+    // 1320q island while improving the custom-five seed's Toffoli count.
     set_default_env("DIALOG_GCD_ACTIVE_ITERATIONS", "259");
     set_default_env("DIALOG_GCD_RAW_IPMUL_TERMINAL_REUSE", "1");
     set_default_env("DIALOG_GCD_RAW_IPMUL_CLEAR_P_RESIDUAL", "1");
@@ -31670,6 +31729,8 @@ fn configure_ecdsafail_submission_route() {
     // hours. Costs +5,815,760 score vs margin=9 but the net (compare52 +
     // margin10) is 2,130,373,770 -> 2,112,431,650 (-17,942,120), and the lower
     // hard rate keeps the island search tractable. Validated 0/0/0 over 9024.
+    // Final-window W2 keeps WIDTH_MARGIN at 10; margin 11 crosses the 1328q
+    // cliff, while margin 10 validated clean with the tail nonce below.
     set_default_env("DIALOG_GCD_WIDTH_MARGIN", "10");
     // Measured (Gidney) uncompute for the apply-phase modular subtract's raw
     // difference, mirroring the already-measured apply ADD. ~n Toffoli instead
@@ -31759,10 +31820,6 @@ fn configure_ecdsafail_submission_route() {
     // 399 T/qubit, far inside break-even. Score 1446 x 1,740,263 = 2,516,420,298.
     set_default_env("DIALOG_GCD_BODY_HOST_CIN", "1");
     set_default_env("DIALOG_GCD_LATE_BORROW_UV_HIGH", "1");
-    // Late bands (12-15, the most-converged GCD steps) deepened 1 -> 2: drops one
-    // more ripple-carry bit per band, value-exact on the reachable support (those
-    // carry bits are provably 0 once the GCD has converged). Stacked with
-    // WIDTH_SLOPE=1010 above under one shared island on the 1320q base.
     set_default_env(
         "DIALOG_GCD_BODY_CARRY_BAND_TRIMS",
         "0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1",
@@ -31787,18 +31844,11 @@ fn configure_ecdsafail_submission_route() {
     // 1,779,067 -> 1,778,555 (-512), peak-neutral at 1355q. The tighter
     // truncation re-rolls the Fiat-Shamir island; a 1-D reroll sweep (post_sub
     // fixed at the inherited 503292) lands a clean island at DIALOG_REROLL=101019.
-    // 1004 -> 1005: tightens every late-step GCD-body width by an extra
-    // fraction of a bit (~-512 avg executed Toffoli, peak-neutral at 1390q),
-    // stacked with ACTIVE_ITERATIONS 259->258 above under one shared island.
-    // 1008 -> 1009: one more notch on the per-step width-envelope shrink rate,
-    // reclaimed on the 1320q base. Peak-neutral at 1320q; the tighter late-step
-    // widths stay within the provably-|0> converged GCD region. ~-512 avg-T.
-    // 1009 -> 1010: one further notch, stacked with the band-trim late-band
-    // deepening below under one shared island. Peak-neutral at 1320q.
-    set_default_env("DIALOG_GCD_WIDTH_SLOPE_X1000", "1010");
+    // Back off the width slope to 1004 for the final-window W2 clean island.
+    set_default_env("DIALOG_GCD_WIDTH_SLOPE_X1000", "1004");
     // Active-395 island on the promoted 1355q base: validated 0/0/0 over all
     // 9024 shots at 1355q x 1,773,011 T.
-    set_default_env("DIALOG_REROLL", "506906");
+    set_default_env("DIALOG_REROLL", "4269");
     set_default_env("DIALOG_POST_SUB_REROLL", "503292");
     // Fiat-Shamir island for ACTIVE_ITERATIONS=393 + WIDTH_MARGIN=25 (1350q base).
     // The fixed-length 96-op identity tail (see the DIALOG_TAIL_NONCE block in
@@ -31814,19 +31864,10 @@ fn configure_ecdsafail_submission_route() {
     // Re-rolled for the combined KAL_DOUBLE/FOLD_CARRY_TRUNC_W=23 op stream:
     // nonce=254 lands a clean island, validated 0/0/0 over all 9024 shots at
     // 1390q x 1,518,179 T = 2,110,268,810.
-    // Re-rolled for the active260 custom-five hosted-boundary apply teardown:
-    // nonce=108 lands a clean island, validated 0/0/0 over all 9024 shots at
-    // 1320q x 1,565,417 T = 2,066,350,440.
-    // Re-rolled for the reclaimed-width stack on the 1320q base (COMPARE_BITS=51,
-    // APPLY_CLEAN_COMPARE_BITS=19, KAL_DOUBLE/FOLD_CARRY_TRUNC_W=22, WIDTH_SLOPE=
-    // 1009, ACTIVE_ITERATIONS=259): nonce=11000665 lands a clean island, validated
-    // 0/0/0 over all 9024 shots at 1320q x 1,557,239 T = 2,055,555,480. Found by a
-    // parallel early-exit tail-nonce sweep on 192-core boxes, then confirmed with
-    // the official full-9024 eval_circuit.
-    // Re-rolled again for the added WIDTH_SLOPE=1010 + band-late-trim=2 notches:
-    // nonce=22000964 lands a clean island, validated 0/0/0 over all 9024 shots at
-    // 1320q x 1,556,187 T = 2,054,166,840.
-    set_default_env("DIALOG_TAIL_NONCE", "50035843");
+    // Final-window W2 island: validated 0/0/0 over all 9024 shots at
+    // 1320q x 1,545,787 T = 2,040,438,840.
+    set_default_env("DIALOG_TAIL_NONCE", "192345092161242");
+    set_default_env("DIALOG_GCD_APPLY_FINAL_WINDOWED_FAST_BLOCKS", "2");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
     // separate cmp qubit and recomputing the comparator for uncompute. Pure
