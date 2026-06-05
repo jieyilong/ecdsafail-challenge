@@ -31668,7 +31668,7 @@ fn configure_ecdsafail_submission_route() {
     // TAIL_NONCE below. Validated 0/0/0 over all 9024 shots.
     // Final-window W2 spends two branch-comparator bits back for a much denser
     // clean island while retaining a lower score than the current frontier.
-    set_default_env("DIALOG_GCD_COMPARE_BITS", "48");
+    set_default_env("DIALOG_GCD_COMPARE_BITS", "47");
     // The apply clean comparator is also backed off to 20 for the same island.
     set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "20");
     set_default_env("DIALOG_GCD_RAW_PA", "1");
@@ -31866,7 +31866,7 @@ fn configure_ecdsafail_submission_route() {
     // 1390q x 1,518,179 T = 2,110,268,810.
     // Final-window W2 island: validated 0/0/0 over all 9024 shots at
     // 1320q x 1,545,787 T = 2,040,438,840.
-    set_default_env("DIALOG_TAIL_NONCE", "188481450290415");
+    set_default_env("DIALOG_TAIL_NONCE", "148111066097918");
     set_default_env("DIALOG_GCD_APPLY_FINAL_WINDOWED_FAST_BLOCKS", "2");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
