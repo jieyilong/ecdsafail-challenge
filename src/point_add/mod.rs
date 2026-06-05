@@ -31277,7 +31277,11 @@ fn configure_ecdsafail_submission_route() {
     // comparator on low/mid-width GCD steps, orthogonal to the slope envelope.
     set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN", "6");
     set_default_env("KAL_DOUBLE_CARRY_TRUNC_W", "24");
-    set_default_env("KAL_FOLD_CARRY_TRUNC_W", "24");
+    // FOLD-carry lazy-Solinas window tightened 24 -> 23 (-518 avg executed
+    // Toffoli, peak-neutral at 1390q). The narrower fold-reduction carry window
+    // re-rolls the Fiat-Shamir island; the identity tail nonce below was
+    // re-found (DIALOG_TAIL_NONCE=3155) for a clean 9024-shot validation.
+    set_default_env("KAL_FOLD_CARRY_TRUNC_W", "23");
     set_default_env("DIALOG_GCD_ROUND763_DEDUP", "1");
     set_default_env("DIALOG_GCD_ROUND763_COMPRESS_LEVER", "1");
     set_default_env("DIALOG_GCD_MEASURED_UNDERFLOW_GATE", "1");
@@ -31463,7 +31467,9 @@ fn configure_ecdsafail_submission_route() {
     // clean island: validated 0/0/0 over all 9024 shots at 1350q x 1,763,987 T.
     // Fiat-Shamir island for the K=2 apply rebalance above: 0/0/0 over all
     // 9024 shots at 1390q x 1,630,487 T.
-    set_default_env("DIALOG_TAIL_NONCE", "73633164035081");
+    // Re-found for the KAL_FOLD_CARRY_TRUNC_W=23 op stream: nonce=3155 lands a
+    // clean island, validated 0/0/0 over all 9024 shots at 1390q x 1,531,353 T.
+    set_default_env("DIALOG_TAIL_NONCE", "3155");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
     // separate cmp qubit and recomputing the comparator for uncompute. Pure
