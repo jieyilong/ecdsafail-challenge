@@ -32254,13 +32254,11 @@ fn configure_ecdsafail_submission_route() {
     // (dropped double-carry bit is 0 there, ~2^-22/call otherwise); residual
     // failures are Fiat-Shamir phase, dodged by a fresh tail nonce (re-hunted below).
     set_default_env("KAL_DOUBLE_CARRY_TRUNC_W", "21");
-    // Likewise give back the FOLD-carry truncation bit for the final-window W2
-    // island; the Toffoli budget still beats the 1320q frontier.
-    // Re-tighten 24 -> 22 on the W2 base (the lazy-Solinas fold-carry window had
-    // been left loose). Value-exact on the reachable support (the dropped fold
-    // carry bits are 0 there); residual failures are pure Fiat-Shamir, dodged by
-    // the shared re-rolled tail nonce below.
-    set_default_env("KAL_FOLD_CARRY_TRUNC_W", "22");
+    // Likewise re-tighten the FOLD-carry lazy-Solinas window 22 -> 21 on the
+    // K2_PAIR_COMPRESS + double-carry-21 base. Peak-neutral at 1313q and saves
+    // another 518 avg executed Toffoli; residual failures are dodged by the
+    // fresh tail nonce below.
+    set_default_env("KAL_FOLD_CARRY_TRUNC_W", "21");
     set_default_env("DIALOG_GCD_ROUND763_DEDUP", "1");
     set_default_env("DIALOG_GCD_ROUND763_COMPRESS_LEVER", "1");
     set_default_env("DIALOG_GCD_MEASURED_UNDERFLOW_GATE", "1");
@@ -32525,8 +32523,11 @@ fn configure_ecdsafail_submission_route() {
     // Re-rolled for the KAL_DOUBLE_CARRY_TRUNC_W=21 re-tightening above: nonce
     // 1000001157 lands a clean island, validated 0/0/0 over all 9024 shots at
     // 1313q x 1,535,885 T = 2,016,617,005 (official ecdsafail run).
+    // Re-rolled for the stacked KAL_FOLD_CARRY_TRUNC_W=21 re-tightening: nonce
+    // 1080 lands a clean island, validated 0/0/0 over all 9024 shots at
+    // 1313q x 1,535,367 T = 2,015,936,871.
     set_default_env("DIALOG_GCD_SELECTED_BODY_NOCIN", "1");
-    set_default_env("DIALOG_TAIL_NONCE", "1000001157");
+    set_default_env("DIALOG_TAIL_NONCE", "1080");
     set_default_env("DIALOG_GCD_APPLY_FINAL_WINDOWED_FAST_BLOCKS", "2");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
