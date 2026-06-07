@@ -1059,7 +1059,7 @@ fn configure_ecdsafail_submission_route() {
     // Both-phase apply fold-fusion: spend comparator bits back to cb=52 (the
     // exact-screen zone) while preserving a clean Fiat-Shamir
     // nonce; the fold-fusion's -25k Toffoli keeps the score well under 2B.
-    set_default_env("DIALOG_GCD_COMPARE_BITS", "49");
+    set_default_env("DIALOG_GCD_COMPARE_BITS", "48");
     // Apply-phase overflow-clean comparator narrowed 23 -> 22 -> 21 -> 20. The
     // materialized_special "overflow_clean" cmp_lt only needs the top
     // `apply_clean_compare_bits` of (acc, f) to resolve the modular-overflow
@@ -1340,7 +1340,7 @@ fn configure_ecdsafail_submission_route() {
     // Re-rolled for the lowq0 fast-final + ACTIVE_ITERATIONS=262 route:
     // nonce 2432 validates 0/0/0 over all 9024 shots at
     // 1309q x 1,497,795 T = 1,960,613,655.
-    set_default_env("DIALOG_TAIL_NONCE", "812502068");
+    set_default_env("DIALOG_TAIL_NONCE", "1401613145");
     set_default_env("DIALOG_GCD_APPLY_FINAL_WINDOWED_FAST_BLOCKS", "0");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
