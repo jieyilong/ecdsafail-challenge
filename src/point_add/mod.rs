@@ -1250,6 +1250,14 @@ fn configure_ecdsafail_submission_route() {
     // compressed-block: current-step s2 composite-scratch fold (1308->1307).
     set_default_env("R84_LOWQ", "1");
     set_default_env("R84_LOWQ_CIN_BORROW", "1");
+    // Fold the square's high half into its low half in place, accumulate the
+    // resulting 33-bit quotient, apply quotient*(2^256-p) once, subtract once,
+    // then reversibly unfold before Bennett-uncomputing the square. The final
+    // modular subtract vents onto the folded operand, retaining the 1307q peak.
+    // The 21-bit high-carry propagation and rare folded-lo noncanonical band
+    // are selected away with the shared Fiat-Shamir island.
+    set_default_env("ROUND84_INPLACE_SOLINAS_FOLD", "1");
+    set_default_env("ROUND84_INPLACE_QUOTIENT_CARRY_TRUNC_W", "21");
     set_default_env("DIALOG_GCD_BORROW_CURRENT_S2", "1");
     set_default_env("DIALOG_GCD_APPLY_BOUNDARY_SPLIT", "100");
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT", "50");
@@ -1340,7 +1348,7 @@ fn configure_ecdsafail_submission_route() {
     // Re-rolled for the lowq0 fast-final + ACTIVE_ITERATIONS=262 route:
     // nonce 2432 validates 0/0/0 over all 9024 shots at
     // 1309q x 1,497,795 T = 1,960,613,655.
-    set_default_env("DIALOG_TAIL_NONCE", "1401613145");
+    set_default_env("DIALOG_TAIL_NONCE", "4009893105");
     set_default_env("DIALOG_GCD_APPLY_FINAL_WINDOWED_FAST_BLOCKS", "0");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a

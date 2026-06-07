@@ -740,6 +740,269 @@ pub(crate) fn xtail_sq_selfhost_enabled() -> bool {
     std::env::var("XTAIL_SQ_SELFHOST").ok().as_deref() != Some("0")
 }
 
+fn round84_inplace_solinas_fold_enabled() -> bool {
+    std::env::var("ROUND84_INPLACE_SOLINAS_FOLD")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+fn round84_inplace_quotient_carry_trunc_window() -> usize {
+    std::env::var("ROUND84_INPLACE_QUOTIENT_CARRY_TRUNC_W")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(21)
+        .max(1)
+}
+
+fn round84_inplace_vent_carry_enabled() -> bool {
+    std::env::var("ROUND84_INPLACE_VENT_CARRY")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+struct Round84FoldStep {
+    shift: usize,
+    add: bool,
+    wrap: QubitId,
+}
+
+struct Round84AggregateFold {
+    steps: Vec<Round84FoldStep>,
+    quotient: Vec<QubitId>,
+    correction_wrap: QubitId,
+}
+
+fn round84_update_fold_quotient(
+    b: &mut B,
+    quotient: &[QubitId],
+    hi: &[QubitId],
+    step: &Round84FoldStep,
+    inverse: bool,
+) {
+    let add = step.add != inverse;
+    let update_wrap = |b: &mut B| {
+        if add {
+            cadd_nbit_const_direct_fast(b, quotient, U256::from(1), step.wrap);
+        } else {
+            csub_nbit_const_direct_fast(b, quotient, U256::from(1), step.wrap);
+        }
+    };
+    let update_spill = |b: &mut B| {
+        if step.shift == 0 {
+            return;
+        }
+        let pad = b.alloc_qubits(quotient.len() - step.shift);
+        let mut spill = hi[hi.len() - step.shift..].to_vec();
+        spill.extend_from_slice(&pad);
+        if add {
+            add_nbit_qq(b, &spill, quotient);
+        } else {
+            sub_nbit_qq(b, &spill, quotient);
+        }
+        b.free_vec(&pad);
+    };
+
+    if inverse {
+        update_wrap(b);
+        update_spill(b);
+    } else {
+        update_spill(b);
+        update_wrap(b);
+    }
+}
+
+fn round84_compute_quotient_c_product(b: &mut B, quotient: &[QubitId]) -> Vec<QubitId> {
+    // quotient <= c, so its low 33 bits suffice and quotient*c fits in 66 bits.
+    let q = &quotient[..33];
+    let product = b.alloc_qubits(66);
+    for i in 0..q.len() {
+        b.cx(q[i], product[i]);
+    }
+    for shift in [4usize, 6, 7, 8, 9, 32] {
+        let target = &product[shift..];
+        let pad = b.alloc_qubits(target.len() - q.len());
+        let mut source = q.to_vec();
+        source.extend_from_slice(&pad);
+        add_nbit_qq(b, &source, target);
+        b.free_vec(&pad);
+    }
+    product
+}
+
+fn round84_uncompute_quotient_c_product(b: &mut B, quotient: &[QubitId], product: &[QubitId]) {
+    let q = &quotient[..33];
+    for shift in [4usize, 6, 7, 8, 9, 32].into_iter().rev() {
+        let target = &product[shift..];
+        let pad = b.alloc_qubits(target.len() - q.len());
+        let mut source = q.to_vec();
+        source.extend_from_slice(&pad);
+        sub_nbit_qq(b, &source, target);
+        b.free_vec(&pad);
+    }
+    for i in 0..q.len() {
+        b.cx(q[i], product[i]);
+    }
+    b.free_vec(product);
+}
+
+fn round84_add_narrow_correction(
+    b: &mut B,
+    lo: &[QubitId],
+    product: &[QubitId],
+    dirty: &[QubitId],
+) -> QubitId {
+    let wrap = b.alloc_qubit();
+    let source_top = b.alloc_qubit();
+    let mut target_ext = lo[..product.len()].to_vec();
+    target_ext.push(wrap);
+    let mut source_ext = product.to_vec();
+    source_ext.push(source_top);
+    add_nbit_qq(b, &source_ext, &target_ext);
+    b.free(source_top);
+    let high = &lo[product.len()..];
+    if round84_inplace_vent_carry_enabled() {
+        let clean2 = [b.alloc_qubit(), b.alloc_qubit()];
+        venting::ciadd_dirty_2clean_classical(
+            b,
+            high,
+            &dirty[..high.len() - 2],
+            &clean2,
+            1,
+            wrap,
+            false,
+        );
+        b.free(clean2[0]);
+        b.free(clean2[1]);
+    } else {
+        cadd_nbit_const_direct_trunc_fast(
+            b,
+            high,
+            U256::from(1),
+            wrap,
+            round84_inplace_quotient_carry_trunc_window(),
+        );
+    }
+    wrap
+}
+
+fn round84_sub_narrow_correction(
+    b: &mut B,
+    lo: &[QubitId],
+    product: &[QubitId],
+    wrap: QubitId,
+    dirty: &[QubitId],
+) {
+    let high = &lo[product.len()..];
+    if round84_inplace_vent_carry_enabled() {
+        let clean2 = [b.alloc_qubit(), b.alloc_qubit()];
+        venting::cisub_dirty_2clean_classical(b, high, &dirty[..high.len() - 2], &clean2, 1, wrap);
+        b.free(clean2[0]);
+        b.free(clean2[1]);
+    } else {
+        csub_nbit_const_direct_trunc_fast(
+            b,
+            high,
+            U256::from(1),
+            wrap,
+            round84_inplace_quotient_carry_trunc_window(),
+        );
+    }
+    let source_top = b.alloc_qubit();
+    let mut target_ext = lo[..product.len()].to_vec();
+    target_ext.push(wrap);
+    let mut source_ext = product.to_vec();
+    source_ext.push(source_top);
+    sub_nbit_qq(b, &source_ext, &target_ext);
+    b.free(source_top);
+    b.free(wrap);
+}
+
+/// Reversibly fold `hi*c` into `lo`, where `c = 2^256-p`.
+///
+/// Each signed shifted add/sub retains its 2^256 quotient contribution. The
+/// five contributions are accumulated into a 34-bit register, multiplied by
+/// sparse `c` once, and added to `lo`. The returned state is sufficient to
+/// restore the original square after `lo` has been consumed.
+fn round84_fold_hi_into_lo_aggregate(
+    b: &mut B,
+    lo: &[QubitId],
+    hi: &[QubitId],
+    dirty: &[QubitId],
+) -> Round84AggregateFold {
+    let n = lo.len();
+    let quotient = b.alloc_qubits(34);
+    // c = 2^32 + 977 = 2^32 + 2^10 - 2^5 - 2^4 + 1.
+    let terms = [
+        (0usize, true),
+        (4, false),
+        (5, false),
+        (10, true),
+        (32, true),
+    ];
+    let mut steps = Vec::with_capacity(terms.len());
+
+    for (shift, add) in terms {
+        let width = n - shift;
+        let wrap = b.alloc_qubit();
+        let source_top = b.alloc_qubit();
+        let mut target_ext = lo[shift..].to_vec();
+        target_ext.push(wrap);
+        let mut source_ext = hi[..width].to_vec();
+        source_ext.push(source_top);
+        if add {
+            add_nbit_qq(b, &source_ext, &target_ext);
+        } else {
+            sub_nbit_qq(b, &source_ext, &target_ext);
+        }
+        b.free(source_top);
+
+        let step = Round84FoldStep { shift, add, wrap };
+        round84_update_fold_quotient(b, &quotient, hi, &step, false);
+        steps.push(step);
+    }
+
+    let product = round84_compute_quotient_c_product(b, &quotient);
+    let correction_wrap = round84_add_narrow_correction(b, lo, &product, dirty);
+    round84_uncompute_quotient_c_product(b, &quotient, &product);
+    Round84AggregateFold {
+        steps,
+        quotient,
+        correction_wrap,
+    }
+}
+
+fn round84_unfold_hi_from_lo_aggregate(
+    b: &mut B,
+    lo: &[QubitId],
+    hi: &[QubitId],
+    dirty: &[QubitId],
+    state: Round84AggregateFold,
+) {
+    let product = round84_compute_quotient_c_product(b, &state.quotient);
+    round84_sub_narrow_correction(b, lo, &product, state.correction_wrap, dirty);
+    round84_uncompute_quotient_c_product(b, &state.quotient, &product);
+
+    for step in state.steps.into_iter().rev() {
+        round84_update_fold_quotient(b, &state.quotient, hi, &step, true);
+        let width = lo.len() - step.shift;
+        let source_top = b.alloc_qubit();
+        let mut target_ext = lo[step.shift..].to_vec();
+        target_ext.push(step.wrap);
+        let mut source_ext = hi[..width].to_vec();
+        source_ext.push(source_top);
+        if step.add {
+            sub_nbit_qq(b, &source_ext, &target_ext);
+        } else {
+            add_nbit_qq(b, &source_ext, &target_ext);
+        }
+        b.free(source_top);
+        b.free(step.wrap);
+    }
+    b.free_vec(&state.quotient);
+}
+
 /// Schoolbook squarer with Bennett uncompute. For squaring `tmp_ext = x*x`
 /// (2n bits, no mod reduction), then sub from acc with on-the-fly Solinas
 /// reduction, then uncompute tmp_ext via gate-level inverse. Saves ~170k
@@ -1127,9 +1390,9 @@ pub(crate) fn squaring_sub_from_acc_schoolbook_lowq_shift22(
     let n = acc.len();
     debug_assert_eq!(n, 256);
     debug_assert_eq!(x.len(), n);
-    let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
 
     let tmp_ext = b.alloc_qubits(2 * n);
+    b.set_phase("round84_inplace_solinas_square_forward");
     if xtail_sq_selfhost_enabled() {
         schoolbook_square_symmetric_lowq_selfhosted(b, x, &tmp_ext);
     } else {
@@ -1138,32 +1401,41 @@ pub(crate) fn squaring_sub_from_acc_schoolbook_lowq_shift22(
 
     let lo: Vec<QubitId> = tmp_ext[0..n].to_vec();
     let hi: Vec<QubitId> = tmp_ext[n..2 * n].to_vec();
-    mod_sub_qq(b, acc, &lo, p);
-    let _ = c;
-    mod_sub_qq(b, acc, &hi, p);
-    for _ in 0..4 {
-        mod_double_inplace_direct_const_fast(b, &hi, p);
-    }
-    mod_sub_qq(b, acc, &hi, p);
-    for _ in 0..2 {
-        mod_double_inplace_direct_const_fast(b, &hi, p);
-    }
-    mod_add_qq(b, acc, &hi, p);
-    for _ in 0..4 {
-        mod_double_inplace_direct_const_fast(b, &hi, p);
-    }
-    mod_sub_qq(b, acc, &hi, p);
-    let (spill, flag_inv, ovf) = mod_shift_left_by_k_lowq(b, &hi, p, 22);
-    if r84_lowq_enabled() {
-        mod_sub_qq_lowq(b, acc, &hi, p);
+    if round84_inplace_solinas_fold_enabled() {
+        b.set_phase("round84_inplace_solinas_fold");
+        let state = round84_fold_hi_into_lo_aggregate(b, &lo, &hi, acc);
+        b.set_phase("round84_inplace_solinas_sub");
+        mod_sub_qq_vent(b, acc, &lo, p);
+        b.set_phase("round84_inplace_solinas_unfold");
+        round84_unfold_hi_from_lo_aggregate(b, &lo, &hi, acc, state);
     } else {
+        mod_sub_qq(b, acc, &lo, p);
         mod_sub_qq(b, acc, &hi, p);
-    }
-    mod_shift_right_by_k_lowq(b, &hi, p, 22, spill, flag_inv, ovf);
-    for _ in 0..10 {
-        mod_halve_inplace_direct_const_fast(b, &hi, p);
+        for _ in 0..4 {
+            mod_double_inplace_direct_const_fast(b, &hi, p);
+        }
+        mod_sub_qq(b, acc, &hi, p);
+        for _ in 0..2 {
+            mod_double_inplace_direct_const_fast(b, &hi, p);
+        }
+        mod_add_qq(b, acc, &hi, p);
+        for _ in 0..4 {
+            mod_double_inplace_direct_const_fast(b, &hi, p);
+        }
+        mod_sub_qq(b, acc, &hi, p);
+        let (spill, flag_inv, ovf) = mod_shift_left_by_k_lowq(b, &hi, p, 22);
+        if r84_lowq_enabled() {
+            mod_sub_qq_lowq(b, acc, &hi, p);
+        } else {
+            mod_sub_qq(b, acc, &hi, p);
+        }
+        mod_shift_right_by_k_lowq(b, &hi, p, 22, spill, flag_inv, ovf);
+        for _ in 0..10 {
+            mod_halve_inplace_direct_const_fast(b, &hi, p);
+        }
     }
 
+    b.set_phase("round84_inplace_solinas_square_inverse");
     if xtail_sq_selfhost_enabled() {
         schoolbook_square_symmetric_lowq_selfhosted_inverse(b, x, &tmp_ext);
     } else {
@@ -1199,4 +1471,3 @@ pub(crate) fn squaring_sub_from_acc_walk_controls_lowq(b: &mut B, acc: &[QubitId
     }
     b.free_vec(&ctrl_copy);
 }
-

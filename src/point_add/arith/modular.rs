@@ -1099,4 +1099,3 @@ pub(crate) fn cmod_sub_qq_lowq(b: &mut B, acc: &[QubitId], a: &[QubitId], ctrl: 
     }
     b.free_vec(&f);
 }
-
