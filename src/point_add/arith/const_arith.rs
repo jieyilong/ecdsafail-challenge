@@ -368,353 +368,6 @@ pub(crate) fn add_nbit_const_direct_uncontrolled_fast(b: &mut B, acc: &[QubitId]
     b.free(ctrl);
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-//  CLEAN direct constant adders (no `ca` register, no measurement)
-//
-//  These add/subtract a classical constant `c` into an (n+1)-bit `acc_ext`,
-//  capturing carry/borrow into `acc_ext[n]`, using a CDKM-style carry register
-//  of width n-1 (not the n-wide loaded `ca`). `c` is folded in classically (X/CX
-//  conditioned on c's bits), so no qubit stores the constant. The carries are
-//  uncomputed by an exact reverse sweep (NO `b.hmr`) → emit_inverse-safe AND
-//  prefilter-modelable. Net footprint = n-1 = 255 (vs the clean Cuccaro's 256),
-//  shaving the sole +1 that pins the round84-lowq mid-sub at 1307 → 1306.
-//
-//  Ripple-carry recurrence for `acc_ext += c` (uncontrolled, k_i = bit(c,i)):
-//    s_i      = acc_i ^ k_i ^ carry_i
-//    carry_{i+1} = (acc_i & k_i) | (carry_i & (acc_i ^ k_i))
-//  Since k_i is classical:
-//    - if k_i = 1: carry_{i+1} = acc_i | carry_i  (= NOT( !acc_i & !carry_i ))
-//    - if k_i = 0: carry_{i+1} = acc_i & carry_i
-//  We materialize carry_1..carry_{n-1} into the `carries` register, write the
-//  n sum bits into acc_ext[0..n] plus the carry-out into acc_ext[n], then
-//  uncompute carries by replaying the (now value-shifted) recurrence in reverse.
-// ───────────────────────────────────────────────────────────────────────────
-
-/// `acc_ext := (acc_ext + c) mod 2^(n+1)`, capturing carry-out into `acc_ext[n]`.
-/// CLEAN (no `b.hmr`) → emit_inverse-safe + prefilter-modelable. Carry storage =
-/// `creg` of width n-1 (carry_1..carry_{n-1}); carry_n folds into acc_ext[n].
-/// Net fresh footprint n-1 = 255 vs the clean-Cuccaro's loaded `ca` (256q) → the
-/// −1q that takes the round84-lowq mid-sub 1307 → 1306. `c < 2^n`.
-///
-/// Carry recurrence (k_i = bit(c,i), classical; carry_0 = 0):
-///   k_i=1: carry_{i+1} = acc_i OR  carry_i
-///   k_i=0: carry_{i+1} = acc_i AND carry_i
-/// Sum bit s_i = acc_i XOR k_i XOR carry_i.
-///
-/// We reuse the proven-correct forward+sum structure of
-/// `cadd_nbit_const_direct_fast` (uncontrolled: every CCX with `ctrl` collapses to
-/// the binary gate since ctrl≡1), and replace its measurement uncompute with an
-/// exact reverse replay using the reconstructed original acc bits.
-pub(crate) fn add_nbit_const_clean_direct(b: &mut B, acc_ext: &[QubitId], c: U256) {
-    add_nbit_const_clean_direct_with_cin(b, acc_ext, c, None);
-}
-
-/// As [`add_nbit_const_clean_direct`] but optionally sources the first carry
-/// ancilla (`creg[0]`, = storage for carry_1) from a caller-supplied clean |0>
-/// idle lane instead of a fresh allocation, saving +1 (e.g. the idle `a_ovf` in
-/// the round84-lowq mid-sub). The borrowed lane is driven back to |0> by the
-/// reverse sweep (the adder is clean), honoring the same borrow contract as
-/// `add_nbit_const_extcarry_clean_with_cin`.
-pub(crate) fn add_nbit_const_clean_direct_with_cin(
-    b: &mut B,
-    acc_ext: &[QubitId],
-    c: U256,
-    borrow_first: Option<QubitId>,
-) {
-    let ext = acc_ext.len();
-    debug_assert!(ext >= 1);
-    let n = ext - 1;
-    if n == 0 {
-        if bit(c, 0) {
-            b.x(acc_ext[0]);
-        }
-        return;
-    }
-
-    // creg holds carry_1..carry_{n-1} (width n-1). Optionally borrow creg[0].
-    let creg: Vec<QubitId> = match borrow_first {
-        Some(q) if n - 1 >= 1 => {
-            let mut v = Vec::with_capacity(n - 1);
-            v.push(q);
-            if n - 1 > 1 {
-                v.extend(b.alloc_qubits(n - 2));
-            }
-            v
-        }
-        _ => b.alloc_qubits(n - 1),
-    };
-    let carry = |i: usize| -> Option<QubitId> {
-        if i == 0 {
-            None
-        } else {
-            Some(creg[i - 1])
-        }
-    };
-
-    // Forward: compute carry_{i+1} into target for i = 0..n-1. For i = n-1 the
-    // target is the extension bit acc_ext[n] (carry-out); for i < n-1 it is
-    // creg[i]. All targets are |0> on entry.
-    let fwd_target = |i: usize, acc_ext: &[QubitId]| -> QubitId {
-        if i == n - 1 {
-            acc_ext[n]
-        } else {
-            creg[i]
-        }
-    };
-    for i in 0..n {
-        if i == n {
-            break;
-        }
-        let target = fwd_target(i, acc_ext);
-        let ci = carry(i);
-        if bit(c, i) {
-            // carry_{i+1} = acc_i OR carry_i = NOT(!acc_i AND !carry_i).
-            match ci {
-                Some(cq) => {
-                    b.x(target);
-                    b.x(acc_ext[i]);
-                    b.x(cq);
-                    b.ccx(acc_ext[i], cq, target);
-                    b.x(cq);
-                    b.x(acc_ext[i]);
-                }
-                None => {
-                    // carry_1 = acc_0 OR 0 = acc_0.
-                    b.cx(acc_ext[i], target);
-                }
-            }
-        } else {
-            // carry_{i+1} = acc_i AND carry_i.
-            match ci {
-                Some(cq) => {
-                    b.ccx(acc_ext[i], cq, target);
-                }
-                None => { /* carry_1 = acc_0 AND 0 = 0 */ }
-            }
-        }
-    }
-
-    // Sum bits: acc_i ^= k_i ^ carry_i. Do i = n-1 DOWN to 0 so we never disturb
-    // a control (acc_j, j<i) before it is used as a carry source — but carries
-    // are already materialized in creg/acc_ext[n], so order within the sum write
-    // is free EXCEPT acc_ext[n] (carry_n) was just written and must not be XORed
-    // again. We write s_i for i in 0..n only.
-    for i in 0..n {
-        if bit(c, i) {
-            b.x(acc_ext[i]);
-        }
-        if let Some(cq) = carry(i) {
-            b.cx(cq, acc_ext[i]);
-        }
-    }
-
-    // Uncompute creg (carry_1..carry_{n-1}) in reverse. acc_ext[n] (carry_n) is a
-    // genuine output and is NOT uncomputed. For i = n-2 down to 0, reconstruct
-    // acc_i_orig from acc_i_final (= acc_i_orig ^ k_i ^ carry_i) by re-applying
-    // k_i and carry_i, replay the forward gate to clear creg[i], then restore.
-    for i in (0..n - 1).rev() {
-        let target = creg[i]; // = carry_{i+1}
-        let ci = carry(i);
-        // acc_ext[i] currently holds s_i = acc_i_orig ^ k_i ^ carry_i.
-        if bit(c, i) {
-            b.x(acc_ext[i]);
-        }
-        if let Some(cq) = ci {
-            b.cx(cq, acc_ext[i]);
-        }
-        // acc_ext[i] == acc_i_orig now.
-        if bit(c, i) {
-            match ci {
-                Some(cq) => {
-                    b.x(target);
-                    b.x(acc_ext[i]);
-                    b.x(cq);
-                    b.ccx(acc_ext[i], cq, target);
-                    b.x(cq);
-                    b.x(acc_ext[i]);
-                }
-                None => {
-                    b.cx(acc_ext[i], target);
-                }
-            }
-        } else {
-            match ci {
-                Some(cq) => {
-                    b.ccx(acc_ext[i], cq, target);
-                }
-                None => {}
-            }
-        }
-        // restore acc_ext[i] back to s_i.
-        if let Some(cq) = ci {
-            b.cx(cq, acc_ext[i]);
-        }
-        if bit(c, i) {
-            b.x(acc_ext[i]);
-        }
-    }
-
-    // Free fresh ancillas; the borrowed creg[0] (if any) is returned to the
-    // caller as a clean |0> idle lane (the reverse sweep restored it).
-    match borrow_first {
-        Some(_) if creg.len() >= 1 => {
-            if creg.len() > 1 {
-                b.free_vec(&creg[1..]);
-            }
-        }
-        _ => b.free_vec(&creg),
-    }
-}
-
-/// Gate-level structure for `acc_ext := (acc_ext - c) mod 2^(n+1)`, borrow into
-/// `acc_ext[n]`. Implemented as the exact inverse of the clean add via
-/// `emit_inverse` (the add is clean), giving sub with the same n-1 footprint.
-pub(crate) fn sub_nbit_const_clean_direct(b: &mut B, acc_ext: &[QubitId], c: U256) {
-    let acc_copy: Vec<QubitId> = acc_ext.to_vec();
-    emit_inverse(b, move |b| add_nbit_const_clean_direct(b, &acc_copy, c));
-}
-
-/// CONTROLLED clean direct const adder: `acc_ext += (ctrl ? c : 0)` (mod 2^(n+1)),
-/// carry into acc_ext[n]. CLEAN (no hmr) → emit_inverse-safe + modelable. Carry
-/// storage = creg width n-1. Effective addend bit is `ctrl AND k_i`, so the carry
-/// recurrence gates on ctrl. Optionally borrow creg[0].
-pub(crate) fn cadd_nbit_const_clean_direct_with_cin(
-    b: &mut B,
-    acc_ext: &[QubitId],
-    c: U256,
-    ctrl: QubitId,
-    borrow_first: Option<QubitId>,
-) {
-    let ext = acc_ext.len();
-    debug_assert!(ext >= 1);
-    let n = ext - 1;
-    if n == 0 {
-        if bit(c, 0) {
-            b.cx(ctrl, acc_ext[0]);
-        }
-        return;
-    }
-    let creg: Vec<QubitId> = match borrow_first {
-        Some(q) if n - 1 >= 1 => {
-            let mut v = Vec::with_capacity(n - 1);
-            v.push(q);
-            if n - 1 > 1 {
-                v.extend(b.alloc_qubits(n - 2));
-            }
-            v
-        }
-        _ => b.alloc_qubits(n - 1),
-    };
-    let carry = |i: usize| -> Option<QubitId> {
-        if i == 0 {
-            None
-        } else {
-            Some(creg[i - 1])
-        }
-    };
-    let fwd_target = |i: usize, acc_ext: &[QubitId]| -> QubitId {
-        if i == n - 1 {
-            acc_ext[n]
-        } else {
-            creg[i]
-        }
-    };
-    // effective addend bit e_i = ctrl AND k_i.
-    //   k_i=1: carry_{i+1} = maj(acc_i, ctrl, carry_i)
-    //   k_i=0: carry_{i+1} = acc_i AND carry_i
-    for i in 0..n {
-        let target = fwd_target(i, acc_ext);
-        let ci = carry(i);
-        if bit(c, i) {
-            match ci {
-                Some(cq) => {
-                    // maj(acc_i, ctrl, cq) into target (|0>): standard 3-CCX maj
-                    // expansion used by cadd_nbit_const_direct_fast forward.
-                    b.ccx(acc_ext[i], cq, target);
-                    b.ccx(ctrl, acc_ext[i], target);
-                    b.ccx(ctrl, cq, target);
-                }
-                None => {
-                    // carry_1 = acc_0 AND ctrl.
-                    b.ccx(acc_ext[i], ctrl, target);
-                }
-            }
-        } else {
-            match ci {
-                Some(cq) => {
-                    b.ccx(acc_ext[i], cq, target);
-                }
-                None => {}
-            }
-        }
-    }
-    // Sum: acc_i ^= (ctrl AND k_i) ^ carry_i.
-    for i in 0..n {
-        if bit(c, i) {
-            b.cx(ctrl, acc_ext[i]);
-        }
-        if let Some(cq) = carry(i) {
-            b.cx(cq, acc_ext[i]);
-        }
-    }
-    // Uncompute creg[0..n-1] in reverse (acc_ext[n] is output, kept). Reconstruct
-    // acc_i_orig from acc_i_final by re-applying (ctrl?k_i) and carry_i.
-    for i in (0..n - 1).rev() {
-        let target = creg[i];
-        let ci = carry(i);
-        if bit(c, i) {
-            b.cx(ctrl, acc_ext[i]);
-        }
-        if let Some(cq) = ci {
-            b.cx(cq, acc_ext[i]);
-        }
-        if bit(c, i) {
-            match ci {
-                Some(cq) => {
-                    b.ccx(acc_ext[i], cq, target);
-                    b.ccx(ctrl, acc_ext[i], target);
-                    b.ccx(ctrl, cq, target);
-                }
-                None => {
-                    b.ccx(acc_ext[i], ctrl, target);
-                }
-            }
-        } else if let Some(cq) = ci {
-            b.ccx(acc_ext[i], cq, target);
-        }
-        if let Some(cq) = ci {
-            b.cx(cq, acc_ext[i]);
-        }
-        if bit(c, i) {
-            b.cx(ctrl, acc_ext[i]);
-        }
-    }
-    match borrow_first {
-        Some(_) if creg.len() >= 1 => {
-            if creg.len() > 1 {
-                b.free_vec(&creg[1..]);
-            }
-        }
-        _ => b.free_vec(&creg),
-    }
-}
-
-/// CONTROLLED clean direct const SUB: `acc_ext -= (ctrl ? c : 0)`. Exact inverse
-/// of the controlled add (clean) via emit_inverse. NOTE: ctrl must be preserved
-/// by the add (it is — only used as a control), so the inverse is well-defined.
-pub(crate) fn csub_nbit_const_clean_direct_with_cin(
-    b: &mut B,
-    acc_ext: &[QubitId],
-    c: U256,
-    ctrl: QubitId,
-    borrow_first: Option<QubitId>,
-) {
-    let acc_copy: Vec<QubitId> = acc_ext.to_vec();
-    emit_inverse(b, move |b| {
-        cadd_nbit_const_clean_direct_with_cin(b, &acc_copy, c, ctrl, borrow_first)
-    });
-}
-
 pub(crate) fn sub_nbit_const_direct_uncontrolled_fast(b: &mut B, acc: &[QubitId], c: U256) {
     let ctrl = b.alloc_qubit();
     b.x(ctrl);
@@ -791,6 +444,28 @@ pub(crate) fn fold_carry_trunc_window() -> Option<usize> {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&w| w > 0)
+}
+
+/// Default-OFF lever: realize the per-position-controls majority carry/borrow
+/// recurrence in 2 CCX instead of 3, with NO ancilla (and no measurement).
+///
+/// The 3-CCX block `target ^= maj(acc[i], cin, kc)` =
+/// `acc·cin ⊕ kc·acc ⊕ kc·cin` is the genuine 3-distinct-input majority that
+/// appears in [`cadd_per_position_controls_trunc`] /
+/// [`csub_per_position_controls_trunc`] (the apply-phase fused double/halve
+/// fold; per-position controls differ, so the single-`ctrl` De-Morgan AND-temp
+/// does NOT apply here). It is exactly equal to
+/// `acc·cin ⊕ kc·(acc ⊕ cin)`, which can be emitted as:
+///   ccx(acc, cin, target);   // target ^= acc·cin
+///   cx(acc, cin);            // cin' = acc ⊕ cin   (transient; FREE)
+///   ccx(kc, cin, target);    // target ^= kc·(acc ⊕ cin)
+///   cx(acc, cin);            // restore cin        (FREE)
+/// = 2 CCX. `cin` is a borrow/carry ancilla that is read only at this position
+/// (the next position reads `target`, not `cin`); it is restored before the
+/// position completes, so the later sum-bit CX and the measurement-uncompute
+/// (which read the *restored* `cin`) are untouched. Pure CCX/CX ⇒ no phase.
+pub(crate) fn perpos_maj2_enabled() -> bool {
+    std::env::var("DIALOG_GCD_PERPOS_MAJ2").ok().as_deref() == Some("1")
 }
 
 /// Carry-tail-truncated controlled add of a sparse classical constant.
@@ -975,6 +650,7 @@ pub(crate) fn cadd_per_position_controls_trunc(
             None
         }
     };
+    let maj2 = perpos_maj2_enabled();
     let carries = b.alloc_qubits(last + 1);
 
     // Forward carry sweep, truncated at `last`. carry_i = maj(acc_i, k_i, carry_{i-1}).
@@ -983,9 +659,17 @@ pub(crate) fn cadd_per_position_controls_trunc(
         let carry_in = if i == 0 { None } else { Some(carries[i - 1]) };
         if let Some(kc) = kctrl(i) {
             if let Some(ci) = carry_in {
-                b.ccx(acc[i], ci, target);
-                b.ccx(kc, acc[i], target);
-                b.ccx(kc, ci, target);
+                if maj2 {
+                    // 2-CCX ancilla-free majority (target ^= maj(acc,ci,kc)).
+                    b.ccx(acc[i], ci, target);
+                    b.cx(acc[i], ci);
+                    b.ccx(kc, ci, target);
+                    b.cx(acc[i], ci);
+                } else {
+                    b.ccx(acc[i], ci, target);
+                    b.ccx(kc, acc[i], target);
+                    b.ccx(kc, ci, target);
+                }
             } else {
                 b.ccx(acc[i], kc, target);
             }
@@ -1046,6 +730,7 @@ pub(crate) fn csub_per_position_controls_trunc(
             None
         }
     };
+    let maj2 = perpos_maj2_enabled();
     let borrows = b.alloc_qubits(last + 1);
 
     // Forward borrow sweep, truncated at `last`.
@@ -1055,9 +740,17 @@ pub(crate) fn csub_per_position_controls_trunc(
         if let Some(kc) = kctrl(i) {
             b.x(acc[i]);
             if let Some(bi) = borrow_in {
-                b.ccx(acc[i], bi, target);
-                b.ccx(kc, acc[i], target);
-                b.ccx(kc, bi, target);
+                if maj2 {
+                    // 2-CCX ancilla-free majority (target ^= maj(!acc,bi,kc)).
+                    b.ccx(acc[i], bi, target);
+                    b.cx(acc[i], bi);
+                    b.ccx(kc, bi, target);
+                    b.cx(acc[i], bi);
+                } else {
+                    b.ccx(acc[i], bi, target);
+                    b.ccx(kc, acc[i], target);
+                    b.ccx(kc, bi, target);
+                }
             } else {
                 b.ccx(acc[i], kc, target);
             }

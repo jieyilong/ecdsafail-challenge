@@ -135,6 +135,18 @@ pub(crate) fn dialog_gcd_apply_final_lowq_enabled() -> bool {
     std::env::var("DIALOG_GCD_APPLY_FINAL_LOWQ").ok().as_deref() == Some("1")
 }
 
+/// Default-OFF lever: in the apply-phase fused double_y / halve_y, uncompute the
+/// `h` control ancilla (`h = a & b` for two ancilla a,b that are unchanged
+/// between the set and the clear) with a Gidney measurement (Hmr + a classically
+/// -conditioned CZ) instead of a second CCX. 0 Toffoli for the uncompute.
+/// Apply-phase only (the documented round84 phase hazard does not apply here).
+/// Phase-exact precisely because `h` deterministically equals `a & b` at the
+/// Hmr, so the Hmr's `h·rng` phase is cancelled by `cz_if(a, b, ·)`'s
+/// `(a&b)·rng`. Value-identical: the Hmr forces `h -> 0` just like the CCX did.
+pub(crate) fn dialog_gcd_fused_hclear_measured_enabled() -> bool {
+    std::env::var("DIALOG_GCD_FUSED_HCLEAR_MEASURED").ok().as_deref() == Some("1")
+}
+
 pub(crate) fn dialog_gcd_apply_final_windowed_fast_blocks() -> Option<usize> {
     std::env::var("DIALOG_GCD_APPLY_FINAL_WINDOWED_FAST_BLOCKS")
         .ok()
@@ -415,15 +427,6 @@ pub(crate) fn dialog_gcd_odd_u_lowbit_fastpath_enabled() -> bool {
 pub(crate) fn dialog_gcd_k2_pair_compress_enabled() -> bool {
     dialog_gcd_k2_enabled()
         && std::env::var("DIALOG_GCD_K2_PAIR_COMPRESS")
-            .ok()
-            .as_deref()
-            == Some("1")
-}
-
-pub(crate) fn dialog_gcd_k2_state_updating_reverse_pop_enabled() -> bool {
-    dialog_gcd_k2_pair_compress_enabled()
-        && dialog_gcd_active_iterations() % 2 == 0
-        && std::env::var("DIALOG_GCD_K2_STATE_UPDATING_REVERSE_POP")
             .ok()
             .as_deref()
             == Some("1")

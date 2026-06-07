@@ -340,7 +340,7 @@ fn full_gcd_step(u: &mut U256, v: &mut U256, cfg: &DialogGcdFilterConfig) {
 }
 
 /// Steps until `v == 0` under the full-width transcript, capped at `limit`.
-fn full_gcd_steps_until_zero(mut u: U256, mut v: U256, cfg: &DialogGcdFilterConfig, limit: usize) -> usize {
+pub(crate) fn full_gcd_steps_until_zero(mut u: U256, mut v: U256, cfg: &DialogGcdFilterConfig, limit: usize) -> usize {
     let mut steps = 0usize;
     while !v.is_zero() && steps < limit {
         full_gcd_step(&mut u, &mut v, cfg);
