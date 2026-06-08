@@ -1248,7 +1248,7 @@ fn configure_ecdsafail_submission_route() {
     // trims average executed Toffoli to 1,456,963 at peak 1302 qubits.
     set_default_env("DIALOG_GCD_BODY_CARRY_BAND_TRIMS", "0,3,3,3,3,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3,3");
     set_default_env("DIALOG_GCD_TOBITVECTOR_CSWAP_BODY_TRIM", "0");
-    set_default_env("DIALOG_GCD_BINDER_NOTCH_STEPS", "9");
+    set_default_env("DIALOG_GCD_BINDER_NOTCH_STEPS", "8,9");
     set_default_env("DIALOG_GCD_BINDER_NOTCH_EXTRA", "2");
     set_default_env(
         "DIALOG_GCD_SPECIAL_OVERFLOW_CLEAN_STEP_BITS",
@@ -1368,8 +1368,9 @@ fn configure_ecdsafail_submission_route() {
     // 1309q x 1,497,795 T = 1,960,613,655.
     // K2-pair codec 6->3 CCX core encoder (peak-neutral -3,096 T). Re-hunted clean
     // Fiat-Shamir island:
-    // nonce 60009363210 validates 0/0/0 over all 9024 shots at 1302q x 1,453,867 T = 1,892,934,834.
-    set_default_env("DIALOG_TAIL_NONCE", "38978004");
+    // Binder-notch fallback 8,9: nonce 169924627 validates 0/0/0 over all
+    // 9024 shots at 1300q x 1,454,884 T = 1,891,349,200.
+    set_default_env("DIALOG_TAIL_NONCE", "169924627");
     set_default_env("DIALOG_GCD_FOLD_MAJ2", "1");
     set_default_env("DIALOG_GCD_APPLY_FINAL_WINDOWED_FAST_BLOCKS", "0");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
