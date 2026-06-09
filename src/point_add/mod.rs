@@ -1300,6 +1300,7 @@ fn configure_ecdsafail_submission_route() {
     // compressed-block: current-step s2 composite-scratch fold (1308->1307).
     set_default_env("R84_LOWQ", "1");
     set_default_env("R84_LOWQ_CIN_BORROW", "1");
+    set_default_env("R84_QPROD_NAF", "1");  // quotient*c product uses 977 = 2^10 - 2^5 - 2^4 + 1; clean tail nonce above
     // Fold the square's high half into its low half in place, accumulate the
     // resulting 33-bit quotient, apply quotient*(2^256-p) once, subtract once,
     // then reversibly unfold before Bennett-uncomputing the square. The final
@@ -1404,7 +1405,7 @@ fn configure_ecdsafail_submission_route() {
     // Fiat-Shamir island:
     // Binder-notch fallback 8,9: nonce 169924627 validates 0/0/0 over all
     // 9024 shots at 1300q x 1,454,884 T = 1,891,349,200.
-    set_default_env("DIALOG_TAIL_NONCE", "32800438302");
+    set_default_env("DIALOG_TAIL_NONCE", "4591773");
     set_default_env("ROUND84_FOLD_FAST_ADD", "1");  // round84 Solinas-fold small adders coherent->measured-fast (-1,434 exec-T, peak-neutral 1285)
     set_default_env("ROUND84_BIGFOLD_SPLIT", "34");  // round84 BIG-fold adders -> asymmetric 2-block windowed measured (s=34 peak-neutral 1285, -2,124 exec-T)
     set_default_env("DIALOG_GCD_CTRL_LOWQ_MEASURED", "1");  // body stream-suffix ctrl-ride uncompute coherent->measured (-528 exec-T, peak-neutral 1285); island re-hunted to nonce above

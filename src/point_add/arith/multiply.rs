@@ -866,6 +866,10 @@ fn round84_inplace_vent_carry_enabled() -> bool {
         == Some("1")
 }
 
+fn round84_qprod_naf_enabled() -> bool {
+    std::env::var("R84_QPROD_NAF").ok().as_deref() == Some("1")
+}
+
 struct Round84FoldStep {
     shift: usize,
     add: bool,
@@ -924,26 +928,59 @@ fn round84_compute_quotient_c_product(b: &mut B, quotient: &[QubitId]) -> Vec<Qu
     for i in 0..q.len() {
         b.cx(q[i], product[i]);
     }
-    for shift in [4usize, 6, 7, 8, 9, 32] {
-        let target = &product[shift..];
-        let pad = b.alloc_qubits(target.len() - q.len());
-        let mut source = q.to_vec();
-        source.extend_from_slice(&pad);
-        round84_add_small(b, &source, target);
-        b.free_vec(&pad);
+    if round84_qprod_naf_enabled() {
+        for (shift, add) in [(10usize, true), (32, true), (5, false), (4, false)] {
+            let target = &product[shift..];
+            let pad = b.alloc_qubits(target.len() - q.len());
+            let mut source = q.to_vec();
+            source.extend_from_slice(&pad);
+            if add {
+                round84_add_small(b, &source, target);
+            } else {
+                round84_sub_small(b, &source, target);
+            }
+            b.free_vec(&pad);
+        }
+    } else {
+        for shift in [4usize, 6, 7, 8, 9, 32] {
+            let target = &product[shift..];
+            let pad = b.alloc_qubits(target.len() - q.len());
+            let mut source = q.to_vec();
+            source.extend_from_slice(&pad);
+            round84_add_small(b, &source, target);
+            b.free_vec(&pad);
+        }
     }
     product
 }
 
 fn round84_uncompute_quotient_c_product(b: &mut B, quotient: &[QubitId], product: &[QubitId]) {
     let q = &quotient[..33];
-    for shift in [4usize, 6, 7, 8, 9, 32].into_iter().rev() {
-        let target = &product[shift..];
-        let pad = b.alloc_qubits(target.len() - q.len());
-        let mut source = q.to_vec();
-        source.extend_from_slice(&pad);
-        round84_sub_small(b, &source, target);
-        b.free_vec(&pad);
+    if round84_qprod_naf_enabled() {
+        for (shift, add) in [(10usize, true), (32, true), (5, false), (4, false)]
+            .into_iter()
+            .rev()
+        {
+            let target = &product[shift..];
+            let pad = b.alloc_qubits(target.len() - q.len());
+            let mut source = q.to_vec();
+            source.extend_from_slice(&pad);
+            if add {
+                round84_sub_small(b, &source, target);
+            } else {
+                round84_add_small(b, &source, target);
+            }
+            b.free_vec(&pad);
+        }
+    } else {
+        for shift in [4usize, 6, 7, 8, 9, 32].into_iter().rev() {
+            let target = &product[shift..];
+            let pad = b.alloc_qubits(target.len() - q.len());
+            let mut source = q.to_vec();
+            source.extend_from_slice(&pad);
+            round84_sub_small(b, &source, target);
+            b.free_vec(&pad);
+        }
     }
     for i in 0..q.len() {
         b.cx(q[i], product[i]);
