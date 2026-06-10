@@ -105,6 +105,53 @@ pub(crate) fn cmp_lt_into_fast_with_cin(
     b.free_vec(&carries);
 }
 
+/// Like `cmp_lt_into_fast_with_cin` but the n-wide measured-uncompute carry lane
+/// is supplied by the caller as borrowed clean (|0>) qubits (restored clean on
+/// exit) instead of being allocated — so the comparator adds no peak qubits.
+pub(crate) fn cmp_lt_into_fast_with_cin_borrowed_carries(
+    b: &mut B,
+    u: &[QubitId],
+    v: &[QubitId],
+    c_in: QubitId,
+    flag: QubitId,
+    carries: &[QubitId],
+) {
+    let n = u.len();
+    assert_eq!(n, v.len());
+    assert!(carries.len() >= n);
+    for i in 0..n {
+        b.x(u[i]);
+    }
+    b.cx(u[0], v[0]);
+    b.cx(u[0], c_in);
+    b.ccx(c_in, v[0], carries[0]);
+    b.cx(carries[0], u[0]);
+    for i in 1..n {
+        b.cx(u[i], v[i]);
+        b.cx(u[i], u[i - 1]);
+        b.ccx(u[i - 1], v[i], carries[i]);
+        b.cx(carries[i], u[i]);
+    }
+    b.cx(u[n - 1], flag);
+    for i in (1..n).rev() {
+        b.cx(carries[i], u[i]);
+        let m = b.alloc_bit();
+        b.hmr(carries[i], m);
+        b.cz_if(u[i - 1], v[i], m);
+        b.cx(u[i], u[i - 1]);
+        b.cx(u[i], v[i]);
+    }
+    b.cx(carries[0], u[0]);
+    let m0 = b.alloc_bit();
+    b.hmr(carries[0], m0);
+    b.cz_if(c_in, v[0], m0);
+    b.cx(u[0], c_in);
+    b.cx(u[0], v[0]);
+    for i in 0..n {
+        b.x(u[i]);
+    }
+}
+
 pub(crate) fn ccx_cmp_lt_into_fast(b: &mut B, u: &[QubitId], v: &[QubitId], ctrl: QubitId, target: QubitId) {
     if kal_vent_modadd_enabled() {
         let flag = b.alloc_qubit();
@@ -514,6 +561,38 @@ pub(crate) fn ccx_cmp_lt_into_fast_prefix_targets_split(
     }
 }
 
+
+/// Slow (carry-array-free) `flag ^= (u < v + c_in)` comparator. Like
+/// `cmp_lt_into` but threads a borrowed carry-IN qubit (left clean on exit)
+/// through the bottom MAJ. Peak cost: 0 extra qubits beyond the supplied c_in
+/// (the MAJ sweep works in place on `u`). Toffoli ~2n (no measured uncompute),
+/// traded against the n-wide carry array the fast variant allocates.
+pub(crate) fn cmp_lt_into_with_cin_slow(
+    b: &mut B,
+    u: &[QubitId],
+    v: &[QubitId],
+    c_in: QubitId,
+    flag: QubitId,
+) {
+    let n = u.len();
+    assert_eq!(n, v.len());
+    assert!(n > 0);
+    for i in 0..n {
+        b.x(u[i]);
+    }
+    maj(b, c_in, v[0], u[0]);
+    for i in 1..n {
+        maj(b, u[i - 1], v[i], u[i]);
+    }
+    b.cx(u[n - 1], flag);
+    for i in (1..n).rev() {
+        inv_maj(b, u[i - 1], v[i], u[i]);
+    }
+    inv_maj(b, c_in, v[0], u[0]);
+    for i in 0..n {
+        b.x(u[i]);
+    }
+}
 
 pub(crate) fn cmp_lt_into(b: &mut B, u: &[QubitId], v: &[QubitId], flag: QubitId) {
     let n = u.len();

@@ -187,13 +187,6 @@ pub(crate) fn dialog_gcd_apply_final_windowed_fast_blocks() -> Option<usize> {
         .filter(|&blocks| blocks >= 2)
 }
 
-pub(crate) fn dialog_gcd_apply_final_topclean_bits() -> usize {
-    std::env::var("DIALOG_GCD_APPLY_FINAL_TOPCLEAN")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0)
-}
-
 pub(crate) fn dialog_gcd_apply_boundary_split() -> Option<usize> {
     std::env::var("DIALOG_GCD_APPLY_BOUNDARY_SPLIT")
         .ok()
@@ -242,6 +235,22 @@ pub(crate) fn dialog_gcd_raw_tobitvector_materialized_sub_enabled() -> bool {
         .ok()
         .as_deref()
         == Some("1")
+}
+
+/// Default-ON lever: in the CONTROLLED GCD body's `else` branch (the non-
+/// materialized fallback that today uses full-CCX controlled Cuccaro
+/// `cucc_{sub,add}_ctrl_lowq` at ~8-10 CCX/bit), use the Gidney measurement-
+/// vented controlled adder `cuccaro_{add,sub}_ctrl_vented` (~2 CCX/bit: a
+/// forward carry chain vented onto a BORROWED |0> pool plus a controlled-sum
+/// pass, with the carry uncomputed by measurement at 0 Toffoli). Requires the
+/// caller-supplied `borrowed_carries` to have >= active_width-1 clean lanes;
+/// if absent the branch falls back to `cucc_*_ctrl_lowq`. Borrowed (never
+/// fresh-allocated) so the peak does not grow.
+pub(crate) fn dialog_gcd_ctrl_body_vented_enabled() -> bool {
+    std::env::var("DIALOG_GCD_CTRL_BODY_VENTED")
+        .ok()
+        .as_deref()
+        != Some("0")
 }
 
 pub(crate) fn dialog_gcd_raw_tobitvector_variable_width_enabled() -> bool {

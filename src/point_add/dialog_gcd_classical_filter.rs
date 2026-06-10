@@ -40,8 +40,6 @@ pub struct DialogGcdFilterConfig {
     pub odd_u_lowbit_fastpath: bool,
     pub k2: bool,
     pub variable_width: bool,
-    pub width_step_bumps: Vec<(usize, usize)>,
-    pub body_step_givebacks: Vec<(usize, usize)>,
     /// Cached env flags (hoisted out of the per-step hot loop).
     pub k2_force0: bool,
     pub strict_compare: bool,
@@ -97,14 +95,6 @@ impl DialogGcdFilterConfig {
         let k2 = std::env::var("DIALOG_GCD_K2").ok().as_deref() == Some("1");
         let variable_width =
             std::env::var("DIALOG_GCD_RAW_TOBITVECTOR_VARIABLE_WIDTH").ok().as_deref() != Some("0");
-        let width_step_bumps = std::env::var("DIALOG_GCD_WIDTH_STEP_BUMPS")
-            .ok()
-            .map(|s| parse_step_map(&s))
-            .unwrap_or_default();
-        let body_step_givebacks = std::env::var("DIALOG_GCD_BODY_STEP_GIVEBACKS")
-            .ok()
-            .map(|s| parse_step_map(&s))
-            .unwrap_or_default();
         let k2_force0 = std::env::var("DIALOG_GCD_K2_FORCE0").ok().as_deref() == Some("1");
         let strict_compare =
             std::env::var("DIALOG_GCD_FILTER_STRICT_COMPARE").ok().as_deref() == Some("1");
@@ -125,8 +115,6 @@ impl DialogGcdFilterConfig {
             odd_u_lowbit_fastpath,
             k2,
             variable_width,
-            width_step_bumps,
-            body_step_givebacks,
             k2_force0,
             strict_compare,
             body_carry_trunc_w,
@@ -139,9 +127,7 @@ impl DialogGcdFilterConfig {
         }
         let ideal = N as f64 - (step as f64) * self.width_slope + self.width_margin;
         let rounded = ((ideal.max(1.0) / 2.0).ceil() as usize) * 2;
-        rounded
-            .saturating_add(step_map_value(&self.width_step_bumps, step))
-            .clamp(1, N)
+        rounded.clamp(1, N)
     }
 
     pub fn compare_bits_for_step(&self, step: usize, active_width: usize) -> usize {
@@ -169,7 +155,6 @@ impl DialogGcdFilterConfig {
             })
             .unwrap_or(0);
         w = w.saturating_add(body_carry_extra_notch(step));
-        w = w.saturating_sub(step_map_value(&self.body_step_givebacks, step));
         active_width.saturating_sub(w).max(2)
     }
 
@@ -179,7 +164,6 @@ impl DialogGcdFilterConfig {
             .body_carry_band_trim(step)
             .unwrap_or(self.body_carry_trunc_w);
         w = w.saturating_add(body_carry_extra_notch(step));
-        w = w.saturating_sub(step_map_value(&self.body_step_givebacks, step));
         active_width.saturating_sub(w).max(2)
     }
 
@@ -263,24 +247,6 @@ fn parse_trim_list(s: &str) -> Option<Vec<usize>> {
     } else {
         Some(trims)
     }
-}
-
-fn parse_step_map(s: &str) -> Vec<(usize, usize)> {
-    s.split(',')
-        .filter_map(|entry| {
-            let (step, value) = entry.trim().split_once(':')?;
-            Some((
-                step.trim().parse::<usize>().ok()?,
-                value.trim().parse::<usize>().ok()?,
-            ))
-        })
-        .collect()
-}
-
-fn step_map_value(map: &[(usize, usize)], step: usize) -> usize {
-    map.iter()
-        .filter_map(|&(s, value)| (s == step).then_some(value))
-        .sum()
 }
 
 #[inline]
@@ -566,14 +532,9 @@ pub fn check_gcd_factor(factor: U256, cfg: &DialogGcdFilterConfig) -> Result<(),
         return Err(HardReason::NonConvergence { steps_needed: 0 });
     }
 
-    let accept_u1_terminal =
-        std::env::var("DIALOG_GCD_FILTER_ACCEPT_U1_TERMINAL").ok().as_deref() == Some("1");
-    if !accept_u1_terminal {
-        let steps_needed =
-            full_gcd_steps_until_zero(SECP256K1_P, factor, cfg, cfg.active_iterations + 1);
-        if steps_needed > cfg.active_iterations {
-            return Err(HardReason::NonConvergence { steps_needed });
-        }
+    let steps_needed = full_gcd_steps_until_zero(SECP256K1_P, factor, cfg, cfg.active_iterations + 1);
+    if steps_needed > cfg.active_iterations {
+        return Err(HardReason::NonConvergence { steps_needed });
     }
 
     let mut u = SECP256K1_P;
@@ -582,11 +543,6 @@ pub fn check_gcd_factor(factor: U256, cfg: &DialogGcdFilterConfig) -> Result<(),
         if let Some(reason) = truncated_gcd_step(&mut u, &mut v, step, cfg) {
             return Err(reason);
         }
-    }
-    if accept_u1_terminal && u != U256::from(1u64) {
-        let steps_needed =
-            full_gcd_steps_until_zero(SECP256K1_P, factor, cfg, cfg.active_iterations + 1);
-        return Err(HardReason::NonConvergence { steps_needed });
     }
     Ok(())
 }

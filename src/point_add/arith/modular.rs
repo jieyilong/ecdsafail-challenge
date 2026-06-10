@@ -330,7 +330,17 @@ pub(crate) fn mod_neg_inplace_fast(b: &mut B, v: &[QubitId], p: U256) {
 pub(crate) fn mod_add_qb(b: &mut B, acc: &[QubitId], bits: &[BitId], p: U256) {
     // acc := (acc + bits) mod p. `bits` is a classical bit register.
     let a = load_bits(b, bits);
-    mod_add_qq_fast(b, acc, &a, p);
+    if std::env::var("MOD_ADD_QB_VENT").ok().as_deref() != Some("0") {
+        // Low-scratch add: `mod_add_qq_vent` is value-exact with
+        // `mod_add_qq_fast` but vents the Solinas corrections onto `a` as dirty
+        // scratch (+2 clean) rather than holding 256 Cuccaro carries live. The
+        // materialized `a` (256 q) stays; dropping the carry register knocks the
+        // dialog_gcd_raw_pa_x_restore binder off the peak. Default ON for the
+        // MATSUB=0 controlled route; MOD_ADD_QB_VENT=0 restores the fast adder.
+        mod_add_qq_vent(b, acc, &a, p);
+    } else {
+        mod_add_qq_fast(b, acc, &a, p);
+    }
     unload_bits(b, &a, bits);
 }
 
@@ -339,7 +349,19 @@ pub(crate) fn mod_add_double_qb(b: &mut B, acc: &[QubitId], bits: &[BitId], p: U
     // point and walk it through the cheap secp256k1 double/halve pair.
     let a = load_bits(b, bits);
     mod_double_inplace_fast(b, &a, p);
-    mod_add_qq_fast(b, acc, &a, p);
+    if std::env::var("MOD_ADD_DOUBLE_QB_VENT").ok().as_deref() != Some("0") {
+        // Low-scratch add: `mod_add_qq_vent` is value-exact with
+        // `mod_add_qq_fast` (acc := (acc+a) mod p) but vents the two Solinas
+        // corrections onto `a` as dirty scratch (+2 clean) instead of the 256
+        // Cuccaro carries `mod_add_qq_fast` holds live. The materialized `a`
+        // (256 q) stays, but dropping the 256-carry transient knocks the
+        // round84_..._add_double_ox binder off the peak. Default ON for the
+        // MATSUB=0 controlled route; set MOD_ADD_DOUBLE_QB_VENT=0 to restore
+        // the fast adder.
+        mod_add_qq_vent(b, acc, &a, p);
+    } else {
+        mod_add_qq_fast(b, acc, &a, p);
+    }
     mod_halve_inplace_fast(b, &a, p);
     unload_bits(b, &a, bits);
 }
@@ -347,7 +369,17 @@ pub(crate) fn mod_add_double_qb(b: &mut B, acc: &[QubitId], bits: &[BitId], p: U
 pub(crate) fn mod_sub_qb(b: &mut B, acc: &[QubitId], bits: &[BitId], p: U256) {
     // acc -= bits mod p. Uses fast mod_sub_qq via neg+add+neg.
     let a = load_bits(b, bits);
-    mod_sub_qq_fast(b, acc, &a, p);
+    if std::env::var("MOD_SUB_QB_VENT").ok().as_deref() != Some("0") {
+        // Low-scratch sub: `mod_sub_qq_vent` is value-exact with
+        // `mod_sub_qq_fast` but vents the Solinas corrections onto `a` as dirty
+        // scratch (+2 clean) rather than holding 256 Cuccaro carries live —
+        // same trade as `mod_add_qb`/MOD_ADD_QB_VENT. Drops the 1283-wide
+        // c_ox_minus_rx / y_output / reroll transients off the near-peak tier.
+        // MOD_SUB_QB_VENT=0 restores the fast subtractor.
+        mod_sub_qq_vent(b, acc, &a, p);
+    } else {
+        mod_sub_qq_fast(b, acc, &a, p);
+    }
     unload_bits(b, &a, bits);
 }
 

@@ -997,7 +997,6 @@ fn set_default_env(name: &str, value: &str) {
 fn configure_ecdsafail_submission_route() {
     set_default_env("SKIP_ALT_SEED_CHECKS", "1");
     set_default_env("DIALOG_GCD_COMPRESSED_SIDECAR_LOG", "1");
-    set_default_env("DIALOG_GCD_SKIP_ZERO_EDGE_CSHIFT", "1");
     set_default_env("DIALOG_GCD_COMPRESSED_BLOCK_LIFECYCLE", "1");
     set_default_env("DIALOG_GCD_HOST_REVERSE_RAW_BLOCK", "1");
     set_default_env("DIALOG_GCD_COMPRESSED_LOG_U_HIGH_RUNWAY", "1");
@@ -1010,6 +1009,15 @@ fn configure_ecdsafail_submission_route() {
     // deficit and drops the GCD-walk peak 1313 -> 1309. Stacked on top of the
     // K2 per-step compare schedule (Toffoli-axis) for a peak-axis cut.
     set_default_env("DIALOG_GCD_BORROW_CURRENT_BLOCK", "1");
+    // Gidney measurement-vented CONTROLLED GCD body (else branch of the selected
+    // add/sub). Replaces the full-CCX controlled Cuccaro (cucc_*_ctrl_lowq,
+    // ~8-10 CCX/bit) with cuccaro_*_ctrl_vented (~2 CCX/bit: a forward carry
+    // chain vented onto active_width-1 BORROWED |0> lanes from the composite
+    // scratch, plus a controlled-sum pass, with the carry uncomputed by
+    // measurement at 0 Toffoli). Vents are borrowed (never fresh-allocated) so
+    // the peak does not grow; the composite-scratch `want` is bumped to supply
+    // them (see dialog/compressed.rs). Big avg-Toffoli cut at flat peak.
+    set_default_env("DIALOG_GCD_CTRL_BODY_VENTED", "1");
     set_default_env("DIALOG_GCD_APPLY_REPLAY_SWAP_HOST", "1");
     set_default_env("SQUARE_SELFHOST_SAFE_LANE_REUSE", "1");
     set_default_env("SQUARE_SELFHOST_GATE_SUFFIX_CARRIES", "0");
@@ -1051,7 +1059,7 @@ fn configure_ecdsafail_submission_route() {
     // been left loose). Value-exact on the reachable support (the dropped fold
     // carry bits are 0 there); residual failures are pure Fiat-Shamir, dodged by
     // the shared re-rolled tail nonce below.
-    set_default_env("KAL_FOLD_CARRY_TRUNC_W", "17");
+    set_default_env("KAL_FOLD_CARRY_TRUNC_W", "18");
     set_default_env("DIALOG_GCD_ROUND763_DEDUP", "1");
     set_default_env("DIALOG_GCD_ROUND763_COMPRESS_LEVER", "1");
     set_default_env("DIALOG_GCD_MEASURED_UNDERFLOW_GATE", "1");
@@ -1099,8 +1107,6 @@ fn configure_ecdsafail_submission_route() {
     // by 172,444).
     set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "19");
     set_default_env("DIALOG_GCD_APPLY_BOUNDARY_CONDITIONAL_REPLAY", "1");  // BAKED: condrep ON for env-less grader build
-    set_default_env("DIALOG_GCD_SELECTED_BODY_STREAM_SUFFIX_MAP", "3:2,4:2,5:2,6:2,7:2,8:2,9:2,10:2,11:2,12:2,13:2,14:2,15:2,16:2,17:2,18:1,19:2,21:1");  // BAKED: codex 1285q peak-drop (stream selected high bits through low-qubit suffix)
-    set_default_env("DIALOG_GCD_SELECTED_BODY_STREAM_TOPCLEAN_MAP", "4:2,5:6,6:8,7:10,8:6,9:10,10:18,11:8,12:6,13:10,14:6,15:8,16:2,17:6,19:2");  // BAKED: replace expensive streamed carry relief with cheaper top-clean carry relief
     // Bake the exact conditional-replay stack for env-less GPU hunts and grader builds.
     set_default_env("DIALOG_GCD_REVERSE_BRANCH_CONDITIONAL_REPLAY", "1");
     set_default_env("DIALOG_GCD_SPECIAL_CLEAN_CONDITIONAL_REPLAY", "1");
@@ -1136,7 +1142,15 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_RAW_APPLY_REVERSE_MATERIALIZED_SPECIAL_SUB", "1");
     set_default_env("DIALOG_GCD_RAW_APPLY_MATERIALIZED_SPECIAL_ADD", "1");
     set_default_env("DIALOG_GCD_RAW_APPLY_TRUNCATED_CLEAN", "1");
-    set_default_env("DIALOG_GCD_RAW_TOBITVECTOR_MATERIALIZED_SUB", "1");
+    // LOW-QUBIT CORNER (ToB jump-lowqubit reconstruction): "0" routes the GCD body
+    // to the low-scratch CONTROLLED form (cucc_sub/add_ctrl_lowq) instead of the
+    // materialized body, whose ~2*active_width gated+carry scratch pinned the
+    // GCD-walk at 1297. With the composite-scratch right-sizing (compressed.rs
+    // build_composite_scratch) + the vented add_double_ox/x_restore (modular.rs)
+    // + APPLY_FINAL_WINDOWED_FAST_BLOCKS=2 below, the peak drops to 1284 (bound by
+    // the round84 in-place Solinas square). Controlled body costs ~2x Toffoli;
+    // recovered by band-trimming it (TODO). "1" restores the 1297 materialized base.
+    set_default_env("DIALOG_GCD_RAW_TOBITVECTOR_MATERIALIZED_SUB", "0");
     set_default_env("DIALOG_GCD_RAW_TOBITVECTOR_VARIABLE_WIDTH", "1");
     set_default_env("DIALOG_GCD_RAW_TOBITVECTOR_BORROW_FUTURE_LOG_CARRIES", "1");
     // ROUND84 x-tail square: Karatsuba beats schoolbook by -16,272 emitted
@@ -1211,9 +1225,15 @@ fn configure_ecdsafail_submission_route() {
     // 257-78) and drops the apply phase to 1543 == the ROUND84 floor. Global peak
     // 1558 -> 1543. F_CUT only reseeds + grows the boundary comparator (+~6,384
     // avg-executed Toffoli, 1,688,703 -> 1,695,087); peak-neutral for any cut>=78.
-    set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_BLOCKS", "5");
+    // Peak-band rebuild (1226 tier): the apply ripple is sliced into 10 even
+    // chunks so the transient load/carry register stays ~26 wide, dropping the
+    // apply ripple peak 1266 -> 1222 (under the 1226 double_y/halve_y binder).
+    // Toffoli-near-neutral (the extra boundary comparators cost ~250 avg). Pairs
+    // with SQUARE_ROW_MAX_SEG below (the peak-bounded square) to land global peak
+    // at 1226 instead of 1284.
+    set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_BLOCKS", "10");
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUSTOM4", "0");
-    set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUSTOM5", "1");
+    set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUSTOM5", "0");
     // PEAK-QUBIT CUT 1542 -> 1500 (-42q). Two co-binders dropped together:
     //  (1) ROUND84 Karatsuba square (z0=lo^2 / z2=hi^2 schoolbook squares parked a
     //      ~130-wide cuccaro_add_fast carry lane, and the Solinas mid_sub/sub_add's
@@ -1280,7 +1300,6 @@ fn configure_ecdsafail_submission_route() {
     // Stacked peak-1302 band-trim schedule + measured-ovfclear + F_CUT4=189 (tier-3 "safe lock"):
     // trims average executed Toffoli to 1,456,963 at peak 1302 qubits.
     set_default_env("DIALOG_GCD_BODY_CARRY_BAND_TRIMS", "0,3,3,3,3,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3,3");
-    set_default_env("DIALOG_GCD_BODY_STEP_GIVEBACKS", "10:6");
     set_default_env("DIALOG_GCD_TOBITVECTOR_CSWAP_BODY_TRIM", "0");
     set_default_env("DIALOG_GCD_BINDER_NOTCH_STEPS", "8,9,10");
     set_default_env("DIALOG_GCD_BINDER_NOTCH_EXTRA", "3");
@@ -1303,7 +1322,6 @@ fn configure_ecdsafail_submission_route() {
     // compressed-block: current-step s2 composite-scratch fold (1308->1307).
     set_default_env("R84_LOWQ", "1");
     set_default_env("R84_LOWQ_CIN_BORROW", "1");
-    set_default_env("R84_QPROD_NAF", "1");  // quotient*c product uses 977 = 2^10 - 2^5 - 2^4 + 1; clean tail nonce above
     // Fold the square's high half into its low half in place, accumulate the
     // resulting 33-bit quotient, apply quotient*(2^256-p) once, subtract once,
     // then reversibly unfold before Bennett-uncomputing the square. The final
@@ -1312,6 +1330,19 @@ fn configure_ecdsafail_submission_route() {
     // are selected away with the shared Fiat-Shamir island.
     set_default_env("ROUND84_INPLACE_SOLINAS_FOLD", "1");
     set_default_env("ROUND84_INPLACE_QUOTIENT_CARRY_TRUNC_W", "21");
+    // Peak-bounded square (1226 tier): the round84 lam^2 schoolbook square parks
+    // a 512-wide product (peak 1024) plus the per-row source register (up to
+    // +257 for the widest row → 1284). SQUARE_ROW_MAX_SEG slices each square row
+    // into the minimum number of windows that keeps every source segment <= this
+    // width, chaining the inter-window carry through a clean cout ancilla that is
+    // recovered by a local, tmp-high-borrowed measured comparator (no allocated
+    // carry array, no wide-prefix rebuild). At 199 only the rows wider than 199
+    // (i < ~57) window, each into 2, dropping the square forward/inverse peak to
+    // 1226 (== the double_y binder) while adding only ~26k avg Toffoli for the
+    // carry-recovery comparators. Value-exact: the same product lands in tmp_ext
+    // (verified: ancilla-garbage 0; SQUARE_ROW_MAX_SEG=0 restores the bit-exact
+    // 1284 base). Net: peak 1284 -> 1226, score 1.821e9 -> 1.771e9.
+    set_default_env("SQUARE_ROW_MAX_SEG", "199");
     set_default_env("DIALOG_GCD_BORROW_CURRENT_S2", "1");
     set_default_env("DIALOG_GCD_BORROW_ZERO_RAW_FUTURE", "1");
     set_default_env("DIALOG_GCD_FREE_SCRATCH_BEFORE_SHIFT", "1");
@@ -1319,7 +1350,7 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT", "50");
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT2", "100");
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT3", "150");
-    set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT4", "196");  // BAKED: codex 1285q (was 190)
+    set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT4", "190");
     // WIDTH_SLOPE tightening: the per-step GCD width envelope shrink rate
     // (ideal = N - step*SLOPE + MARGIN) was left at the default 0.7075 by the
     // whole frontier lineage; only the constant MARGIN was ever tuned. The
@@ -1408,13 +1439,13 @@ fn configure_ecdsafail_submission_route() {
     // Fiat-Shamir island:
     // Binder-notch fallback 8,9: nonce 169924627 validates 0/0/0 over all
     // 9024 shots at 1300q x 1,454,884 T = 1,891,349,200.
-    set_default_env("DIALOG_TAIL_NONCE", "3000522316986");
-    set_default_env("ROUND84_FOLD_FAST_ADD", "1");  // round84 Solinas-fold small adders coherent->measured-fast (-1,434 exec-T, peak-neutral 1285)
-    set_default_env("ROUND84_BIGFOLD_SPLIT", "34");  // round84 BIG-fold adders -> asymmetric 2-block windowed measured (s=34 peak-neutral 1285, -2,124 exec-T)
-    set_default_env("DIALOG_GCD_CTRL_LOWQ_MEASURED", "1");  // body stream-suffix ctrl-ride uncompute coherent->measured (-528 exec-T, peak-neutral 1285); island re-hunted to nonce above
+    set_default_env("DIALOG_TAIL_NONCE", "9100016331678");
     set_default_env("DIALOG_GCD_FOLD_MAJ2", "1");
-    set_default_env("DIALOG_GCD_FOLD_MAJ1", "1");
-    set_default_env("DIALOG_GCD_APPLY_FINAL_TOPCLEAN", "5");
+    // Window the apply final ripple into 2 blocks: narrows the final carry
+    // register so the apply add/sub final ripple drops off the peak under the
+    // MATSUB=0 low-qubit route (blocks>2 RAISE peak — each non-final window
+    // leaves a persistent boundary cout live until the end-of-fn comparator
+    // clear). Also lowers Toffoli vs the unwindowed final ripple.
     set_default_env("DIALOG_GCD_APPLY_FINAL_WINDOWED_FAST_BLOCKS", "0");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a

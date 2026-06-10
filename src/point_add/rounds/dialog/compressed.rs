@@ -341,61 +341,6 @@ pub(crate) fn dialog_gcd_borrow_current_s2_enabled() -> bool {
         == Some("1")
 }
 
-pub(crate) fn dialog_gcd_skip_zero_edge_cshift_enabled() -> bool {
-    std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_CSHIFT")
-        .ok()
-        .as_deref()
-        == Some("1")
-}
-
-pub(crate) fn dialog_gcd_skip_zero_edge_tobit_cshift_enabled() -> bool {
-    dialog_gcd_skip_zero_edge_cshift_enabled()
-        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_TOBIT_CSHIFT")
-            .ok()
-            .as_deref()
-            == Some("1")
-}
-
-pub(crate) fn dialog_gcd_skip_zero_edge_tobit_fwd_cshift_enabled() -> bool {
-    dialog_gcd_skip_zero_edge_tobit_cshift_enabled()
-        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_TOBIT_FWD_CSHIFT")
-            .ok()
-            .as_deref()
-            == Some("1")
-}
-
-pub(crate) fn dialog_gcd_skip_zero_edge_tobit_rev_cshift_enabled() -> bool {
-    dialog_gcd_skip_zero_edge_tobit_cshift_enabled()
-        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_TOBIT_REV_CSHIFT")
-            .ok()
-            .as_deref()
-            == Some("1")
-}
-
-pub(crate) fn dialog_gcd_skip_zero_edge_apply_cshift_enabled() -> bool {
-    dialog_gcd_skip_zero_edge_cshift_enabled()
-        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_APPLY_CSHIFT")
-            .ok()
-            .as_deref()
-            == Some("1")
-}
-
-pub(crate) fn dialog_gcd_skip_zero_edge_apply_double_cshift_enabled() -> bool {
-    dialog_gcd_skip_zero_edge_apply_cshift_enabled()
-        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_APPLY_DOUBLE_CSHIFT")
-            .ok()
-            .as_deref()
-            == Some("1")
-}
-
-pub(crate) fn dialog_gcd_skip_zero_edge_apply_halve_cshift_enabled() -> bool {
-    dialog_gcd_skip_zero_edge_apply_cshift_enabled()
-        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_APPLY_HALVE_CSHIFT")
-            .ok()
-            .as_deref()
-            == Some("1")
-}
-
 pub(crate) fn dialog_gcd_borrow_zero_raw_future_enabled() -> bool {
     // During a block-lifecycle tobitvector body, not every raw transcript cell is
     // live yet. Forward pass: slots greater than the current slot are still |0>
@@ -440,14 +385,31 @@ pub(crate) fn dialog_gcd_build_composite_scratch(
         && !dialog_gcd_selected_body_nocin_keep_pool()
         && body_start >= 1
         && body_len >= 1;
-    let stream_suffix = dialog_gcd_selected_body_stream_suffix_bits(step, body_len);
-    let want = if nocin && stream_suffix >= 2 {
-        let prefix_len = body_len - stream_suffix;
-        let clean_top = dialog_gcd_selected_body_stream_topclean_bits(step, prefix_len);
-        2 * prefix_len - clean_top + 1
-    } else if nocin && dialog_gcd_selected_body_stream_top_enabled(step, body_len) && body_len >= 2
-    {
-        2 * (body_len - 1)
+    let want = if !dialog_gcd_raw_tobitvector_materialized_sub_enabled() {
+        // Low-scratch CONTROLLED body (cucc_sub/add_ctrl_lowq): it allocates its
+        // own c_in+scratch internally and IGNORES borrowed_carries entirely. The
+        // only remaining consumer of this composite scratch is the branch-bits
+        // comparator host (dialog_gcd_ccx_cmp_gt_truncated_into_width_hosted),
+        // whose transient is c_in (1) + carries (compare_bits) = compare_bits+1
+        // clean lanes. Sizing the scratch to that comparator need only (instead
+        // of the materialized body's 2*active_width-1) collapses the `owned`
+        // deficit that pins the GCD-walk peak. Never exceed the legacy ask, and
+        // keep >= 1 so an empty borrow set still yields a valid (clean) slice.
+        //
+        // When the Gidney-vented controlled body is active, it ALSO consumes this
+        // composite scratch: it vents its forward carry chain onto active_width-1
+        // BORROWED |0> lanes (restored by the measured uncompute). So bump `want`
+        // to cover both consumers — still <= the materialized 2*active_width-1, so
+        // the peak stays at the baseline. This guarantees the vented body finds
+        // enough borrow that it does NOT fresh-alloc (which would spike the peak).
+        let compare_bits = dialog_gcd_compare_bits_for_step(step, active_width);
+        let comparator_need = compare_bits + 1;
+        let body_need = if dialog_gcd_ctrl_body_vented_enabled() {
+            active_width.saturating_sub(1)
+        } else {
+            0
+        };
+        comparator_need.max(body_need).min(2 * active_width - 1).max(1)
     } else if nocin {
         // Match the body's exact host demand; never exceed the legacy ask.
         (2 * body_len - 1).min(2 * active_width - 1)
@@ -926,11 +888,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_block_lifecyc
                     b.cx(v0, s2);
                     b.x(s2);
                 }
-                let pairs = v_shift.len().saturating_sub(1);
-                for i in 0..pairs {
-                    if dialog_gcd_skip_zero_edge_tobit_fwd_cshift_enabled() && i + 1 == pairs {
-                        continue;
-                    }
+                for i in 0..v_shift.len().saturating_sub(1) {
                     let (lo, hi) = (v_shift[i], v_shift[i + 1]);
                     cswap(b, s2, lo, hi);
                 }
@@ -1060,11 +1018,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse_block
                 // then uncompute s2 back to |0> (v_active[0] is restored after the
                 // un-shift to the value s2 was derived from).
                 let s2 = raw_block[2 * dialog_gcd_sidecar_group_size() + slot];
-                let pairs = v_shift.len().saturating_sub(1);
-                for i in (0..pairs).rev() {
-                    if dialog_gcd_skip_zero_edge_tobit_rev_cshift_enabled() && i + 1 == pairs {
-                        continue;
-                    }
+                for i in (0..v_shift.len().saturating_sub(1)).rev() {
                     let (lo, hi) = (v_shift[i], v_shift[i + 1]);
                     cswap(b, s2, lo, hi);
                 }
@@ -2228,9 +2182,6 @@ pub(crate) fn dialog_gcd_fused_double_y(b: &mut B, y: &[QubitId], p: U256, s2: Q
     let ovf2 = b.alloc_qubit();
     cswap(b, s2, y[n - 1], ovf2);
     for i in (0..n - 1).rev() {
-        if dialog_gcd_skip_zero_edge_apply_double_cshift_enabled() && i == 0 {
-            continue;
-        }
         cswap(b, s2, y[i], y[i + 1]);
     }
 
@@ -2240,9 +2191,10 @@ pub(crate) fn dialog_gcd_fused_double_y(b: &mut B, y: &[QubitId], p: U256, s2: Q
     let h = b.alloc_qubit();
     // d = ovf1 & s2
     b.ccx(ovf1, s2, d);
-    // e = (ovf1 & !s2) ^ ovf2 = ovf1 ^ d ^ ovf2, since d = ovf1 & s2.
-    b.cx(ovf1, e);
-    b.cx(d, e);
+    // e = (ovf1 & ¬s2) ^ ovf2   (the two terms are mutually exclusive)
+    b.x(s2);
+    b.ccx(ovf1, s2, e);
+    b.x(s2);
     b.cx(ovf2, e);
     // h = e & d  (= ovf2 & d, since e == ovf2 whenever d == 1)
     b.ccx(ovf2, d, h);
@@ -2377,9 +2329,10 @@ pub(crate) fn dialog_gcd_fused_halve_y(b: &mut B, y: &[QubitId], p: U256, s2: Qu
     let ovf2 = b.alloc_qubit(); // ovf2 = e & s2
     let ovf1 = b.alloc_qubit(); // ovf1 = (s2 ? d : e)
     b.ccx(e, s2, ovf2);
-    // ovf1 = e ^ (s2 & (d ^ e)); xed = d ^ e is already live.
-    b.cx(e, ovf1);
-    b.ccx(s2, xed, ovf1);
+    b.ccx(s2, d, ovf1);
+    b.x(s2);
+    b.ccx(s2, e, ovf1);
+    b.x(s2);
 
     // ── combined fold inverse: y −= δ = c·e + 2c·d, one truncated ripple ──
     // Same per-position controls as the forward fused double.
@@ -2449,9 +2402,6 @@ pub(crate) fn dialog_gcd_fused_halve_y(b: &mut B, y: &[QubitId], p: U256, s2: Qu
 
     // ── un-cond-shift2 (right shift gated by s2), re-inserting ovf2 at top ──
     for i in 0..n - 1 {
-        if dialog_gcd_skip_zero_edge_apply_halve_cshift_enabled() && i == 0 {
-            continue;
-        }
         cswap(b, s2, y[i], y[i + 1]);
     }
     cswap(b, s2, y[n - 1], ovf2);
