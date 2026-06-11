@@ -1010,7 +1010,7 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("SQUARE_ROW_WINDOW_CLEAN_COMPARE_BITS", "18");
     set_default_env("ROUND84_KEEP_QUOTIENT_PRODUCT", "1");
     set_default_env("DIALOG_GCD_FOLD_CARRY_TRUNC_W", "19");
-    set_default_env("DIALOG_TAIL_NONCE", "1095799875");
+    set_default_env("DIALOG_TAIL_NONCE", "2076190385");
     set_default_env("DIALOG_GCD_SKIP_ZERO_EDGE_CSHIFT", "1");
     set_default_env("DIALOG_GCD_COMPRESSED_BLOCK_LIFECYCLE", "1");
     set_default_env("DIALOG_GCD_HOST_REVERSE_RAW_BLOCK", "1");
@@ -1131,7 +1131,7 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_K2", "1");
     // 1216-balanced island: disable fused apply-fold to trade a small Toffoli
     // increase for the lower peak tier; re-hunted on GPU and confirmed clean at
-    // DIALOG_TAIL_NONCE=1095799875.
+    // DIALOG_TAIL_NONCE=2076190385.
     set_default_env("DIALOG_GCD_APPLY_FUSED_FOLD", "0");
     // K2 pair transcript compressor: pack two K2 transcript steps into five
     // sidecar bits by using the local reachability constraint between step A's
@@ -1458,9 +1458,9 @@ fn configure_ecdsafail_submission_route() {
     // Fiat-Shamir island:
     // 1216-balanced low-qubit island: DIALOG_GCD_APPLY_FUSED_FOLD=0,
     // ROUND84_FOLD_FAST_ADD=0, SQUARE_ROW_MAX_SEG=184, and
-    // DIALOG_GCD_APPLY_CHUNKED_F_BLOCKS=12. GPU scan found nonce 1095799875;
+    // DIALOG_GCD_APPLY_CHUNKED_F_BLOCKS=12. GPU scan found nonce 2076190385;
     // fast and full validation both report 0 classical / 0 phase / 0 ancilla.
-    set_default_env("DIALOG_TAIL_NONCE", "1095799875");
+    set_default_env("DIALOG_TAIL_NONCE", "2076190385");
     set_default_env("ROUND84_FOLD_FAST_ADD", "0");
     set_default_env("DIALOG_GCD_FOLD_MAJ2", "1");
     set_default_env("DIALOG_GCD_FOLD_MAJ1", "1");
