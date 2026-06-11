@@ -1007,11 +1007,15 @@ fn set_default_env(name: &str, value: &str) {
 fn configure_ecdsafail_submission_route() {
     set_default_env("SKIP_ALT_SEED_CHECKS", "1");
     set_default_env("DIALOG_GCD_COMPRESSED_SIDECAR_LOG", "1");
-    set_default_env("SQUARE_ROW_WINDOW_CLEAN_COMPARE_BITS", "22");
+    // Tighten the windowed square-row carry cleanup by one bit. A GPU
+    // structural filter followed by the trusted simulator found nonce
+    // 17761178 clean over all 9024 Fiat-Shamir shots: 1215 qubits and
+    // 1,403,115.070 average executed Toffoli.
+    set_default_env("SQUARE_ROW_WINDOW_CLEAN_COMPARE_BITS", "21");
     set_default_env("SQUARE_ROW_WINDOW_MEASURED_CARRY_CLEAR", "1");
     set_default_env("ROUND84_KEEP_QUOTIENT_PRODUCT", "1");
     set_default_env("DIALOG_GCD_FOLD_CARRY_TRUNC_W", "19");
-    set_default_env("DIALOG_TAIL_NONCE", "9400000893246");
+    set_default_env("DIALOG_TAIL_NONCE", "17761178");
     set_default_env("DIALOG_GCD_SKIP_ZERO_EDGE_CSHIFT", "1");
     set_default_env("DIALOG_GCD_COMPRESSED_BLOCK_LIFECYCLE", "1");
     set_default_env("DIALOG_GCD_HOST_REVERSE_RAW_BLOCK", "1");
