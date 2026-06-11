@@ -9,7 +9,7 @@ DIALOG_GCD_APPLY_FUSED_FOLD=0
 ROUND84_FOLD_FAST_ADD=0
 SQUARE_ROW_MAX_SEG=184
 DIALOG_GCD_APPLY_CHUNKED_F_BLOCKS=12
-DIALOG_TAIL_NONCE=2076190385
+DIALOG_TAIL_NONCE=2434246948
 ```
 
 The island was found by distributed GPU scanning with the safer fast settings:
@@ -23,7 +23,7 @@ GPU_WAVE=128
 ```
 
 Remote fast and full validation both reported `0 / 0 / 0` for
-`cls / pha / anc` on nonce `2076190385`. The local env-less benchmark was then
+`cls / pha / anc` on nonce `2434246948`. The local env-less benchmark was then
 baked by setting the effective first `DIALOG_TAIL_NONCE` default and the route
 defaults above. Official local `ecdsafail run` reproduced:
 
@@ -32,9 +32,9 @@ tested shots            : 9024
 classical mismatches    : 0
 phase-garbage batches   : 0
 ancilla-garbage batches : 0
-avg executed Toffoli    : 1431208.516
+avg executed Toffoli    : 1431182.142
 qubits                  : 1216
-score                   : 1740350144
+score                   : 1740317312
 ```
 
 This is lower qubit count than the current public 1220/1221 tier, but the
