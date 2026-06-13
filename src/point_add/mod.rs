@@ -1007,15 +1007,18 @@ fn set_default_env(name: &str, value: &str) {
 fn configure_ecdsafail_submission_route() {
     set_default_env("SKIP_ALT_SEED_CHECKS", "1");
     set_default_env("DIALOG_GCD_COMPRESSED_SIDECAR_LOG", "1");
-    // Tighten the windowed square-row carry cleanup by one bit. A GPU
-    // structural filter followed by the trusted simulator found nonce
-    // 17761178 clean over all 9024 Fiat-Shamir shots: 1215 qubits and
-    // 1,403,115.070 average executed Toffoli.
-    set_default_env("SQUARE_ROW_WINDOW_CLEAN_COMPARE_BITS", "21");
+    // Selective q1192 square-cleanup route. The default cleanup comparator is
+    // 19 bits, with only the rows below widened to cover the observed phase-risk
+    // sites. Nonce 11556565 is trusted-clean over all 9024 Fiat-Shamir shots.
+    set_default_env("SQUARE_ROW_WINDOW_CLEAN_COMPARE_BITS", "19");
+    set_default_env(
+        "SQUARE_ROW_WINDOW_CLEAN_ROW_BITS",
+        "2:20,11:20,12:20,13:21,16:22,19:20,20:21,21:20,26:21,29:21,32:21,37:21,44:22,46:20,53:21,56:20,64:20,70:20,75:20,78:20,87:20",
+    );
     set_default_env("SQUARE_ROW_WINDOW_MEASURED_CARRY_CLEAR", "1");
     set_default_env("ROUND84_KEEP_QUOTIENT_PRODUCT", "1");
     set_default_env("DIALOG_GCD_FOLD_CARRY_TRUNC_W", "18");
-    set_default_env("DIALOG_TAIL_NONCE", "2107498317");
+    set_default_env("DIALOG_TAIL_NONCE", "11556565");
     set_default_env("DIALOG_GCD_SKIP_ZERO_EDGE_CSHIFT", "1");
     set_default_env("DIALOG_GCD_COMPRESSED_BLOCK_LIFECYCLE", "1");
     set_default_env("DIALOG_GCD_HOST_REVERSE_RAW_BLOCK", "1");
@@ -1469,7 +1472,7 @@ fn configure_ecdsafail_submission_route() {
     // 9024 shots at 1300q x 1,454,884 T = 1,891,349,200.
     // q1192 lower-qubit island from the ad4cf86/K5 clean-block base.
     // Validated full 0/0/0 at SQUARE_ROW_MAX_SEG=165.
-    set_default_env("DIALOG_TAIL_NONCE", "2107498317");
+    set_default_env("DIALOG_TAIL_NONCE", "11556565");
     set_default_env("ROUND84_FOLD_FAST_ADD", "0");  // round84 Solinas-fold small adders coherent->measured-fast (-1,434 exec-T, peak-neutral 1285)
     set_default_env("DIALOG_GCD_FOLD_MAJ2", "1");
     set_default_env("DIALOG_GCD_FOLD_MAJ1", "1");

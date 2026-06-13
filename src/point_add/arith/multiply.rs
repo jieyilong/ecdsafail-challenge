@@ -609,11 +609,28 @@ fn square_row_max_seg() -> usize {
 /// compares only the high suffix of the segment and final partial sum.  This is
 /// a deliberate island-hunt knob: it keeps the same low peak and saves Toffoli,
 /// but wrong suffix ties leave the boundary carry dirty.
-fn square_row_window_clean_compare_bits() -> usize {
-    std::env::var("SQUARE_ROW_WINDOW_CLEAN_COMPARE_BITS")
+fn square_row_window_clean_compare_bits(row: usize) -> usize {
+    let default_bits = std::env::var("SQUARE_ROW_WINDOW_CLEAN_COMPARE_BITS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0)
+        .unwrap_or(0);
+    let Ok(spec) = std::env::var("SQUARE_ROW_WINDOW_CLEAN_ROW_BITS") else {
+        return default_bits;
+    };
+    for item in spec.split(',') {
+        let Some((raw_row, raw_bits)) = item.trim().split_once(':') else {
+            continue;
+        };
+        if raw_row.trim().parse::<usize>().ok() != Some(row) {
+            continue;
+        }
+        if let Ok(bits) = raw_bits.trim().parse::<usize>() {
+            if (1..=N).contains(&bits) {
+                return bits;
+            }
+        }
+    }
+    default_bits
 }
 
 fn square_row_window_measured_carry_clear_enabled() -> bool {
@@ -770,7 +787,7 @@ fn square_row_windowed_apply(
     // SQUARE_ROW_WINDOW_SLOW_CMP=1 falls back to the carry-array-free slow
     // comparator (~2n CCX, also peak-flat) for cross-checking.
     let slow_cmp = std::env::var("SQUARE_ROW_WINDOW_SLOW_CMP").ok().as_deref() == Some("1");
-    let clean_cmp_bits = square_row_window_clean_compare_bits();
+    let clean_cmp_bits = square_row_window_clean_compare_bits(i);
     let measured_clear = square_row_window_measured_carry_clear_enabled();
     for &(cout, lo, hi, cin) in couts.iter().rev() {
         let seg_w = hi - lo;
