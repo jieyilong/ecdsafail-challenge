@@ -246,16 +246,18 @@ fn emit_dialog_gcd_k5_clean_compressor(b: &mut B, data: &[QubitId; 13], ancilla:
     dialog_gcd_k5_emit_fable_codec(b, data, ancilla, false);
 }
 
-fn emit_dialog_gcd_k5_clean_compressor_inverse(
-    b: &mut B,
-    data: &[QubitId; 13],
-    ancilla: QubitId,
-) {
+fn emit_dialog_gcd_k5_clean_compressor_inverse(b: &mut B, data: &[QubitId; 13], ancilla: QubitId) {
     dialog_gcd_k5_emit_fable_codec(b, data, ancilla, true);
 }
 
 fn emit_dialog_gcd_k5_pair_encoder(b: &mut B, pair_raw: &[QubitId; 6]) {
-    let core = [pair_raw[0], pair_raw[1], pair_raw[4], pair_raw[2], pair_raw[3]];
+    let core = [
+        pair_raw[0],
+        pair_raw[1],
+        pair_raw[4],
+        pair_raw[2],
+        pair_raw[3],
+    ];
     b.cx(core[1], core[2]);
     b.cx(core[0], core[4]);
     b.x(core[3]);
@@ -272,7 +274,13 @@ fn emit_dialog_gcd_k5_pair_encoder(b: &mut B, pair_raw: &[QubitId; 6]) {
 }
 
 fn emit_dialog_gcd_k5_pair_encoder_inverse(b: &mut B, pair_raw: &[QubitId; 6]) {
-    let core = [pair_raw[0], pair_raw[1], pair_raw[4], pair_raw[2], pair_raw[3]];
+    let core = [
+        pair_raw[0],
+        pair_raw[1],
+        pair_raw[4],
+        pair_raw[2],
+        pair_raw[3],
+    ];
     b.cx(core[3], core[0]);
     b.cx(core[1], core[0]);
     b.ccx(core[1], core[3], core[0]);
@@ -396,11 +404,19 @@ fn dialog_gcd_k5_compress_partial_raw_to_block(
     let raw_base = 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE;
     emit_dialog_gcd_round763_compressor(b, &raw_block[0..raw_base]);
     for i in 0..base_bits {
-        if swap_host { b.swap(compressed_block[i], raw_block[i]); } else { b.cx(compressed_block[i], raw_block[i]); }
+        if swap_host {
+            b.swap(compressed_block[i], raw_block[i]);
+        } else {
+            b.cx(compressed_block[i], raw_block[i]);
+        }
     }
     for slot in 0..steps {
         let s2 = dialog_gcd_raw_s2(raw_block, slot);
-        if swap_host { b.swap(compressed_block[base_bits + slot], s2); } else { b.cx(compressed_block[base_bits + slot], s2); }
+        if swap_host {
+            b.swap(compressed_block[base_bits + slot], s2);
+        } else {
+            b.cx(compressed_block[base_bits + slot], s2);
+        }
     }
 }
 
@@ -417,12 +433,20 @@ fn dialog_gcd_k5_decompress_partial_block_to_raw(
     let base_bits = DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS;
     let raw_base = 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE;
     for i in 0..base_bits {
-        if swap_host { b.swap(compressed_block[i], raw_block[i]); } else { b.cx(compressed_block[i], raw_block[i]); }
+        if swap_host {
+            b.swap(compressed_block[i], raw_block[i]);
+        } else {
+            b.cx(compressed_block[i], raw_block[i]);
+        }
     }
     emit_dialog_gcd_round763_compressor_inverse(b, &raw_block[0..raw_base]);
     for slot in 0..steps {
         let s2 = dialog_gcd_raw_s2(raw_block, slot);
-        if swap_host { b.swap(compressed_block[base_bits + slot], s2); } else { b.cx(compressed_block[base_bits + slot], s2); }
+        if swap_host {
+            b.swap(compressed_block[base_bits + slot], s2);
+        } else {
+            b.cx(compressed_block[base_bits + slot], s2);
+        }
     }
 }
 
@@ -453,7 +477,10 @@ pub(crate) fn dialog_gcd_compressed_sidecar_bits() -> usize {
     dialog_gcd_compressed_sidecar_blocks() * dialog_gcd_block_bits()
 }
 
-pub(crate) fn dialog_gcd_compressed_sidecar_block(compressed_log: &[QubitId], step: usize) -> &[QubitId] {
+pub(crate) fn dialog_gcd_compressed_sidecar_block(
+    compressed_log: &[QubitId],
+    step: usize,
+) -> &[QubitId] {
     let block = step / dialog_gcd_sidecar_group_size();
     let bb = dialog_gcd_block_bits();
     let start = block * bb;
@@ -809,7 +836,10 @@ pub(crate) fn dialog_gcd_build_composite_scratch(
         } else {
             0
         };
-        comparator_need.max(body_need).min(2 * active_width - 1).max(1)
+        comparator_need
+            .max(body_need)
+            .min(2 * active_width - 1)
+            .max(1)
     } else if nocin && stream_suffix >= 2 {
         2 * (body_len - stream_suffix) + 1
     } else if nocin && dialog_gcd_selected_body_stream_top_enabled(step, body_len) && body_len >= 2
@@ -976,6 +1006,14 @@ pub(crate) fn dialog_gcd_host_reverse_raw_block_enabled() -> bool {
 pub(crate) fn dialog_gcd_k2_apply_inplace_raw_block_enabled() -> bool {
     dialog_gcd_k2_pair_compress_enabled()
         && std::env::var("DIALOG_GCD_K2_APPLY_INPLACE_RAW_BLOCK")
+            .ok()
+            .as_deref()
+            == Some("1")
+}
+
+pub(crate) fn dialog_gcd_k5_apply_step_frame_enabled() -> bool {
+    dialog_gcd_k5_clean_block_enabled()
+        && std::env::var("DIALOG_GCD_K5_APPLY_STEP_FRAME")
             .ok()
             .as_deref()
             == Some("1")
@@ -1202,7 +1240,10 @@ pub(crate) fn dialog_gcd_k2_pair_inplace_raw_frame(
     compressed_block: &[QubitId],
     raw0: QubitId,
 ) -> [QubitId; 6] {
-    assert_eq!(compressed_block.len(), DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS);
+    assert_eq!(
+        compressed_block.len(),
+        DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS
+    );
     [
         raw0,
         compressed_block[0],
@@ -1219,7 +1260,10 @@ pub(crate) fn dialog_gcd_k2_pair_inplace_decompress_block(
     raw0: QubitId,
     steps: usize,
 ) -> [QubitId; 6] {
-    assert_eq!(steps, 2, "in-place K2 apply currently requires full pair blocks");
+    assert_eq!(
+        steps, 2,
+        "in-place K2 apply currently requires full pair blocks"
+    );
     let raw_frame = dialog_gcd_k2_pair_inplace_raw_frame(compressed_block, raw0);
     let core = dialog_gcd_k2_pair_core(&raw_frame);
     emit_dialog_gcd_k2_pair_core_encoder_inverse(b, &core);
@@ -1232,10 +1276,125 @@ pub(crate) fn dialog_gcd_k2_pair_inplace_clear_block(
     raw0: QubitId,
     steps: usize,
 ) {
-    assert_eq!(steps, 2, "in-place K2 apply currently requires full pair blocks");
+    assert_eq!(
+        steps, 2,
+        "in-place K2 apply currently requires full pair blocks"
+    );
     let raw_frame = dialog_gcd_k2_pair_inplace_raw_frame(compressed_block, raw0);
     let core = dialog_gcd_k2_pair_core(&raw_frame);
     emit_dialog_gcd_k2_pair_core_encoder(b, &core);
+}
+
+fn dialog_gcd_k5_data_from_inplace_block(
+    compressed_block: &[QubitId],
+    data10: QubitId,
+) -> [QubitId; 13] {
+    assert_eq!(compressed_block.len(), 12);
+    let mut data = [data10; 13];
+    for (i, &wire) in DIALOG_GCD_K5_DATA_WIRES.iter().enumerate() {
+        data[wire] = compressed_block[i];
+    }
+    data[10] = data10;
+    data
+}
+
+fn dialog_gcd_k5_copy_slot_to_frame(
+    b: &mut B,
+    frame: &[QubitId],
+    b0: QubitId,
+    b0_and_b1: QubitId,
+    s2: QubitId,
+) {
+    assert_eq!(frame.len(), 3);
+    b.cx(b0, frame[0]);
+    b.cx(b0_and_b1, frame[1]);
+    b.cx(s2, frame[2]);
+}
+
+fn dialog_gcd_k5_toggle_full_step_frame(
+    b: &mut B,
+    compressed_block: &[QubitId],
+    frame: &[QubitId],
+    slot: usize,
+) {
+    assert_eq!(compressed_block.len(), 12);
+    assert_eq!(frame.len(), 3);
+    assert!(slot < 5);
+    let data10 = b.alloc_qubit();
+    let pair0 = b.alloc_qubit();
+    let ancilla = b.alloc_qubit();
+    let data = dialog_gcd_k5_data_from_inplace_block(compressed_block, data10);
+    emit_dialog_gcd_k5_clean_compressor_inverse(b, &data, ancilla);
+    match slot {
+        0 | 1 => {
+            let pair = [pair0, data[0], data[2], data[3], data[1], data[4]];
+            emit_dialog_gcd_k5_pair_encoder_inverse(b, &pair);
+            if slot == 0 {
+                dialog_gcd_k5_copy_slot_to_frame(b, frame, pair[0], pair[1], pair[4]);
+            } else {
+                dialog_gcd_k5_copy_slot_to_frame(b, frame, pair[2], pair[3], pair[5]);
+            }
+            emit_dialog_gcd_k5_pair_encoder(b, &pair);
+        }
+        2 | 3 => {
+            let pair = [pair0, data[5], data[7], data[8], data[6], data[9]];
+            emit_dialog_gcd_k5_pair_encoder_inverse(b, &pair);
+            if slot == 2 {
+                dialog_gcd_k5_copy_slot_to_frame(b, frame, pair[0], pair[1], pair[4]);
+            } else {
+                dialog_gcd_k5_copy_slot_to_frame(b, frame, pair[2], pair[3], pair[5]);
+            }
+            emit_dialog_gcd_k5_pair_encoder(b, &pair);
+        }
+        4 => {
+            dialog_gcd_k5_copy_slot_to_frame(b, frame, data[10], data[11], data[12]);
+        }
+        _ => unreachable!(),
+    }
+    emit_dialog_gcd_k5_clean_compressor(b, &data, ancilla);
+    b.free(ancilla);
+    b.free(pair0);
+    b.free(data10);
+}
+
+fn dialog_gcd_k5_toggle_partial_step_frame(
+    b: &mut B,
+    compressed_block: &[QubitId],
+    frame: &[QubitId],
+    slot: usize,
+    steps: usize,
+) {
+    assert_eq!(compressed_block.len(), 12);
+    assert_eq!(frame.len(), 3);
+    assert!(steps <= DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE);
+    assert!(slot < steps);
+    let scratch = b.alloc_qubit();
+    let mut block = compressed_block[0..DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS].to_vec();
+    block.push(scratch);
+    emit_dialog_gcd_round763_compressor_inverse(b, &block);
+    dialog_gcd_k5_copy_slot_to_frame(
+        b,
+        frame,
+        block[2 * slot],
+        block[2 * slot + 1],
+        compressed_block[DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS + slot],
+    );
+    emit_dialog_gcd_round763_compressor(b, &block);
+    b.free(scratch);
+}
+
+fn dialog_gcd_k5_toggle_step_frame(
+    b: &mut B,
+    compressed_block: &[QubitId],
+    frame: &[QubitId],
+    slot: usize,
+    steps: usize,
+) {
+    if steps == 5 {
+        dialog_gcd_k5_toggle_full_step_frame(b, compressed_block, frame, slot);
+    } else {
+        dialog_gcd_k5_toggle_partial_step_frame(b, compressed_block, frame, slot, steps);
+    }
 }
 
 pub(crate) fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_block_lifecycle(
@@ -1672,7 +1831,8 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_block_lifecycle
     assert_eq!(x.len(), N);
     assert_eq!(y.len(), N);
     let inplace_raw = dialog_gcd_k2_apply_inplace_raw_block_enabled();
-    if inplace_raw {
+    let k5_step_frame = dialog_gcd_k5_apply_step_frame_enabled();
+    if inplace_raw || k5_step_frame {
         assert!(raw_block.is_empty());
     } else {
         assert_eq!(raw_block.len(), dialog_gcd_raw_block_len());
@@ -1682,29 +1842,50 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_block_lifecycle
     } else {
         None
     };
+    let step_frame = if k5_step_frame {
+        Some(b.alloc_qubits(3))
+    } else {
+        None
+    };
 
     for block in (0..dialog_gcd_compressed_sidecar_blocks()).rev() {
         let (start, end) = dialog_gcd_compressed_sidecar_block_step_range(block);
         let compressed_block = dialog_gcd_compressed_sidecar_block(compressed_log, start);
 
         b.set_phase("dialog_gcd_compressed_block_apply_decompress_block");
-        let raw_frame = inplace_raw0.map(|raw0| {
-            dialog_gcd_k2_pair_inplace_decompress_block(b, compressed_block, raw0, end - start)
-        });
-        if raw_frame.is_none() {
+        let raw_frame = if k5_step_frame {
+            None
+        } else {
+            inplace_raw0.map(|raw0| {
+                dialog_gcd_k2_pair_inplace_decompress_block(b, compressed_block, raw0, end - start)
+            })
+        };
+        if raw_frame.is_none() && !k5_step_frame {
             dialog_gcd_copy_compressed_block_to_raw(b, compressed_block, raw_block, end - start);
         }
         let raw = raw_frame.as_ref().map_or(raw_block, |frame| &frame[..]);
-        let block_clean_scratch = if !inplace_raw && dialog_gcd_apply_replay_swap_host_enabled() {
-            compressed_block
-        } else {
-            &[]
-        };
+        let block_clean_scratch =
+            if !inplace_raw && !k5_step_frame && dialog_gcd_apply_replay_swap_host_enabled() {
+                compressed_block
+            } else {
+                &[]
+            };
 
         for step in (start..end).rev() {
             let slot = step - start;
-            let b0 = raw[2 * slot];
-            let b0_and_b1 = raw[2 * slot + 1];
+            if let Some(frame) = step_frame.as_ref() {
+                b.set_phase("dialog_gcd_compressed_block_apply_load_step_frame");
+                dialog_gcd_k5_toggle_step_frame(b, compressed_block, frame, slot, end - start);
+            }
+            let (b0, b0_and_b1, s2) = if let Some(frame) = step_frame.as_ref() {
+                (frame[0], frame[1], frame[2])
+            } else {
+                (
+                    raw[2 * slot],
+                    raw[2 * slot + 1],
+                    raw[2 * dialog_gcd_sidecar_group_size() + slot],
+                )
+            };
 
             b.set_phase("dialog_gcd_compressed_block_apply_double_y");
             let apply_k2 = dialog_gcd_k2_enabled()
@@ -1712,7 +1893,6 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_block_lifecycle
             if apply_k2 && dialog_gcd_apply_fused_fold_enabled() {
                 // Fuse mod_double_inplace_fast + cmod_double_inplace_lazy into a
                 // single shared carry chain (value-identical; see fn doc).
-                let s2 = raw[2 * dialog_gcd_sidecar_group_size() + slot];
                 dialog_gcd_fused_double_y(b, y, p, s2);
             } else {
                 mod_double_inplace_fast(b, y, p);
@@ -1720,19 +1900,18 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_block_lifecycle
                     // mirror the forward K=2 second shift: conditional 2nd double of y.
                     // MUST use the lazy (Solinas, truncated) controlled double so it
                     // composes with the uncontrolled mod_double_inplace_fast above.
-                    let s2 = raw[2 * dialog_gcd_sidecar_group_size() + slot];
                     cmod_double_inplace_lazy(b, y, p, s2);
                 }
             }
 
             b.set_phase("dialog_gcd_compressed_block_apply_cadd");
             if dialog_gcd_raw_apply_materialized_special_add_enabled() {
-                let owned_clean_scratch = if inplace_raw {
+                let owned_clean_scratch = if inplace_raw || k5_step_frame {
                     b.alloc_qubits(dialog_gcd_block_bits())
                 } else {
                     Vec::new()
                 };
-                let clean_scratch = if inplace_raw {
+                let clean_scratch = if inplace_raw || k5_step_frame {
                     owned_clean_scratch.as_slice()
                 } else {
                     block_clean_scratch
@@ -1746,7 +1925,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_block_lifecycle
                     clean_scratch,
                     Some(step),
                 );
-                if inplace_raw {
+                if inplace_raw || k5_step_frame {
                     b.free_vec(&owned_clean_scratch);
                 }
             } else if dialog_gcd_raw_apply_direct_special_add_enabled() {
@@ -1759,16 +1938,23 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_block_lifecycle
             for (&xi, &yi) in x.iter().zip(y.iter()) {
                 cswap(b, b0_and_b1, xi, yi);
             }
+            if let Some(frame) = step_frame.as_ref() {
+                b.set_phase("dialog_gcd_compressed_block_apply_clear_step_frame");
+                dialog_gcd_k5_toggle_step_frame(b, compressed_block, frame, slot, end - start);
+            }
         }
 
         b.set_phase("dialog_gcd_compressed_block_apply_clear_block_copy");
         if let Some(raw0) = inplace_raw0 {
             dialog_gcd_k2_pair_inplace_clear_block(b, compressed_block, raw0, end - start);
-        } else {
+        } else if !k5_step_frame {
             dialog_gcd_clear_raw_block_copy(b, compressed_block, raw_block, end - start);
         }
     }
 
+    if let Some(frame) = step_frame {
+        b.free_vec(&frame);
+    }
     if let Some(raw0) = inplace_raw0 {
         b.free(raw0);
     }
@@ -1785,7 +1971,8 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_reverse_exact_b
     assert_eq!(x.len(), N);
     assert_eq!(y.len(), N);
     let inplace_raw = dialog_gcd_k2_apply_inplace_raw_block_enabled();
-    if inplace_raw {
+    let k5_step_frame = dialog_gcd_k5_apply_step_frame_enabled();
+    if inplace_raw || k5_step_frame {
         assert!(raw_block.is_empty());
     } else {
         assert_eq!(raw_block.len(), dialog_gcd_raw_block_len());
@@ -1795,29 +1982,50 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_reverse_exact_b
     } else {
         None
     };
+    let step_frame = if k5_step_frame {
+        Some(b.alloc_qubits(3))
+    } else {
+        None
+    };
 
     for block in 0..dialog_gcd_compressed_sidecar_blocks() {
         let (start, end) = dialog_gcd_compressed_sidecar_block_step_range(block);
         let compressed_block = dialog_gcd_compressed_sidecar_block(compressed_log, start);
 
         b.set_phase("dialog_gcd_compressed_block_apply_reverse_decompress_block");
-        let raw_frame = inplace_raw0.map(|raw0| {
-            dialog_gcd_k2_pair_inplace_decompress_block(b, compressed_block, raw0, end - start)
-        });
-        if raw_frame.is_none() {
+        let raw_frame = if k5_step_frame {
+            None
+        } else {
+            inplace_raw0.map(|raw0| {
+                dialog_gcd_k2_pair_inplace_decompress_block(b, compressed_block, raw0, end - start)
+            })
+        };
+        if raw_frame.is_none() && !k5_step_frame {
             dialog_gcd_copy_compressed_block_to_raw(b, compressed_block, raw_block, end - start);
         }
         let raw = raw_frame.as_ref().map_or(raw_block, |frame| &frame[..]);
-        let block_clean_scratch = if !inplace_raw && dialog_gcd_apply_replay_swap_host_enabled() {
-            compressed_block
-        } else {
-            &[]
-        };
+        let block_clean_scratch =
+            if !inplace_raw && !k5_step_frame && dialog_gcd_apply_replay_swap_host_enabled() {
+                compressed_block
+            } else {
+                &[]
+            };
 
         for step in start..end {
             let slot = step - start;
-            let b0 = raw[2 * slot];
-            let b0_and_b1 = raw[2 * slot + 1];
+            if let Some(frame) = step_frame.as_ref() {
+                b.set_phase("dialog_gcd_compressed_block_apply_reverse_load_step_frame");
+                dialog_gcd_k5_toggle_step_frame(b, compressed_block, frame, slot, end - start);
+            }
+            let (b0, b0_and_b1, s2) = if let Some(frame) = step_frame.as_ref() {
+                (frame[0], frame[1], frame[2])
+            } else {
+                (
+                    raw[2 * slot],
+                    raw[2 * slot + 1],
+                    raw[2 * dialog_gcd_sidecar_group_size() + slot],
+                )
+            };
 
             b.set_phase("dialog_gcd_compressed_block_apply_reverse_cswap");
             for (&xi, &yi) in x.iter().zip(y.iter()) {
@@ -1826,12 +2034,12 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_reverse_exact_b
 
             b.set_phase("dialog_gcd_compressed_block_apply_reverse_csub");
             if dialog_gcd_raw_apply_reverse_materialized_special_sub_enabled() {
-                let owned_clean_scratch = if inplace_raw {
+                let owned_clean_scratch = if inplace_raw || k5_step_frame {
                     b.alloc_qubits(dialog_gcd_block_bits())
                 } else {
                     Vec::new()
                 };
-                let clean_scratch = if inplace_raw {
+                let clean_scratch = if inplace_raw || k5_step_frame {
                     owned_clean_scratch.as_slice()
                 } else {
                     block_clean_scratch
@@ -1845,7 +2053,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_reverse_exact_b
                     clean_scratch,
                     Some(step),
                 );
-                if inplace_raw {
+                if inplace_raw || k5_step_frame {
                     b.free_vec(&owned_clean_scratch);
                 }
             } else if dialog_gcd_raw_apply_reverse_fast_sub_enabled() {
@@ -1864,27 +2072,32 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_reverse_exact_b
                 // Fuse mod_halve_inplace_fast + cmod_halve_inplace_lazy into a
                 // single shared borrow chain (exact inverse of the fused double;
                 // see fn doc on dialog_gcd_fused_halve_y).
-                let s2 = raw[2 * dialog_gcd_sidecar_group_size() + slot];
                 dialog_gcd_fused_halve_y(b, y, p, s2);
             } else {
                 mod_halve_inplace_fast(b, y, p);
                 if apply_k2 {
                     // mirror the forward K=2 second shift: conditional 2nd halve of y.
                     // MUST use the lazy (Solinas, truncated) controlled halve to match.
-                    let s2 = raw[2 * dialog_gcd_sidecar_group_size() + slot];
                     cmod_halve_inplace_lazy(b, y, p, s2);
                 }
+            }
+            if let Some(frame) = step_frame.as_ref() {
+                b.set_phase("dialog_gcd_compressed_block_apply_reverse_clear_step_frame");
+                dialog_gcd_k5_toggle_step_frame(b, compressed_block, frame, slot, end - start);
             }
         }
 
         b.set_phase("dialog_gcd_compressed_block_apply_reverse_clear_block_copy");
         if let Some(raw0) = inplace_raw0 {
             dialog_gcd_k2_pair_inplace_clear_block(b, compressed_block, raw0, end - start);
-        } else {
+        } else if !k5_step_frame {
             dialog_gcd_clear_raw_block_copy(b, compressed_block, raw_block, end - start);
         }
     }
 
+    if let Some(frame) = step_frame {
+        b.free_vec(&frame);
+    }
     if let Some(raw0) = inplace_raw0 {
         b.free(raw0);
     }
@@ -2189,10 +2402,14 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_ipmul_block_lifecycle(
 
         b.set_phase("dialog_gcd_compressed_block_ipmul_apply_bitvector_reuse_factor_zero");
         let inplace_apply_raw = dialog_gcd_k2_apply_inplace_raw_block_enabled();
-        if inplace_apply_raw && !raw_block.is_empty() {
+        let step_frame_apply = dialog_gcd_k5_apply_step_frame_enabled();
+        if (inplace_apply_raw || step_frame_apply) && !raw_block.is_empty() {
             b.free_vec(&raw_block);
         }
-        let apply_raw_block = if !inplace_apply_raw && dialog_gcd_host_reverse_raw_block_enabled() {
+        let apply_raw_block = if !inplace_apply_raw
+            && !step_frame_apply
+            && dialog_gcd_host_reverse_raw_block_enabled()
+        {
             b.alloc_qubits(dialog_gcd_raw_block_len())
         } else {
             Vec::new()
@@ -2203,7 +2420,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_ipmul_block_lifecycle(
             target,
             factor,
             p,
-            if inplace_apply_raw {
+            if inplace_apply_raw || step_frame_apply {
                 &[]
             } else if apply_raw_block.is_empty() {
                 &raw_block
@@ -2229,7 +2446,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_ipmul_block_lifecycle(
             b.swap(target[i], factor[i]);
         }
 
-        if inplace_apply_raw && !raw_block.is_empty() {
+        if (inplace_apply_raw || step_frame_apply) && !raw_block.is_empty() {
             b.reacquire_vec(&raw_block);
         }
 
@@ -2469,10 +2686,14 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_quotient_block_lifecycle(
 
         b.set_phase("dialog_gcd_compressed_block_quotient_apply_reverse_reuse_factor_zero");
         let inplace_apply_raw = dialog_gcd_k2_apply_inplace_raw_block_enabled();
-        if inplace_apply_raw && !raw_block.is_empty() {
+        let step_frame_apply = dialog_gcd_k5_apply_step_frame_enabled();
+        if (inplace_apply_raw || step_frame_apply) && !raw_block.is_empty() {
             b.free_vec(&raw_block);
         }
-        let apply_raw_block = if !inplace_apply_raw && dialog_gcd_host_reverse_raw_block_enabled() {
+        let apply_raw_block = if !inplace_apply_raw
+            && !step_frame_apply
+            && dialog_gcd_host_reverse_raw_block_enabled()
+        {
             b.alloc_qubits(dialog_gcd_raw_block_len())
         } else {
             Vec::new()
@@ -2483,7 +2704,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_quotient_block_lifecycle(
             factor,
             target,
             p,
-            if inplace_apply_raw {
+            if inplace_apply_raw || step_frame_apply {
                 &[]
             } else if apply_raw_block.is_empty() {
                 &raw_block
@@ -2500,7 +2721,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_quotient_block_lifecycle(
             b.swap(target[i], factor[i]);
         }
 
-        if inplace_apply_raw && !raw_block.is_empty() {
+        if (inplace_apply_raw || step_frame_apply) && !raw_block.is_empty() {
             b.reacquire_vec(&raw_block);
         }
 
@@ -2674,7 +2895,6 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_quotient(
     b.free_vec(&compressed_log);
 }
 
-
 pub(crate) fn emit_dialog_gcd_k2_pair_core_encoder(b: &mut B, core: &[QubitId]) {
     assert_eq!(core.len(), 5);
     // PROBE: 3-CCX reachable-support encoder (replaces 6-CCX). −3 scored CCX/call.
@@ -2728,7 +2948,10 @@ pub(crate) fn dialog_gcd_k2_pair_copy_compressed_block_to_raw(
     raw_block: &[QubitId],
     steps: usize,
 ) {
-    assert_eq!(compressed_block.len(), DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS);
+    assert_eq!(
+        compressed_block.len(),
+        DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS
+    );
     assert_eq!(raw_block.len(), 6);
     assert!((1..=2).contains(&steps));
     let swap_host = dialog_gcd_apply_replay_swap_host_enabled();
@@ -2743,7 +2966,13 @@ pub(crate) fn dialog_gcd_k2_pair_copy_compressed_block_to_raw(
         }
         return;
     }
-    let raw_encoded = [raw_block[1], raw_block[4], raw_block[2], raw_block[3], raw_block[5]];
+    let raw_encoded = [
+        raw_block[1],
+        raw_block[4],
+        raw_block[2],
+        raw_block[3],
+        raw_block[5],
+    ];
     for (&c, &r) in compressed_block.iter().zip(raw_encoded.iter()) {
         if swap_host {
             b.swap(c, r);
@@ -2761,7 +2990,10 @@ pub(crate) fn dialog_gcd_k2_pair_clear_raw_block_copy(
     raw_block: &[QubitId],
     steps: usize,
 ) {
-    assert_eq!(compressed_block.len(), DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS);
+    assert_eq!(
+        compressed_block.len(),
+        DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS
+    );
     assert_eq!(raw_block.len(), 6);
     assert!((1..=2).contains(&steps));
     let swap_host = dialog_gcd_apply_replay_swap_host_enabled();
@@ -2778,7 +3010,13 @@ pub(crate) fn dialog_gcd_k2_pair_clear_raw_block_copy(
     }
     let core = dialog_gcd_k2_pair_core(raw_block);
     emit_dialog_gcd_k2_pair_core_encoder(b, &core);
-    let raw_encoded = [raw_block[1], raw_block[4], raw_block[2], raw_block[3], raw_block[5]];
+    let raw_encoded = [
+        raw_block[1],
+        raw_block[4],
+        raw_block[2],
+        raw_block[3],
+        raw_block[5],
+    ];
     for (&c, &r) in compressed_block.iter().zip(raw_encoded.iter()) {
         if swap_host {
             b.swap(c, r);
@@ -2861,7 +3099,19 @@ pub(crate) fn dialog_gcd_fused_double_y(b: &mut B, y: &[QubitId], p: U256, s2: Q
         // (d = ovf1&s2, e = ovf1^d^ovf2) and so can also be freed across the
         // wide tail. fold_ripple_freed_tail_ed honors the DIALOG_GCD_FOLD_FREED_TAIL_ED
         // gate; when OFF it is byte-identical to the plain freed-tail.
-        fold_ripple_freed_tail_ed(b, y, e, d, h, xed, eord, n10, Some((ovf1, ovf2, s2)), last, true);
+        fold_ripple_freed_tail_ed(
+            b,
+            y,
+            e,
+            d,
+            h,
+            xed,
+            eord,
+            n10,
+            Some((ovf1, ovf2, s2)),
+            last,
+            true,
+        );
     } else {
         cadd_per_position_controls_trunc(b, y, &controls, last);
     }
@@ -2991,7 +3241,19 @@ pub(crate) fn dialog_gcd_fused_halve_y(b: &mut B, y: &[QubitId], p: U256, s2: Qu
         // relation as in the forward fold (ovf2 = e&s2, ovf1 = (s2?d:e) ⇒
         // d = ovf1&s2, e = ovf1^d^ovf2), so e,d are recomputable and freeable
         // across the tail. Gated by DIALOG_GCD_FOLD_FREED_TAIL_ED.
-        fold_ripple_freed_tail_ed(b, y, e, d, h, xed, eord, n10, Some((ovf1, ovf2, s2)), last, false);
+        fold_ripple_freed_tail_ed(
+            b,
+            y,
+            e,
+            d,
+            h,
+            xed,
+            eord,
+            n10,
+            Some((ovf1, ovf2, s2)),
+            last,
+            false,
+        );
     } else {
         csub_per_position_controls_trunc(b, y, &controls, last);
     }

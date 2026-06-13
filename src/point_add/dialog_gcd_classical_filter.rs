@@ -20,10 +20,20 @@ const MAX_GCD_ITERS: usize = 402;
 /// Why a GCD factor failed the classical filter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HardReason {
-    WidthOverflow { step: usize },
-    BodyTrimMismatch { step: usize, active_width: usize, body_width: usize },
-    ComparatorMismatch { step: usize },
-    NonConvergence { steps_needed: usize },
+    WidthOverflow {
+        step: usize,
+    },
+    BodyTrimMismatch {
+        step: usize,
+        active_width: usize,
+        body_width: usize,
+    },
+    ComparatorMismatch {
+        step: usize,
+    },
+    NonConvergence {
+        steps_needed: usize,
+    },
 }
 
 /// Knobs mirrored from `configure_ecdsafail_submission_route()` env defaults.
@@ -80,8 +90,10 @@ impl DialogGcdFilterConfig {
         let body_carry_trims = std::env::var("DIALOG_GCD_BODY_CARRY_BAND_TRIMS")
             .ok()
             .and_then(|s| parse_trim_list(&s));
-        let pa9024_compare_schedule =
-            std::env::var("DIALOG_GCD_PA9024_COMPARE_SCHEDULE").ok().as_deref() == Some("1");
+        let pa9024_compare_schedule = std::env::var("DIALOG_GCD_PA9024_COMPARE_SCHEDULE")
+            .ok()
+            .as_deref()
+            == Some("1");
         let pa9024_compare_margin = std::env::var("DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -92,11 +104,15 @@ impl DialogGcdFilterConfig {
             .filter(|&bits| bits <= N)
             .unwrap_or(1)
             .max(1);
-        let odd_u_lowbit_fastpath =
-            std::env::var("DIALOG_GCD_ODD_U_LOWBIT_FASTPATH").ok().as_deref() == Some("1");
+        let odd_u_lowbit_fastpath = std::env::var("DIALOG_GCD_ODD_U_LOWBIT_FASTPATH")
+            .ok()
+            .as_deref()
+            == Some("1");
         let k2 = std::env::var("DIALOG_GCD_K2").ok().as_deref() == Some("1");
-        let variable_width =
-            std::env::var("DIALOG_GCD_RAW_TOBITVECTOR_VARIABLE_WIDTH").ok().as_deref() != Some("0");
+        let variable_width = std::env::var("DIALOG_GCD_RAW_TOBITVECTOR_VARIABLE_WIDTH")
+            .ok()
+            .as_deref()
+            != Some("0");
         let width_step_bumps = std::env::var("DIALOG_GCD_WIDTH_STEP_BUMPS")
             .ok()
             .map(|s| parse_step_map(&s))
@@ -106,8 +122,10 @@ impl DialogGcdFilterConfig {
             .map(|s| parse_step_map(&s))
             .unwrap_or_default();
         let k2_force0 = std::env::var("DIALOG_GCD_K2_FORCE0").ok().as_deref() == Some("1");
-        let strict_compare =
-            std::env::var("DIALOG_GCD_FILTER_STRICT_COMPARE").ok().as_deref() == Some("1");
+        let strict_compare = std::env::var("DIALOG_GCD_FILTER_STRICT_COMPARE")
+            .ok()
+            .as_deref()
+            == Some("1");
         let body_carry_trunc_w = std::env::var("DIALOG_GCD_BODY_CARRY_TRUNC_W")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -198,10 +216,7 @@ impl DialogGcdFilterConfig {
 fn body_carry_extra_notch(step: usize) -> usize {
     let mut extra = 0usize;
 
-    let trio_enabled = std::env::var("DIALOG_GCD_TRIO_WIDTH_NOTCH")
-        .ok()
-        .as_deref()
-        != Some("0");
+    let trio_enabled = std::env::var("DIALOG_GCD_TRIO_WIDTH_NOTCH").ok().as_deref() != Some("0");
     if trio_enabled {
         let trio_step = std::env::var("DIALOG_GCD_TRIO_WIDTH_NOTCH_STEP")
             .ok()
@@ -254,10 +269,7 @@ fn parse_trim_list(s: &str) -> Option<Vec<usize>> {
     if s.trim().is_empty() {
         return None;
     }
-    let trims: Vec<usize> = s
-        .split(',')
-        .filter_map(|t| t.trim().parse().ok())
-        .collect();
+    let trims: Vec<usize> = s.split(',').filter_map(|t| t.trim().parse().ok()).collect();
     if trims.is_empty() {
         None
     } else {
@@ -340,7 +352,12 @@ fn swap_active_except_bit0(u: &mut U256, v: &mut U256, active_width: usize) {
 }
 
 /// One truncated dialog-GCD tobitvector step (forward), matching `emit_dialog_gcd_*_tobitvector_steps`.
-fn truncated_gcd_step(u: &mut U256, v: &mut U256, step: usize, cfg: &DialogGcdFilterConfig) -> Option<HardReason> {
+fn truncated_gcd_step(
+    u: &mut U256,
+    v: &mut U256,
+    step: usize,
+    cfg: &DialogGcdFilterConfig,
+) -> Option<HardReason> {
     let active_width = cfg.active_width(step);
     if bitlen(*u) > active_width || bitlen(*v) > active_width {
         return Some(HardReason::WidthOverflow { step });
@@ -457,7 +474,12 @@ fn full_gcd_step(u: &mut U256, v: &mut U256, cfg: &DialogGcdFilterConfig) {
 }
 
 /// Steps until `v == 0` under the full-width transcript, capped at `limit`.
-pub(crate) fn full_gcd_steps_until_zero(mut u: U256, mut v: U256, cfg: &DialogGcdFilterConfig, limit: usize) -> usize {
+pub(crate) fn full_gcd_steps_until_zero(
+    mut u: U256,
+    mut v: U256,
+    cfg: &DialogGcdFilterConfig,
+    limit: usize,
+) -> usize {
     let mut steps = 0usize;
     while !v.is_zero() && steps < limit {
         full_gcd_step(&mut u, &mut v, cfg);
@@ -566,8 +588,10 @@ pub fn check_gcd_factor(factor: U256, cfg: &DialogGcdFilterConfig) -> Result<(),
         return Err(HardReason::NonConvergence { steps_needed: 0 });
     }
 
-    let accept_u1_terminal =
-        std::env::var("DIALOG_GCD_FILTER_ACCEPT_U1_TERMINAL").ok().as_deref() == Some("1");
+    let accept_u1_terminal = std::env::var("DIALOG_GCD_FILTER_ACCEPT_U1_TERMINAL")
+        .ok()
+        .as_deref()
+        == Some("1");
     if !accept_u1_terminal {
         let steps_needed =
             full_gcd_steps_until_zero(SECP256K1_P, factor, cfg, cfg.active_iterations + 1);
@@ -721,7 +745,9 @@ mod tests {
             16,
         )
         .unwrap();
-        assert!(check_gcd_factor(factor, &cfg9).is_ok() || check_gcd_factor(factor, &cfg9).is_err());
+        assert!(
+            check_gcd_factor(factor, &cfg9).is_ok() || check_gcd_factor(factor, &cfg9).is_err()
+        );
         // Margin 8 tightens step-0 width; many factors overflow earlier.
         let early_w9 = cfg9.active_width(0);
         let early_w8 = cfg8.active_width(0);

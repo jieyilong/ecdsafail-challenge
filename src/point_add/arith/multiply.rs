@@ -56,7 +56,6 @@ pub(crate) fn mod_mul_write_into_zero_acc_schoolbook_lowq(
     b.free_vec(&tmp_ext);
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────────────
 // Litinski add-subtract (arXiv:2410.00899) primitives
 // ─────────────────────────────────────────────────────────────────────────────────────
@@ -65,7 +64,12 @@ pub(crate) fn mod_mul_write_into_zero_acc_schoolbook_lowq(
 /// Cuccaro (no carry ancillae). Saves ~n qubits of transient peak at the
 /// cost of ~n extra Toffolis per call. Useful when called inside the
 /// Kaliski-body mul sites where peak is tight.
-pub(crate) fn controlled_add_subtract_lowq(b: &mut B, x: &[QubitId], acc: &[QubitId], ctrl: QubitId) {
+pub(crate) fn controlled_add_subtract_lowq(
+    b: &mut B,
+    x: &[QubitId],
+    acc: &[QubitId],
+    ctrl: QubitId,
+) {
     let n = x.len();
     debug_assert_eq!(acc.len(), n + 1);
 
@@ -94,7 +98,12 @@ pub(crate) fn controlled_add_subtract_lowq(b: &mut B, x: &[QubitId], acc: &[Qubi
 }
 
 /// Inverse of `controlled_add_subtract_lowq`.
-pub(crate) fn controlled_add_subtract_lowq_inverse(b: &mut B, x: &[QubitId], acc: &[QubitId], ctrl: QubitId) {
+pub(crate) fn controlled_add_subtract_lowq_inverse(
+    b: &mut B,
+    x: &[QubitId],
+    acc: &[QubitId],
+    ctrl: QubitId,
+) {
     let n = x.len();
     debug_assert_eq!(acc.len(), n + 1);
 
@@ -127,7 +136,12 @@ pub(crate) fn controlled_add_subtract_lowq_inverse(b: &mut B, x: &[QubitId], acc
 /// correction adders. Saves roughly `n` transient qubits at peak vs. the
 /// `_fast` variant at the cost of ~n extra Toffolis per row. Top-level
 /// semantics identical to `schoolbook_mul_into_addsub`.
-pub(crate) fn schoolbook_mul_into_addsub_lowq(b: &mut B, x: &[QubitId], y: &[QubitId], tmp_ext: &[QubitId]) {
+pub(crate) fn schoolbook_mul_into_addsub_lowq(
+    b: &mut B,
+    x: &[QubitId],
+    y: &[QubitId],
+    tmp_ext: &[QubitId],
+) {
     let n = x.len();
     debug_assert_eq!(y.len(), n);
     debug_assert_eq!(tmp_ext.len(), 2 * n);
@@ -257,7 +271,12 @@ pub(crate) fn schoolbook_mul_into_addsub_lowq_inverse(
 //  1-level Karatsuba multiplication
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub(crate) fn karatsuba_half_sum_compute(b: &mut B, lo: &[QubitId], hi: &[QubitId], acc: &[QubitId]) {
+pub(crate) fn karatsuba_half_sum_compute(
+    b: &mut B,
+    lo: &[QubitId],
+    hi: &[QubitId],
+    acc: &[QubitId],
+) {
     let h = lo.len();
     debug_assert_eq!(h, hi.len());
     debug_assert_eq!(acc.len(), h + 1);
@@ -271,7 +290,12 @@ pub(crate) fn karatsuba_half_sum_compute(b: &mut B, lo: &[QubitId], hi: &[QubitI
     b.free(hi_pad);
 }
 
-pub(crate) fn karatsuba_half_sum_uncompute(b: &mut B, lo: &[QubitId], hi: &[QubitId], acc: &[QubitId]) {
+pub(crate) fn karatsuba_half_sum_uncompute(
+    b: &mut B,
+    lo: &[QubitId],
+    hi: &[QubitId],
+    acc: &[QubitId],
+) {
     let h = lo.len();
     let hi_pad = b.alloc_qubit();
     let mut hi_ext = hi.to_vec();
@@ -383,7 +407,11 @@ pub(crate) fn schoolbook_square_symmetric_lowq(b: &mut B, x: &[QubitId], tmp_ext
     }
 }
 
-pub(crate) fn schoolbook_square_symmetric_lowq_inverse(b: &mut B, x: &[QubitId], tmp_ext: &[QubitId]) {
+pub(crate) fn schoolbook_square_symmetric_lowq_inverse(
+    b: &mut B,
+    x: &[QubitId],
+    tmp_ext: &[QubitId],
+) {
     let n = x.len();
     for i in (0..n).rev() {
         let width = if i == n - 1 { 1 } else { n - i + 1 };
@@ -857,7 +885,12 @@ fn square_row_windowed_apply(
                     cmp_lt_into_with_cin_slow(b, &tmp_ext[base + lo..base + hi], &seg, cin, cout);
                 } else {
                     cmp_lt_into_fast_with_cin_borrowed_carries(
-                        b, &tmp_ext[base + lo..base + hi], &seg, cin, cout, &carries,
+                        b,
+                        &tmp_ext[base + lo..base + hi],
+                        &seg,
+                        cin,
+                        cout,
+                        &carries,
                     );
                 }
             } else {
@@ -880,7 +913,12 @@ fn square_row_windowed_apply(
                     cmp_lt_into_with_cin_slow(b, &seg, &tmp_ext[base + lo..base + hi], cin, cout);
                 } else {
                     cmp_lt_into_fast_with_cin_borrowed_carries(
-                        b, &seg, &tmp_ext[base + lo..base + hi], cin, cout, &carries,
+                        b,
+                        &seg,
+                        &tmp_ext[base + lo..base + hi],
+                        cin,
+                        cout,
+                        &carries,
                     );
                 }
                 for k in 0..seg_w {
@@ -894,7 +932,11 @@ fn square_row_windowed_apply(
     b.free(first_carry);
 }
 
-pub(crate) fn schoolbook_square_symmetric_lowq_selfhosted(b: &mut B, x: &[QubitId], tmp_ext: &[QubitId]) {
+pub(crate) fn schoolbook_square_symmetric_lowq_selfhosted(
+    b: &mut B,
+    x: &[QubitId],
+    tmp_ext: &[QubitId],
+) {
     schoolbook_square_symmetric_lowq_selfhosted_with_clean_supplement(b, x, tmp_ext, &[]);
 }
 
@@ -1134,10 +1176,7 @@ fn round84_inplace_quotient_carry_trunc_window() -> usize {
 }
 
 fn round84_inplace_vent_carry_enabled() -> bool {
-    std::env::var("ROUND84_INPLACE_VENT_CARRY")
-        .ok()
-        .as_deref()
-        == Some("1")
+    std::env::var("ROUND84_INPLACE_VENT_CARRY").ok().as_deref() == Some("1")
 }
 
 fn round84_correction_wrap_borrow_quotient_top_enabled() -> bool {
@@ -1215,7 +1254,11 @@ fn round84_update_fold_quotient(
     }
 }
 
-fn round84_compute_quotient_c_product(b: &mut B, quotient: &[QubitId], dirty: &[QubitId]) -> Vec<QubitId> {
+fn round84_compute_quotient_c_product(
+    b: &mut B,
+    quotient: &[QubitId],
+    dirty: &[QubitId],
+) -> Vec<QubitId> {
     // quotient <= c, so its low 33 bits suffice and quotient*c fits in 66 bits.
     let q = &quotient[..33];
     let product = b.alloc_qubits(66);
@@ -1266,7 +1309,12 @@ fn round84_compute_quotient_c_product(b: &mut B, quotient: &[QubitId], dirty: &[
     product
 }
 
-fn round84_uncompute_quotient_c_product(b: &mut B, quotient: &[QubitId], product: &[QubitId], dirty: &[QubitId]) {
+fn round84_uncompute_quotient_c_product(
+    b: &mut B,
+    quotient: &[QubitId],
+    product: &[QubitId],
+    dirty: &[QubitId],
+) {
     let q = &quotient[..33];
     if round84_qprod_naf_enabled() {
         for (shift, add) in [(10usize, true), (32, true), (5, false), (4, false)]
@@ -1440,8 +1488,8 @@ fn round84_fold_hi_into_lo_aggregate(
     }
 
     let product = round84_compute_quotient_c_product(b, &quotient, dirty);
-    let borrowed_correction_wrap = round84_correction_wrap_borrow_quotient_top_enabled()
-        .then_some(quotient[33]);
+    let borrowed_correction_wrap =
+        round84_correction_wrap_borrow_quotient_top_enabled().then_some(quotient[33]);
     let (correction_wrap, correction_wrap_owned) =
         round84_add_narrow_correction(b, lo, &product, dirty, borrowed_correction_wrap);
     let product = if round84_keep_quotient_product_enabled() {
@@ -1939,7 +1987,12 @@ pub(crate) fn squaring_sub_from_acc_schoolbook_lowq_shift22(
     b.free_vec(&tmp_ext);
 }
 
-pub(crate) fn squaring_sub_from_acc_walk_controls_lowq(b: &mut B, acc: &[QubitId], x: &[QubitId], p: U256) {
+pub(crate) fn squaring_sub_from_acc_walk_controls_lowq(
+    b: &mut B,
+    acc: &[QubitId],
+    x: &[QubitId],
+    p: U256,
+) {
     let n = acc.len();
     debug_assert_eq!(n, 256);
     debug_assert_eq!(x.len(), n);
@@ -1967,7 +2020,6 @@ pub(crate) fn squaring_sub_from_acc_walk_controls_lowq(b: &mut B, acc: &[QubitId
     b.free_vec(&ctrl_copy);
 }
 
- 
 // HYP-12 lever (the round84 Solinas fold/unfold wall @1221). The fold's
 // quotient*c product is built by shifted adds of the 33-bit quotient `q` into
 // the 66-bit `product`. To match widths the caller zero-extends `q` with a

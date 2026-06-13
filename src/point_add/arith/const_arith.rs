@@ -708,7 +708,6 @@ pub(crate) fn csub_nbit_const_direct_trunc_fast_borrowed_carries(
     b.free_vec(&owned_borrows);
 }
 
-
 pub(crate) fn cadd_per_position_controls_trunc(
     b: &mut B,
     acc: &[QubitId],
