@@ -1544,6 +1544,33 @@ fn configure_ecdsafail_submission_route() {
     );
     std::env::set_var("SQUARE_ROW_WINDOW_MEASURED_CARRY_CLEAR", "1");
     std::env::set_var("DIALOG_TAIL_NONCE", "3452376");
+
+    // BAKED: q1175 repaired lower-qubit island, full-clean nonce 91794252.
+    // Keep this self-contained for `ecdsafail run`; env-only overrides can
+    // silently reuse a stale ops.bin.
+    for (name, value) in [
+        ("DIALOG_GCD_BOUNDARY_REPLAY_BORROW_CLEANED", "1"),
+        ("DIALOG_GCD_APPLY_ALL_DIRTY_QOFFSET", "1"),
+        ("DIALOG_GCD_FOLD_STREAM_CONTROLS", "1"),
+        ("DIALOG_GCD_FOLD_HOST_STREAMED_CONTROL", "1"),
+        ("DIALOG_GCD_FOLD_HOST_E_TOP_CARRY", "1"),
+        ("DIALOG_GCD_FOLD_HOST_D_CARRY12", "1"),
+        ("DIALOG_GCD_FOLD_HOST_OVF2_CARRY13", "1"),
+        ("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "22"),
+        ("DIALOG_GCD_FOLD_CARRY_TRUNC_W", "18"),
+        ("DIALOG_GCD_FOLD_PARK_LOW_CARRIES", "17"),
+        ("DIALOG_GCD_SPECIAL_FOLD_PARK_LOW_CARRIES", "15"),
+        ("SQUARE_ROW_MAX_SEG", "144"),
+        ("DIALOG_GCD_APPLY_BORROW_FUTURE_BOUNDARY_CARRIES", "1"),
+        ("DIALOG_GCD_APPLY_CHUNKED_F_BLOCKS", "25"),
+        (
+            "DIALOG_GCD_APPLY_CHUNKED_F_CUTS",
+            "16,31,46,61,75,89,103,116,129,141,153,164,175,185,195,204,213,221,229,236,243,249,253,255",
+        ),
+        ("DIALOG_TAIL_NONCE", "91794252"),
+    ] {
+        std::env::set_var(name, value);
+    }
 }
 
 pub fn build_builder() -> B {

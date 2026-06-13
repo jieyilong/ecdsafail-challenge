@@ -147,6 +147,13 @@ pub(crate) fn dialog_gcd_apply_chunked_f_fuse_boundary_clears_enabled() -> bool 
         != Some("0")
 }
 
+pub(crate) fn dialog_gcd_apply_eager_boundary_clear_enabled() -> bool {
+    std::env::var("DIALOG_GCD_APPLY_EAGER_BOUNDARY_CLEAR")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
 pub(crate) fn dialog_gcd_apply_borrow_future_boundary_carries_enabled() -> bool {
     std::env::var("DIALOG_GCD_APPLY_BORROW_FUTURE_BOUNDARY_CARRIES")
         .ok()
