@@ -175,6 +175,54 @@ pub(crate) fn dialog_gcd_cmp_gt_truncated_phase_conditioned_hosted(
     }
 }
 
+fn dialog_gcd_cmp_lt_phase_conditioned_hosted(
+    b: &mut B,
+    u: &[QubitId],
+    v: &[QubitId],
+    ctrl: QubitId,
+    phase: BitId,
+    borrowed: Option<&[QubitId]>,
+) {
+    let n = u.len();
+    assert_eq!(v.len(), n);
+    assert!(n > 0);
+    let need = n + 1;
+    let avail = borrowed.map_or(0, <[QubitId]>::len);
+    if dialog_gcd_partial_host_comparator_enabled() && avail > 0 && avail < need {
+        let borrowed = borrowed.expect("avail > 0");
+        let owned = b.alloc_qubits(need - avail);
+        let mut clean = Vec::with_capacity(need);
+        clean.extend_from_slice(borrowed);
+        clean.extend_from_slice(&owned);
+        let (c_in, carries) = clean.split_first().expect("need >= 1");
+        cmp_lt_phase_conditioned_borrowed_carries(
+            b,
+            u,
+            v,
+            *c_in,
+            &carries[..n],
+            ctrl,
+            phase,
+        );
+        b.free_vec(&owned);
+    } else if let Some(borrowed) = borrowed.filter(|slice| slice.len() >= need) {
+        let (c_in, carries) = borrowed.split_first().expect("borrowed len >= n + 1");
+        cmp_lt_phase_conditioned_borrowed_carries(
+            b,
+            u,
+            v,
+            *c_in,
+            &carries[..n],
+            ctrl,
+            phase,
+        );
+    } else {
+        let c_in = b.alloc_qubit();
+        cmp_lt_phase_conditioned_with_cin(b, u, v, c_in, ctrl, phase);
+        b.free(c_in);
+    }
+}
+
 pub(crate) fn dialog_gcd_partial_host_comparator_enabled() -> bool {
     std::env::var("DIALOG_GCD_PARTIAL_HOST_COMPARATOR")
         .ok()
@@ -1251,13 +1299,14 @@ pub(crate) fn dialog_gcd_apply_window_blocks() -> Option<usize> {
         .filter(|&w| w >= 2)
 }
 
-pub(crate) fn dialog_gcd_clean_truncated_underflow(
+fn dialog_gcd_clean_truncated_underflow_with_borrowed(
     b: &mut B,
     acc: &[QubitId],
     a: &[QubitId],
     ctrl: QubitId,
     acc_ovf: QubitId,
     step: Option<usize>,
+    borrowed: Option<&[QubitId]>,
 ) {
     let compare_start = N - dialog_gcd_special_underflow_clean_compare_bits(step);
     for &q in &a[compare_start..] {
@@ -1267,16 +1316,14 @@ pub(crate) fn dialog_gcd_clean_truncated_underflow(
         let phase = b.alloc_bit();
         b.hmr(acc_ovf, phase);
         b.z_if(ctrl, phase);
-        let c_in = b.alloc_qubit();
-        cmp_lt_phase_conditioned_with_cin(
+        dialog_gcd_cmp_lt_phase_conditioned_hosted(
             b,
             &acc[compare_start..],
             &a[compare_start..],
-            c_in,
             ctrl,
             phase,
+            borrowed,
         );
-        b.free(c_in);
     } else {
         b.cx(ctrl, acc_ovf);
         ccx_cmp_lt_into_fast(b, &acc[compare_start..], &a[compare_start..], ctrl, acc_ovf);
@@ -1284,6 +1331,25 @@ pub(crate) fn dialog_gcd_clean_truncated_underflow(
     for &q in &a[compare_start..] {
         b.x(q);
     }
+}
+
+pub(crate) fn dialog_gcd_clean_truncated_underflow(
+    b: &mut B,
+    acc: &[QubitId],
+    a: &[QubitId],
+    ctrl: QubitId,
+    acc_ovf: QubitId,
+    step: Option<usize>,
+) {
+    dialog_gcd_clean_truncated_underflow_with_borrowed(
+        b,
+        acc,
+        a,
+        ctrl,
+        acc_ovf,
+        step,
+        None,
+    );
 }
 
 pub(crate) fn dialog_gcd_special_underflow_clean_compare_bits(step: Option<usize>) -> usize {
@@ -1919,13 +1985,14 @@ pub(crate) fn dialog_gcd_cmod_add_materialized_pseudomersenne_chunked(
                 Some("1"),
                 "special-fold scratch release requires owned in-place apply scratch"
             );
-            cadd_nbit_const_direct_trunc_fast_releasing_scratch(
+            cadd_nbit_const_direct_trunc_fast_releasing_scratch_at_step(
                 b,
                 &acc[..DIALOG_GCD_SPECIAL_ADD_LSBS],
                 c,
                 acc_ovf,
                 w,
                 borrowed_carries,
+                step,
             );
         } else {
             cadd_nbit_const_direct_trunc_fast_borrowed_carries(
@@ -1946,16 +2013,14 @@ pub(crate) fn dialog_gcd_cmod_add_materialized_pseudomersenne_chunked(
     if dialog_gcd_special_clean_conditional_replay_enabled() {
         let phase = b.alloc_bit();
         b.hmr(acc_ovf, phase);
-        let c_in = b.alloc_qubit();
-        cmp_lt_phase_conditioned_with_cin(
+        dialog_gcd_cmp_lt_phase_conditioned_hosted(
             b,
             &acc[compare_start..],
             &a[compare_start..],
-            c_in,
             ctrl,
             phase,
+            Some(clean_scratch),
         );
-        b.free(c_in);
     } else {
         ccx_cmp_lt_into_fast(b, &acc[compare_start..], &a[compare_start..], ctrl, acc_ovf);
     }
@@ -2020,13 +2085,14 @@ pub(crate) fn dialog_gcd_cmod_sub_materialized_pseudomersenne_chunked(
                 Some("1"),
                 "special-fold scratch release requires owned in-place apply scratch"
             );
-            csub_nbit_const_direct_trunc_fast_releasing_scratch(
+            csub_nbit_const_direct_trunc_fast_releasing_scratch_at_step(
                 b,
                 &acc[..DIALOG_GCD_SPECIAL_ADD_LSBS],
                 c,
                 acc_ovf,
                 w,
                 borrowed_carries,
+                step,
             );
         } else {
             csub_nbit_const_direct_trunc_fast_borrowed_carries(
@@ -2043,7 +2109,15 @@ pub(crate) fn dialog_gcd_cmod_sub_materialized_pseudomersenne_chunked(
     }
 
     b.set_phase("dialog_gcd_materialized_special_underflow_clean");
-    dialog_gcd_clean_truncated_underflow(b, acc, a, ctrl, acc_ovf, step);
+    dialog_gcd_clean_truncated_underflow_with_borrowed(
+        b,
+        acc,
+        a,
+        ctrl,
+        acc_ovf,
+        step,
+        Some(clean_scratch),
+    );
     unext_reg(b, acc_ovf);
 }
 
