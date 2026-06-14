@@ -110,8 +110,8 @@ fn load_ops(path: &str) -> Result<Vec<Op>, String> {
     let mut off = MAGIC.len() + 8;
     for i in 0..n {
         let kind_raw = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
-        let kind = op_kind_from_u32(kind_raw)
-            .ok_or_else(|| format!("op {i}: unknown kind {kind_raw}"))?;
+        let kind =
+            op_kind_from_u32(kind_raw).ok_or_else(|| format!("op {i}: unknown kind {kind_raw}"))?;
         // bytes[off+4..off+8] are reserved padding for 8-byte alignment.
         let q_control2 = QubitId(read_u64(&bytes, off + 8));
         let q_control1 = QubitId(read_u64(&bytes, off + 16));
@@ -496,7 +496,10 @@ fn main() {
     println!("  phase-garbage batches   : {}", r.phase_garbage_batches);
     println!("  ancilla-garbage batches : {}", r.ancilla_garbage_batches);
     if !r.ok {
-        let reason = r.fail_reason.clone().unwrap_or_else(|| "(no detail)".into());
+        let reason = r
+            .fail_reason
+            .clone()
+            .unwrap_or_else(|| "(no detail)".into());
         println!("\n!! correctness FAILED: {reason}");
         let fail_note = format!("{note} | {reason}");
         append_results_row(

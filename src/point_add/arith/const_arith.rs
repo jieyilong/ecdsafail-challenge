@@ -717,8 +717,7 @@ fn special_fold_park_low_carries() -> usize {
 
 fn special_fold_park_low_carries_at_step(step: Option<usize>) -> usize {
     let mapped = step.and_then(|step| {
-        let map =
-            std::env::var("DIALOG_GCD_SPECIAL_FOLD_PARK_LOW_CARRIES_STEP_MAP").ok()?;
+        let map = std::env::var("DIALOG_GCD_SPECIAL_FOLD_PARK_LOW_CARRIES_STEP_MAP").ok()?;
         map.split(',').rev().find_map(|entry| {
             let (raw_step, raw_value) = entry.trim().split_once(':')?;
             if raw_step.trim().parse::<usize>().ok()? != step {
@@ -805,15 +804,7 @@ fn cconst_nbit_direct_trunc_fast_parked(
         let measured = b.alloc_bit();
         b.hmr(prefix[i], measured);
         let carry_in = if i == 0 { None } else { Some(prefix[i - 1]) };
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            kctrl(i),
-            carry_in,
-            measured,
-            i,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, kctrl(i), carry_in, measured, i, is_add);
         b.free(prefix[i]);
     }
 
@@ -873,30 +864,14 @@ fn cconst_nbit_direct_trunc_fast_parked(
     for i in 0..park_low {
         b.reacquire(prefix[i]);
         let carry_in = if i == 0 { None } else { Some(prefix[i - 1]) };
-        fold_postsum_carry_compute(
-            b,
-            acc,
-            kctrl(i),
-            carry_in,
-            prefix[i],
-            i,
-            is_add,
-        );
+        fold_postsum_carry_compute(b, acc, kctrl(i), carry_in, prefix[i], i, is_add);
     }
 
     for i in (0..=split).rev() {
         let measured = b.alloc_bit();
         b.hmr(prefix[i], measured);
         let carry_in = if i == 0 { None } else { Some(prefix[i - 1]) };
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            kctrl(i),
-            carry_in,
-            measured,
-            i,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, kctrl(i), carry_in, measured, i, is_add);
         b.free(prefix[i]);
     }
 }
@@ -990,7 +965,6 @@ pub(crate) fn csub_nbit_const_direct_trunc_fast_releasing_scratch_at_step(
     cconst_nbit_direct_trunc_fast_parked(b, acc, c, ctrl, window, park_low, false);
     b.reacquire_vec(releasable_scratch);
 }
-
 
 pub(crate) fn cadd_per_position_controls_trunc(
     b: &mut B,
@@ -1183,17 +1157,11 @@ pub(crate) fn fold_host_derived_controls_enabled() -> bool {
 }
 
 fn fold_host_n10_enabled() -> bool {
-    std::env::var("DIALOG_GCD_FOLD_HOST_N10")
-        .ok()
-        .as_deref()
-        == Some("1")
+    std::env::var("DIALOG_GCD_FOLD_HOST_N10").ok().as_deref() == Some("1")
 }
 
 fn fold_host_h_n10_enabled() -> bool {
-    std::env::var("DIALOG_GCD_FOLD_HOST_H_N10")
-        .ok()
-        .as_deref()
-        == Some("1")
+    std::env::var("DIALOG_GCD_FOLD_HOST_H_N10").ok().as_deref() == Some("1")
 }
 
 fn fold_host_h_xed_n10_enabled() -> bool {
@@ -1204,17 +1172,11 @@ fn fold_host_h_xed_n10_enabled() -> bool {
 }
 
 fn fold_host_e_enabled() -> bool {
-    std::env::var("DIALOG_GCD_FOLD_HOST_E")
-        .ok()
-        .as_deref()
-        == Some("1")
+    std::env::var("DIALOG_GCD_FOLD_HOST_E").ok().as_deref() == Some("1")
 }
 
 fn fold_host_d_enabled() -> bool {
-    std::env::var("DIALOG_GCD_FOLD_HOST_D")
-        .ok()
-        .as_deref()
-        == Some("1")
+    std::env::var("DIALOG_GCD_FOLD_HOST_D").ok().as_deref() == Some("1")
 }
 
 /// Per-call carry window override for the FUSED FOLD only (`double_y`/`halve_y`),
@@ -1291,8 +1253,17 @@ fn fold_host_ovf2_carry13_enabled() -> bool {
         && fold_park_low_carries() >= 15
 }
 
-fn fold_stream_profile_phase(b: &mut B, add_phase: &'static str, sub_phase: &'static str, is_add: bool) {
-    if std::env::var("DIALOG_GCD_FOLD_PROFILE_PHASES").ok().as_deref() == Some("1") {
+fn fold_stream_profile_phase(
+    b: &mut B,
+    add_phase: &'static str,
+    sub_phase: &'static str,
+    is_add: bool,
+) {
+    if std::env::var("DIALOG_GCD_FOLD_PROFILE_PHASES")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         b.set_phase(if is_add { add_phase } else { sub_phase });
     }
 }
@@ -1349,14 +1320,7 @@ fn fold_postsum_carry_compute(
         if let Some(kc) = kctrl {
             b.x(acc[i]);
             if let Some(ci) = carry_in {
-                emit_fold_majority(
-                    b,
-                    acc[i],
-                    kc,
-                    ci,
-                    target,
-                    perpos_maj2_enabled(),
-                );
+                emit_fold_majority(b, acc[i], kc, ci, target, perpos_maj2_enabled());
                 b.x(acc[i]);
             } else {
                 b.ccx(acc[i], kc, target);
@@ -1369,14 +1333,7 @@ fn fold_postsum_carry_compute(
         }
     } else if let Some(kc) = kctrl {
         if let Some(ci) = carry_in {
-            emit_fold_majority(
-                b,
-                acc[i],
-                kc,
-                ci,
-                target,
-                perpos_maj2_enabled(),
-            );
+            emit_fold_majority(b, acc[i], kc, ci, target, perpos_maj2_enabled());
         } else {
             b.ccx(acc[i], kc, target);
         }
@@ -1478,9 +1435,7 @@ pub(crate) fn fold_ripple_freed_tail(
     is_add: bool,
 ) {
     // Without the e,d-extension `e,d` are held live across the whole ripple.
-    fold_ripple_freed_tail_ed(
-        b, acc, e, d, h, xed, eord, n10, None, None, last, is_add,
-    );
+    fold_ripple_freed_tail_ed(b, acc, e, d, h, xed, eord, n10, None, None, last, is_add);
 }
 
 /// Low-qubit fused-fold ripple that never materializes the four derived controls
@@ -1508,10 +1463,8 @@ pub(crate) fn fold_ripple_freed_tail_ed_streamed(
     );
     let host_streamed = fold_host_streamed_control_enabled();
     let host_e_top = free_ed && fold_host_e_top_carry_enabled();
-    let host_d_carry12 =
-        host_e_top && fold_host_d_carry12_enabled();
-    let host_ovf2_carry13 =
-        host_d_carry12 && fold_host_ovf2_carry13_enabled();
+    let host_d_carry12 = host_e_top && fold_host_d_carry12_enabled();
+    let host_ovf2_carry13 = host_d_carry12 && fold_host_ovf2_carry13_enabled();
     let maj2 = perpos_maj2_enabled();
     let kctrl = |i: usize| match i {
         0 | 4 | 6 | 32 => Some(e),
@@ -1524,15 +1477,9 @@ pub(crate) fn fold_ripple_freed_tail_ed_streamed(
         "dialog_gcd_streamed_halve_active",
         is_add,
     );
-    let low_chain_last = if host_e_top {
-        hi_delta - 1
-    } else {
-        hi_delta
-    };
+    let low_chain_last = if host_e_top { hi_delta - 1 } else { hi_delta };
     let mut low = b.alloc_qubits(
-        low_chain_last + 1
-            - usize::from(host_d_carry12)
-            - usize::from(host_ovf2_carry13),
+        low_chain_last + 1 - usize::from(host_d_carry12) - usize::from(host_ovf2_carry13),
     );
     if host_d_carry12 {
         low.insert(12, d);
@@ -1549,16 +1496,7 @@ pub(crate) fn fold_ripple_freed_tail_ed_streamed(
 
     for i in 0..7 {
         let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
-        fold_presum_carry_compute_and_sum(
-            b,
-            acc,
-            kctrl(i),
-            carry_in,
-            low[i],
-            i,
-            is_add,
-            maj2,
-        );
+        fold_presum_carry_compute_and_sum(b, acc, kctrl(i), carry_in, low[i], i, is_add, maj2);
     }
     let streamed = if host_streamed {
         streamed_slot
@@ -1635,15 +1573,7 @@ pub(crate) fn fold_ripple_freed_tail_ed_streamed(
     for i in (12..park_low).rev() {
         let m = b.alloc_bit();
         b.hmr(low[i], m);
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            kctrl(i),
-            Some(low[i - 1]),
-            m,
-            i,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, kctrl(i), Some(low[i - 1]), m, i, is_add);
         b.free(low[i]);
     }
     if host_d_carry12 {
@@ -1657,56 +1587,24 @@ pub(crate) fn fold_ripple_freed_tail_ed_streamed(
     }
     let m11 = b.alloc_bit();
     b.hmr(low[11], m11);
-    fold_postsum_carry_phase_uncompute(
-        b,
-        acc,
-        Some(streamed),
-        Some(low[10]),
-        m11,
-        11,
-        is_add,
-    );
+    fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[10]), m11, 11, is_add);
     b.free(low[11]);
     b.cx(d, streamed);
     let m10 = b.alloc_bit();
     b.hmr(low[10], m10);
-    fold_postsum_carry_phase_uncompute(
-        b,
-        acc,
-        Some(streamed),
-        Some(low[9]),
-        m10,
-        10,
-        is_add,
-    );
+    fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[9]), m10, 10, is_add);
     b.free(low[10]);
     b.cx(e, streamed);
     for i in (8..10).rev() {
         let m = b.alloc_bit();
         b.hmr(low[i], m);
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            Some(streamed),
-            Some(low[i - 1]),
-            m,
-            i,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[i - 1]), m, i, is_add);
         b.free(low[i]);
     }
     b.ccx(e, d, streamed);
     let m7 = b.alloc_bit();
     b.hmr(low[7], m7);
-    fold_postsum_carry_phase_uncompute(
-        b,
-        acc,
-        Some(streamed),
-        Some(low[6]),
-        m7,
-        7,
-        is_add,
-    );
+    fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[6]), m7, 7, is_add);
     b.free(low[7]);
     b.cx(d, streamed);
     b.cx(e, streamed);
@@ -1715,15 +1613,7 @@ pub(crate) fn fold_ripple_freed_tail_ed_streamed(
         let m = b.alloc_bit();
         b.hmr(low[i], m);
         let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            kctrl(i),
-            carry_in,
-            m,
-            i,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, kctrl(i), carry_in, m, i, is_add);
         b.free(low[i]);
     }
 
@@ -1853,23 +1743,13 @@ pub(crate) fn fold_ripple_freed_tail_ed_streamed(
     }
 
     for i in 0..park_low {
-        if !(host_d_carry12 && i == 12)
-            && !(host_ovf2_carry13 && i == 13)
-        {
+        if !(host_d_carry12 && i == 12) && !(host_ovf2_carry13 && i == 13) {
             b.reacquire(low[i]);
         }
     }
     for i in 0..7 {
         let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
-        fold_postsum_carry_compute(
-            b,
-            acc,
-            kctrl(i),
-            carry_in,
-            low[i],
-            i,
-            is_add,
-        );
+        fold_postsum_carry_compute(b, acc, kctrl(i), carry_in, low[i], i, is_add);
     }
     let streamed = if host_streamed {
         streamed_slot
@@ -1878,47 +1758,15 @@ pub(crate) fn fold_ripple_freed_tail_ed_streamed(
     };
     b.cx(e, streamed);
     b.cx(d, streamed);
-    fold_postsum_carry_compute(
-        b,
-        acc,
-        Some(streamed),
-        Some(low[6]),
-        low[7],
-        7,
-        is_add,
-    );
+    fold_postsum_carry_compute(b, acc, Some(streamed), Some(low[6]), low[7], 7, is_add);
     b.ccx(e, d, streamed);
     for i in 8..10 {
-        fold_postsum_carry_compute(
-            b,
-            acc,
-            Some(streamed),
-            Some(low[i - 1]),
-            low[i],
-            i,
-            is_add,
-        );
+        fold_postsum_carry_compute(b, acc, Some(streamed), Some(low[i - 1]), low[i], i, is_add);
     }
     b.cx(e, streamed);
-    fold_postsum_carry_compute(
-        b,
-        acc,
-        Some(streamed),
-        Some(low[9]),
-        low[10],
-        10,
-        is_add,
-    );
+    fold_postsum_carry_compute(b, acc, Some(streamed), Some(low[9]), low[10], 10, is_add);
     b.cx(d, streamed);
-    fold_postsum_carry_compute(
-        b,
-        acc,
-        Some(streamed),
-        Some(low[10]),
-        low[11],
-        11,
-        is_add,
-    );
+    fold_postsum_carry_compute(b, acc, Some(streamed), Some(low[10]), low[11], 11, is_add);
     if host_streamed {
         b.ccx(e, d, streamed);
     }
@@ -1927,29 +1775,13 @@ pub(crate) fn fold_ripple_freed_tail_ed_streamed(
         b.ccx(ovf1, s2, d);
     }
     for i in 12..park_low {
-        fold_postsum_carry_compute(
-            b,
-            acc,
-            kctrl(i),
-            Some(low[i - 1]),
-            low[i],
-            i,
-            is_add,
-        );
+        fold_postsum_carry_compute(b, acc, kctrl(i), Some(low[i - 1]), low[i], i, is_add);
     }
 
     for i in (12..=low_chain_last).rev() {
         let m = b.alloc_bit();
         b.hmr(low[i], m);
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            kctrl(i),
-            Some(low[i - 1]),
-            m,
-            i,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, kctrl(i), Some(low[i - 1]), m, i, is_add);
         b.free(low[i]);
     }
     if host_d_carry12 {
@@ -1970,56 +1802,24 @@ pub(crate) fn fold_ripple_freed_tail_ed_streamed(
     }
     let m11 = b.alloc_bit();
     b.hmr(low[11], m11);
-    fold_postsum_carry_phase_uncompute(
-        b,
-        acc,
-        Some(streamed),
-        Some(low[10]),
-        m11,
-        11,
-        is_add,
-    );
+    fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[10]), m11, 11, is_add);
     b.free(low[11]);
     b.cx(d, streamed);
     let m10 = b.alloc_bit();
     b.hmr(low[10], m10);
-    fold_postsum_carry_phase_uncompute(
-        b,
-        acc,
-        Some(streamed),
-        Some(low[9]),
-        m10,
-        10,
-        is_add,
-    );
+    fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[9]), m10, 10, is_add);
     b.free(low[10]);
     b.cx(e, streamed);
     for i in (8..10).rev() {
         let m = b.alloc_bit();
         b.hmr(low[i], m);
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            Some(streamed),
-            Some(low[i - 1]),
-            m,
-            i,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[i - 1]), m, i, is_add);
         b.free(low[i]);
     }
     b.ccx(e, d, streamed);
     let m7 = b.alloc_bit();
     b.hmr(low[7], m7);
-    fold_postsum_carry_phase_uncompute(
-        b,
-        acc,
-        Some(streamed),
-        Some(low[6]),
-        m7,
-        7,
-        is_add,
-    );
+    fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[6]), m7, 7, is_add);
     b.free(low[7]);
     b.cx(d, streamed);
     b.cx(e, streamed);
@@ -2028,15 +1828,7 @@ pub(crate) fn fold_ripple_freed_tail_ed_streamed(
         let m = b.alloc_bit();
         b.hmr(low[i], m);
         let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            kctrl(i),
-            carry_in,
-            m,
-            i,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, kctrl(i), carry_in, m, i, is_add);
         b.free(low[i]);
     }
     drop(low);
@@ -2095,16 +1887,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
         b.hmr(h, mh);
         b.cz_if(e, d, mh);
         b.free(h);
-        fold_ripple_freed_tail_ed_streamed(
-            b,
-            acc,
-            e,
-            d,
-            ed,
-            configured_park_low,
-            last,
-            is_add,
-        );
+        fold_ripple_freed_tail_ed_streamed(b, acc, e, d, ed, configured_park_low, last, is_add);
         b.reacquire(h);
         b.ccx(e, d, h);
         b.reacquire(xed);
@@ -2130,17 +1913,14 @@ pub(crate) fn fold_ripple_freed_tail_ed(
     let maj2 = perpos_maj2_enabled();
     let park_low = core::cmp::min(configured_park_low, hi_delta);
     let host_all_derived = fold_host_derived_controls_enabled() && park_low >= 15;
-    let host_h_xed_n10 =
-        (fold_host_h_xed_n10_enabled() || host_all_derived) && park_low >= 14;
-    let host_h_n10 =
-        (fold_host_h_n10_enabled() || host_h_xed_n10) && park_low >= 13;
+    let host_h_xed_n10 = (fold_host_h_xed_n10_enabled() || host_all_derived) && park_low >= 14;
+    let host_h_n10 = (fold_host_h_n10_enabled() || host_h_xed_n10) && park_low >= 13;
     let host_xed = host_h_xed_n10;
     let host_eord = host_all_derived;
     let host_e = fold_host_e_enabled() && host_all_derived && free_ed && park_low >= 17;
     let host_d = fold_host_d_enabled() && host_e && park_low >= 18;
     let host_n10 = (fold_host_n10_enabled() || host_h_n10) && park_low >= 12;
-    let stream_controls =
-        fold_stream_controls_enabled() && park_low >= 12 && !host_n10;
+    let stream_controls = fold_stream_controls_enabled() && park_low >= 12 && !host_n10;
 
     if stream_controls {
         b.cx(h, n10);
@@ -2299,10 +2079,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
         b.cx(d_ctrl, n10_host);
         b.cx(h_host, n10_host);
         for i in 0..=hi_delta {
-            if (host_d && i == 28)
-                || (!host_d && host_e && i == 29)
-                || (!host_e && i == 30)
-            {
+            if (host_d && i == 28) || (!host_d && host_e && i == 29) || (!host_e && i == 30) {
                 b.cx(h_host, n10_host);
                 b.cx(d_ctrl, n10_host);
                 if let Some(eord_host) = eord_host {
@@ -2442,16 +2219,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
     } else if stream_controls {
         for i in 0..7 {
             let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
-            fold_presum_carry_compute_and_sum(
-                b,
-                acc,
-                kctrl(i),
-                carry_in,
-                low[i],
-                i,
-                is_add,
-                maj2,
-            );
+            fold_presum_carry_compute_and_sum(b, acc, kctrl(i), carry_in, low[i], i, is_add, maj2);
         }
         let streamed = b.alloc_qubit();
         b.cx(e, streamed);
@@ -2659,15 +2427,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
                     8 | 9 if host_eord => rev_eord,
                     _ => kctrl(i),
                 };
-                fold_postsum_carry_phase_uncompute(
-                    b,
-                    acc,
-                    kc,
-                    carry_in,
-                    m,
-                    i,
-                    is_add,
-                );
+                fold_postsum_carry_phase_uncompute(b, acc, kc, carry_in, m, i, is_add);
                 b.free(low[i]);
             }
             if let Some(rev_eord) = rev_eord {
@@ -2714,9 +2474,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
                 b.hmr(low[i], m);
                 let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
                 let kc = if i == 10 { Some(rev_n10) } else { kctrl(i) };
-                fold_postsum_carry_phase_uncompute(
-                    b, acc, kc, carry_in, m, i, is_add,
-                );
+                fold_postsum_carry_phase_uncompute(b, acc, kc, carry_in, m, i, is_add);
                 b.free(low[i]);
             }
             b.cx(h, rev_n10);
@@ -2783,15 +2541,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
             b.ccx(e, d, streamed);
             let m7 = b.alloc_bit();
             b.hmr(low[7], m7);
-            fold_postsum_carry_phase_uncompute(
-                b,
-                acc,
-                Some(streamed),
-                Some(low[6]),
-                m7,
-                7,
-                is_add,
-            );
+            fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[6]), m7, 7, is_add);
             b.free(low[7]);
             b.cx(d, streamed);
             b.cx(e, streamed);
@@ -2800,15 +2550,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
                 let m = b.alloc_bit();
                 b.hmr(low[i], m);
                 let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
-                fold_postsum_carry_phase_uncompute(
-                    b,
-                    acc,
-                    kctrl(i),
-                    carry_in,
-                    m,
-                    i,
-                    is_add,
-                );
+                fold_postsum_carry_phase_uncompute(b, acc, kctrl(i), carry_in, m, i, is_add);
                 b.free(low[i]);
             }
         } else {
@@ -2816,15 +2558,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
                 let m = b.alloc_bit();
                 b.hmr(low[i], m);
                 let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
-                fold_postsum_carry_phase_uncompute(
-                    b,
-                    acc,
-                    kctrl(i),
-                    carry_in,
-                    m,
-                    i,
-                    is_add,
-                );
+                fold_postsum_carry_phase_uncompute(b, acc, kctrl(i), carry_in, m, i, is_add);
                 b.free(low[i]);
             }
         }
@@ -3005,15 +2739,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
             // low[31] carries d across the tail. Reconstruct carry 31 into a
             // temporary clean slot solely to phase-uncompute carry 32.
             let carry31 = b.alloc_qubit();
-            fold_postsum_carry_compute(
-                b,
-                acc,
-                None,
-                Some(low[30]),
-                carry31,
-                31,
-                is_add,
-            );
+            fold_postsum_carry_compute(b, acc, None, Some(low[30]), carry31, 31, is_add);
             let measured32 = b.alloc_bit();
             b.hmr(low[32], measured32);
             fold_postsum_carry_phase_uncompute(
@@ -3028,15 +2754,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
             b.free(low[32]);
             let measured31 = b.alloc_bit();
             b.hmr(carry31, measured31);
-            fold_postsum_carry_phase_uncompute(
-                b,
-                acc,
-                None,
-                Some(low[30]),
-                measured31,
-                31,
-                is_add,
-            );
+            fold_postsum_carry_phase_uncompute(b, acc, None, Some(low[30]), measured31, 31, is_add);
             b.free(carry31);
 
             for i in (28..=30).rev() {
@@ -3105,15 +2823,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
 
         for i in 0..7 {
             let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
-            fold_postsum_carry_compute(
-                b,
-                acc,
-                kctrl(i),
-                carry_in,
-                low[i],
-                i,
-                is_add,
-            );
+            fold_postsum_carry_compute(b, acc, kctrl(i), carry_in, low[i], i, is_add);
         }
 
         // One temporary control walks through all four nonlinear predicates:
@@ -3121,57 +2831,17 @@ pub(crate) fn fold_ripple_freed_tail_ed(
         let streamed = b.alloc_qubit();
         b.cx(e, streamed);
         b.cx(d, streamed);
-        fold_postsum_carry_compute(
-            b,
-            acc,
-            Some(streamed),
-            Some(low[6]),
-            low[7],
-            7,
-            is_add,
-        );
+        fold_postsum_carry_compute(b, acc, Some(streamed), Some(low[6]), low[7], 7, is_add);
         b.ccx(e, d, streamed);
         for i in 8..10 {
-            fold_postsum_carry_compute(
-                b,
-                acc,
-                Some(streamed),
-                Some(low[i - 1]),
-                low[i],
-                i,
-                is_add,
-            );
+            fold_postsum_carry_compute(b, acc, Some(streamed), Some(low[i - 1]), low[i], i, is_add);
         }
         b.cx(e, streamed);
-        fold_postsum_carry_compute(
-            b,
-            acc,
-            Some(streamed),
-            Some(low[9]),
-            low[10],
-            10,
-            is_add,
-        );
+        fold_postsum_carry_compute(b, acc, Some(streamed), Some(low[9]), low[10], 10, is_add);
         b.cx(d, streamed);
-        fold_postsum_carry_compute(
-            b,
-            acc,
-            Some(streamed),
-            Some(low[10]),
-            low[11],
-            11,
-            is_add,
-        );
+        fold_postsum_carry_compute(b, acc, Some(streamed), Some(low[10]), low[11], 11, is_add);
         for i in 12..park_low {
-            fold_postsum_carry_compute(
-                b,
-                acc,
-                kctrl(i),
-                Some(low[i - 1]),
-                low[i],
-                i,
-                is_add,
-            );
+            fold_postsum_carry_compute(b, acc, kctrl(i), Some(low[i - 1]), low[i], i, is_add);
         }
 
         // High active carries use only direct e/d controls. Keeping `streamed`
@@ -3179,43 +2849,19 @@ pub(crate) fn fold_ripple_freed_tail_ed(
         for i in (12..=hi_delta).rev() {
             let m = b.alloc_bit();
             b.hmr(low[i], m);
-            fold_postsum_carry_phase_uncompute(
-                b,
-                acc,
-                kctrl(i),
-                Some(low[i - 1]),
-                m,
-                i,
-                is_add,
-            );
+            fold_postsum_carry_phase_uncompute(b, acc, kctrl(i), Some(low[i - 1]), m, i, is_add);
             b.free(low[i]);
         }
 
         let m11 = b.alloc_bit();
         b.hmr(low[11], m11);
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            Some(streamed),
-            Some(low[10]),
-            m11,
-            11,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[10]), m11, 11, is_add);
         b.free(low[11]);
         b.cx(d, streamed);
 
         let m10 = b.alloc_bit();
         b.hmr(low[10], m10);
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            Some(streamed),
-            Some(low[9]),
-            m10,
-            10,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[9]), m10, 10, is_add);
         b.free(low[10]);
         b.cx(e, streamed);
 
@@ -3237,15 +2883,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
 
         let m7 = b.alloc_bit();
         b.hmr(low[7], m7);
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            Some(streamed),
-            Some(low[6]),
-            m7,
-            7,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, Some(streamed), Some(low[6]), m7, 7, is_add);
         b.free(low[7]);
         b.cx(d, streamed);
         b.cx(e, streamed);
@@ -3255,15 +2893,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
             let m = b.alloc_bit();
             b.hmr(low[i], m);
             let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
-            fold_postsum_carry_phase_uncompute(
-                b,
-                acc,
-                kctrl(i),
-                carry_in,
-                m,
-                i,
-                is_add,
-            );
+            fold_postsum_carry_phase_uncompute(b, acc, kctrl(i), carry_in, m, i, is_add);
             b.free(low[i]);
         }
         drop(low);
@@ -3297,15 +2927,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
             for i in 0..park_low {
                 b.reacquire(low[i]);
                 let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
-                fold_postsum_carry_compute(
-                    b,
-                    acc,
-                    kctrl(i),
-                    carry_in,
-                    low[i],
-                    i,
-                    is_add,
-                );
+                fold_postsum_carry_compute(b, acc, kctrl(i), carry_in, low[i], i, is_add);
             }
         }
 
@@ -3325,15 +2947,7 @@ pub(crate) fn fold_ripple_freed_tail_ed(
             let m = b.alloc_bit();
             b.hmr(low[i], m);
             let carry_in = if i == 0 { None } else { Some(low[i - 1]) };
-            fold_postsum_carry_phase_uncompute(
-                b,
-                acc,
-                kctrl(i),
-                carry_in,
-                m,
-                i,
-                is_add,
-            );
+            fold_postsum_carry_phase_uncompute(b, acc, kctrl(i), carry_in, m, i, is_add);
             b.free(low[i]);
         }
         drop(low);
@@ -3474,11 +3088,7 @@ fn fold_ripple_freed_tail_ed_hosted(
                     maj2,
                 );
             } else {
-                b.ccx(
-                    acc[i],
-                    carry_in.expect("high carry-in"),
-                    target,
-                );
+                b.ccx(acc[i], carry_in.expect("high carry-in"), target);
             }
         } else if let Some(kc) = kctrl {
             b.x(acc[i]);
@@ -3493,11 +3103,7 @@ fn fold_ripple_freed_tail_ed_hosted(
             b.x(acc[i]);
         } else {
             b.x(acc[i]);
-            b.ccx(
-                acc[i],
-                carry_in.expect("high carry-in"),
-                target,
-            );
+            b.ccx(acc[i], carry_in.expect("high carry-in"), target);
             b.x(acc[i]);
         }
     }
@@ -3514,9 +3120,8 @@ fn fold_ripple_freed_tail_ed_hosted(
     }
 
     if park_low > 0 {
-        let controls = secp_fold_controls(
-            e, d, h_host, xed_host, eord_host, n10_host, hi_delta, 32,
-        );
+        let controls =
+            secp_fold_controls(e, d, h_host, xed_host, eord_host, n10_host, hi_delta, 32);
         for i in (0..park_low).rev() {
             let m = b.alloc_bit();
             b.hmr(low[i], m);
@@ -3605,15 +3210,7 @@ fn fold_ripple_freed_tail_ed_hosted(
             33 => Some(d),
             _ => None,
         };
-        fold_postsum_carry_phase_uncompute(
-            b,
-            acc,
-            kctrl,
-            Some(low[i - 1]),
-            m,
-            i,
-            is_add,
-        );
+        fold_postsum_carry_phase_uncompute(b, acc, kctrl, Some(low[i - 1]), m, i, is_add);
         b.free(low[i]);
     }
 
@@ -3631,8 +3228,7 @@ fn fold_ripple_freed_tail_ed_hosted(
     b.cx(rev_h, rev_eord);
     b.cx(d, rev_n10);
     b.cx(rev_h, rev_n10);
-    let controls =
-        secp_fold_controls(e, d, rev_h, rev_xed, rev_eord, rev_n10, hi_delta, 32);
+    let controls = secp_fold_controls(e, d, rev_h, rev_xed, rev_eord, rev_n10, hi_delta, 32);
 
     if park_low > 0 {
         for i in 0..park_low {

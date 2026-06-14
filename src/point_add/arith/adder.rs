@@ -124,6 +124,72 @@ pub(crate) fn cuccaro_add_fast_borrowed_carries(
     b.cx(c_in, acc[0]);
 }
 
+pub(crate) fn cuccaro_add_fast_borrowed_carries_gate_suffix(
+    b: &mut B,
+    a: &[QubitId],
+    acc: &[QubitId],
+    c_in: QubitId,
+    carries: &[QubitId],
+    gate_suffix: usize,
+) {
+    let n = a.len();
+    assert_eq!(n, acc.len());
+    if n == 0 {
+        return;
+    }
+    if n == 1 || gate_suffix == 0 {
+        return cuccaro_add_fast_borrowed_carries(b, a, acc, c_in, carries);
+    }
+    let borrowed = (n - 1).saturating_sub(gate_suffix.min(n - 1));
+    if borrowed >= n - 1 {
+        return cuccaro_add_fast_borrowed_carries(b, a, acc, c_in, carries);
+    }
+    assert!(carries.len() >= borrowed);
+
+    if borrowed == 0 {
+        maj(b, c_in, acc[0], a[0]);
+    } else {
+        b.cx(a[0], acc[0]);
+        b.cx(a[0], c_in);
+        b.ccx(c_in, acc[0], carries[0]);
+        b.cx(carries[0], a[0]);
+        for i in 1..borrowed {
+            b.cx(a[i], acc[i]);
+            b.cx(a[i], a[i - 1]);
+            b.ccx(a[i - 1], acc[i], carries[i]);
+            b.cx(carries[i], a[i]);
+        }
+    }
+    for i in borrowed.max(1)..n - 1 {
+        maj(b, a[i - 1], acc[i], a[i]);
+    }
+
+    b.cx(a[n - 2], acc[n - 1]);
+    b.cx(a[n - 1], acc[n - 1]);
+
+    for i in (borrowed.max(1)..n - 1).rev() {
+        uma(b, a[i - 1], acc[i], a[i]);
+    }
+    if borrowed == 0 {
+        uma(b, c_in, acc[0], a[0]);
+    } else {
+        for i in (1..borrowed).rev() {
+            b.cx(carries[i], a[i]);
+            let m = b.alloc_bit();
+            b.hmr(carries[i], m);
+            b.cz_if(a[i - 1], acc[i], m);
+            b.cx(a[i], a[i - 1]);
+            b.cx(a[i - 1], acc[i]);
+        }
+        b.cx(carries[0], a[0]);
+        let m0 = b.alloc_bit();
+        b.hmr(carries[0], m0);
+        b.cz_if(c_in, acc[0], m0);
+        b.cx(a[0], c_in);
+        b.cx(c_in, acc[0]);
+    }
+}
+
 /// In-place addition `acc += a mod 2^n` on quantum n-bit registers.
 /// * `c_in` is a fresh ancilla qubit at 0 on entry and returns to 0.
 /// * `a` unchanged; `acc` becomes (a + acc) mod 2^n.
@@ -270,7 +336,6 @@ pub(crate) fn cuccaro_sub_low_to_ext_clean(
     inv_maj(b, c_in, acc_ext[0], a[0]);
 }
 
-
 pub(crate) fn load_const(b: &mut B, n: usize, c: U256) -> Vec<QubitId> {
     let qs = b.alloc_qubits(n);
     for i in 0..n {
@@ -373,7 +438,12 @@ pub(crate) fn cuccaro_sub_fast(b: &mut B, a: &[QubitId], acc: &[QubitId], c_in: 
 
 /// Fast Cuccaro add into an extended accumulator where the source high bit is
 /// known zero: `acc_ext += a + c_in (mod 2^(n+1))`.
-pub(crate) fn cuccaro_add_fast_low_to_ext(b: &mut B, a: &[QubitId], acc_ext: &[QubitId], c_in: QubitId) {
+pub(crate) fn cuccaro_add_fast_low_to_ext(
+    b: &mut B,
+    a: &[QubitId],
+    acc_ext: &[QubitId],
+    c_in: QubitId,
+) {
     let n = a.len();
     assert_eq!(acc_ext.len(), n + 1);
     if n == 0 {
@@ -416,7 +486,12 @@ pub(crate) fn cuccaro_add_fast_low_to_ext(b: &mut B, a: &[QubitId], acc_ext: &[Q
 
 /// Fast Cuccaro subtract from an extended accumulator where the source high bit
 /// is known zero: `acc_ext -= a + c_in (mod 2^(n+1))`.
-pub(crate) fn cuccaro_sub_fast_low_to_ext(b: &mut B, a: &[QubitId], acc_ext: &[QubitId], c_in: QubitId) {
+pub(crate) fn cuccaro_sub_fast_low_to_ext(
+    b: &mut B,
+    a: &[QubitId],
+    acc_ext: &[QubitId],
+    c_in: QubitId,
+) {
     let n = a.len();
     assert_eq!(acc_ext.len(), n + 1);
     if n == 0 {
@@ -455,6 +530,112 @@ pub(crate) fn cuccaro_sub_fast_low_to_ext(b: &mut B, a: &[QubitId], acc_ext: &[Q
     b.cx(a[0], acc_ext[0]);
 
     b.free_vec(&carries);
+}
+
+pub(crate) fn cuccaro_add_fast_low_to_ext_borrowed_carries_gate_suffix(
+    b: &mut B,
+    a: &[QubitId],
+    acc_ext: &[QubitId],
+    c_in: QubitId,
+    carries: &[QubitId],
+    gate_suffix: usize,
+) {
+    let n = a.len();
+    assert_eq!(acc_ext.len(), n + 1);
+    if n == 0 {
+        b.cx(c_in, acc_ext[0]);
+        return;
+    }
+    let borrowed = n.saturating_sub(gate_suffix.min(n - 1));
+    assert!(borrowed >= 1);
+    assert!(carries.len() >= borrowed);
+
+    b.cx(a[0], acc_ext[0]);
+    b.cx(a[0], c_in);
+    b.ccx(c_in, acc_ext[0], carries[0]);
+    b.cx(carries[0], a[0]);
+    for i in 1..borrowed {
+        b.cx(a[i], acc_ext[i]);
+        b.cx(a[i], a[i - 1]);
+        b.ccx(a[i - 1], acc_ext[i], carries[i]);
+        b.cx(carries[i], a[i]);
+    }
+    for i in borrowed..n {
+        maj(b, a[i - 1], acc_ext[i], a[i]);
+    }
+
+    b.cx(a[n - 1], acc_ext[n]);
+
+    for i in (borrowed..n).rev() {
+        uma(b, a[i - 1], acc_ext[i], a[i]);
+    }
+    for i in (1..borrowed).rev() {
+        b.cx(carries[i], a[i]);
+        let m = b.alloc_bit();
+        b.hmr(carries[i], m);
+        b.cz_if(a[i - 1], acc_ext[i], m);
+        b.cx(a[i], a[i - 1]);
+        b.cx(a[i - 1], acc_ext[i]);
+    }
+    b.cx(carries[0], a[0]);
+    let m0 = b.alloc_bit();
+    b.hmr(carries[0], m0);
+    b.cz_if(c_in, acc_ext[0], m0);
+    b.cx(a[0], c_in);
+    b.cx(c_in, acc_ext[0]);
+}
+
+pub(crate) fn cuccaro_sub_fast_low_to_ext_borrowed_carries_gate_suffix(
+    b: &mut B,
+    a: &[QubitId],
+    acc_ext: &[QubitId],
+    c_in: QubitId,
+    carries: &[QubitId],
+    gate_suffix: usize,
+) {
+    let n = a.len();
+    assert_eq!(acc_ext.len(), n + 1);
+    if n == 0 {
+        b.cx(c_in, acc_ext[0]);
+        return;
+    }
+    let borrowed = n.saturating_sub(gate_suffix.min(n - 1));
+    assert!(borrowed >= 1);
+    assert!(carries.len() >= borrowed);
+
+    b.cx(c_in, acc_ext[0]);
+    b.cx(a[0], c_in);
+    b.ccx(c_in, acc_ext[0], carries[0]);
+    b.cx(carries[0], a[0]);
+    for i in 1..borrowed {
+        b.cx(a[i - 1], acc_ext[i]);
+        b.cx(a[i], a[i - 1]);
+        b.ccx(a[i - 1], acc_ext[i], carries[i]);
+        b.cx(carries[i], a[i]);
+    }
+    for i in borrowed..n {
+        inv_uma(b, a[i - 1], acc_ext[i], a[i]);
+    }
+
+    b.cx(a[n - 1], acc_ext[n]);
+
+    for i in (borrowed..n).rev() {
+        inv_maj(b, a[i - 1], acc_ext[i], a[i]);
+    }
+    for i in (1..borrowed).rev() {
+        b.cx(carries[i], a[i]);
+        let m = b.alloc_bit();
+        b.hmr(carries[i], m);
+        b.cz_if(a[i - 1], acc_ext[i], m);
+        b.cx(a[i], a[i - 1]);
+        b.cx(a[i], acc_ext[i]);
+    }
+    b.cx(carries[0], a[0]);
+    let m0 = b.alloc_bit();
+    b.hmr(carries[0], m0);
+    b.cz_if(c_in, acc_ext[0], m0);
+    b.cx(a[0], c_in);
+    b.cx(a[0], acc_ext[0]);
 }
 
 pub(crate) fn cuccaro_add_fast_low_to_ext_topclean(
@@ -850,7 +1031,6 @@ pub(crate) fn cuccaro_sub_fast_prefix_ctrl_suffix_no_cin(
     b.cx(prefix[0], acc[0]);
 }
 
-
 pub(crate) fn cuccaro_add_fast_windowed_low_to_ext(
     b: &mut B,
     a: &[QubitId],
@@ -959,7 +1139,6 @@ pub(crate) fn cuccaro_sub_fast_windowed_low_to_ext(
     }
 }
 
-
 pub(crate) fn cuccaro_sub_fast_borrowed_carries(
     b: &mut B,
     a: &[QubitId],
@@ -1007,6 +1186,72 @@ pub(crate) fn cuccaro_sub_fast_borrowed_carries(
     b.cz_if(c_in, acc[0], m0);
     b.cx(a[0], c_in);
     b.cx(a[0], acc[0]);
+}
+
+pub(crate) fn cuccaro_sub_fast_borrowed_carries_gate_suffix(
+    b: &mut B,
+    a: &[QubitId],
+    acc: &[QubitId],
+    c_in: QubitId,
+    carries: &[QubitId],
+    gate_suffix: usize,
+) {
+    let n = a.len();
+    assert_eq!(n, acc.len());
+    if n == 0 {
+        return;
+    }
+    if n == 1 || gate_suffix == 0 {
+        return cuccaro_sub_fast_borrowed_carries(b, a, acc, c_in, carries);
+    }
+    let borrowed = (n - 1).saturating_sub(gate_suffix.min(n - 1));
+    if borrowed >= n - 1 {
+        return cuccaro_sub_fast_borrowed_carries(b, a, acc, c_in, carries);
+    }
+    assert!(carries.len() >= borrowed);
+
+    if borrowed == 0 {
+        inv_uma(b, c_in, acc[0], a[0]);
+    } else {
+        b.cx(c_in, acc[0]);
+        b.cx(a[0], c_in);
+        b.ccx(c_in, acc[0], carries[0]);
+        b.cx(carries[0], a[0]);
+        for i in 1..borrowed {
+            b.cx(a[i - 1], acc[i]);
+            b.cx(a[i], a[i - 1]);
+            b.ccx(a[i - 1], acc[i], carries[i]);
+            b.cx(carries[i], a[i]);
+        }
+    }
+    for i in borrowed.max(1)..n - 1 {
+        inv_uma(b, a[i - 1], acc[i], a[i]);
+    }
+
+    b.cx(a[n - 1], acc[n - 1]);
+    b.cx(a[n - 2], acc[n - 1]);
+
+    for i in (borrowed.max(1)..n - 1).rev() {
+        inv_maj(b, a[i - 1], acc[i], a[i]);
+    }
+    if borrowed == 0 {
+        inv_maj(b, c_in, acc[0], a[0]);
+    } else {
+        for i in (1..borrowed).rev() {
+            b.cx(carries[i], a[i]);
+            let m = b.alloc_bit();
+            b.hmr(carries[i], m);
+            b.cz_if(a[i - 1], acc[i], m);
+            b.cx(a[i], a[i - 1]);
+            b.cx(a[i], acc[i]);
+        }
+        b.cx(carries[0], a[0]);
+        let m0 = b.alloc_bit();
+        b.hmr(carries[0], m0);
+        b.cz_if(c_in, acc[0], m0);
+        b.cx(a[0], c_in);
+        b.cx(a[0], acc[0]);
+    }
 }
 
 /// Zero-carry-in specialization of [`cuccaro_add_fast_borrowed_carries`]
@@ -1123,7 +1368,6 @@ pub(crate) fn cuccaro_sub_fast_borrowed_carries_no_cin(
     b.cx(a[0], acc[0]);
 }
 
-
 pub(crate) fn inv_maj(b: &mut B, x: QubitId, y: QubitId, w: QubitId) {
     // maj = CX(w,y); CX(w,x); CCX(x,y,w)
     // inv = CCX(x,y,w); CX(w,x); CX(w,y)
@@ -1153,7 +1397,6 @@ pub(crate) fn cswap(b: &mut B, ctrl: QubitId, a: QubitId, t: QubitId) {
     b.ccx(ctrl, a, t);
     b.cx(t, a);
 }
-
 
 /// flag ^= (u < v).  Non-destructive on u and v.
 ///
@@ -1206,25 +1449,53 @@ pub(crate) fn mcx3_polar(
     }
 }
 
-pub(crate) fn ctrl_maj(b: &mut B, ctrl: QubitId, x: QubitId, y: QubitId, w: QubitId, scratch: QubitId) {
+pub(crate) fn ctrl_maj(
+    b: &mut B,
+    ctrl: QubitId,
+    x: QubitId,
+    y: QubitId,
+    w: QubitId,
+    scratch: QubitId,
+) {
     b.ccx(ctrl, w, y);
     b.ccx(ctrl, w, x);
     mcx3_polar(b, ctrl, true, x, true, y, true, w, scratch);
 }
 
-pub(crate) fn ctrl_uma(b: &mut B, ctrl: QubitId, x: QubitId, y: QubitId, w: QubitId, scratch: QubitId) {
+pub(crate) fn ctrl_uma(
+    b: &mut B,
+    ctrl: QubitId,
+    x: QubitId,
+    y: QubitId,
+    w: QubitId,
+    scratch: QubitId,
+) {
     mcx3_polar(b, ctrl, true, x, true, y, true, w, scratch);
     b.ccx(ctrl, w, x);
     b.ccx(ctrl, x, y);
 }
 
-pub(crate) fn ctrl_inv_maj(b: &mut B, ctrl: QubitId, x: QubitId, y: QubitId, w: QubitId, scratch: QubitId) {
+pub(crate) fn ctrl_inv_maj(
+    b: &mut B,
+    ctrl: QubitId,
+    x: QubitId,
+    y: QubitId,
+    w: QubitId,
+    scratch: QubitId,
+) {
     mcx3_polar(b, ctrl, true, x, true, y, true, w, scratch);
     b.ccx(ctrl, w, x);
     b.ccx(ctrl, w, y);
 }
 
-pub(crate) fn ctrl_inv_uma(b: &mut B, ctrl: QubitId, x: QubitId, y: QubitId, w: QubitId, scratch: QubitId) {
+pub(crate) fn ctrl_inv_uma(
+    b: &mut B,
+    ctrl: QubitId,
+    x: QubitId,
+    y: QubitId,
+    w: QubitId,
+    scratch: QubitId,
+) {
     b.ccx(ctrl, x, y);
     b.ccx(ctrl, w, x);
     mcx3_polar(b, ctrl, true, x, true, y, true, w, scratch);
@@ -1301,42 +1572,72 @@ pub(crate) fn cuccaro_sub_ctrl_lowq(
 /// carry ancillae (BORROWED — restored to |0> by the measured uncompute); NO fresh alloc, so
 /// the peak does not grow. acc = target (trailmix qr_y), addend = carry-threaded operand (qr_x).
 pub(crate) fn cuccaro_add_ctrl_vented(
-    b: &mut B, addend: &[QubitId], acc: &[QubitId], ctrl: QubitId, vent_pool: &[QubitId],
+    b: &mut B,
+    addend: &[QubitId],
+    acc: &[QubitId],
+    ctrl: QubitId,
+    vent_pool: &[QubitId],
 ) {
     let n = addend.len();
     assert_eq!(n, acc.len());
-    if n == 0 { return; }
-    if n == 1 { b.ccx(ctrl, addend[0], acc[0]); return; }
-    assert!(vent_pool.len() >= n - 1, "vented body needs n-1 borrowed vent lanes");
-    for i in 1..n { b.cx(addend[i], acc[i]); }
-    for i in (1..n-1).rev() { b.cx(addend[i], addend[i+1]); }
-    for i in 0..n-1 {                       // forward carry chain, all vented onto borrow
-        let anc = vent_pool[i];             // borrowed, currently |0>
-        b.ccx(acc[i], addend[i], anc);      // anc = acc[i] & addend[i]
-        b.cx(anc, addend[i+1]);
+    if n == 0 {
+        return;
     }
-    for i in (0..n-1).rev() {               // reverse: controlled sum bit + measured carry uncompute
-        b.ccx(ctrl, addend[i+1], acc[i+1]);
+    if n == 1 {
+        b.ccx(ctrl, addend[0], acc[0]);
+        return;
+    }
+    assert!(
+        vent_pool.len() >= n - 1,
+        "vented body needs n-1 borrowed vent lanes"
+    );
+    for i in 1..n {
+        b.cx(addend[i], acc[i]);
+    }
+    for i in (1..n - 1).rev() {
+        b.cx(addend[i], addend[i + 1]);
+    }
+    for i in 0..n - 1 {
+        // forward carry chain, all vented onto borrow
+        let anc = vent_pool[i]; // borrowed, currently |0>
+        b.ccx(acc[i], addend[i], anc); // anc = acc[i] & addend[i]
+        b.cx(anc, addend[i + 1]);
+    }
+    for i in (0..n - 1).rev() {
+        // reverse: controlled sum bit + measured carry uncompute
+        b.ccx(ctrl, addend[i + 1], acc[i + 1]);
         let anc = vent_pool[i];
-        b.cx(anc, addend[i+1]);             // undo forward cx; now anc == acc[i] & addend[i] again
+        b.cx(anc, addend[i + 1]); // undo forward cx; now anc == acc[i] & addend[i] again
         let m = b.alloc_bit();
-        b.hmr(anc, m);                      // measure anc -> |0> (phase kickback)
-        b.cz_if(acc[i], addend[i], m);      // cancel phase: CZ(acc[i],addend[i]) iff m  (anc == acc[i]&addend[i])
+        b.hmr(anc, m); // measure anc -> |0> (phase kickback)
+        b.cz_if(acc[i], addend[i], m); // cancel phase: CZ(acc[i],addend[i]) iff m  (anc == acc[i]&addend[i])
     }
-    for i in 1..n-1 { b.cx(addend[i], addend[i+1]); }
+    for i in 1..n - 1 {
+        b.cx(addend[i], addend[i + 1]);
+    }
     b.ccx(ctrl, addend[0], acc[0]);
-    for i in 1..n { b.cx(addend[i], acc[i]); }
+    for i in 1..n {
+        b.cx(addend[i], acc[i]);
+    }
 }
 
 /// Vented controlled SUB: acc -= ctrl*subtrahend (mod 2^n), subtrahend restored.
 /// Complement-of-target X-sandwich: acc - x == ~(~acc + x). X's are unconditional;
 /// at ctrl=0 the inner add is identity so X;X cancels.
 pub(crate) fn cuccaro_sub_ctrl_vented(
-    b: &mut B, subtrahend: &[QubitId], acc: &[QubitId], ctrl: QubitId, vent_pool: &[QubitId],
+    b: &mut B,
+    subtrahend: &[QubitId],
+    acc: &[QubitId],
+    ctrl: QubitId,
+    vent_pool: &[QubitId],
 ) {
-    for &q in acc { b.x(q); }
+    for &q in acc {
+        b.x(q);
+    }
     cuccaro_add_ctrl_vented(b, subtrahend, acc, ctrl, vent_pool);
-    for &q in acc { b.x(q); }
+    for &q in acc {
+        b.x(q);
+    }
 }
 
 pub(crate) fn cucc_add_ctrl_lowq(b: &mut B, a: &[QubitId], acc: &[QubitId], ctrl: QubitId) {
@@ -1354,7 +1655,6 @@ pub(crate) fn cucc_sub_ctrl_lowq(b: &mut B, a: &[QubitId], acc: &[QubitId], ctrl
     b.free(scratch);
     b.free(c_in);
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Kaliski binary almost-inverse (qrisp-style, standard form)
@@ -1376,4 +1676,3 @@ pub(crate) fn cucc_sub_ctrl_lowq(b: &mut B, a: &[QubitId], acc: &[QubitId], ctrl
 //
 // Assumption: v_in is a nonzero element of (Z/p)*. The test harness
 // filters out the v_orig = 0 case before calling `build`, so we skip the
-

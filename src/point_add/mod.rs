@@ -110,6 +110,7 @@ pub struct B {
     pub phase_active_max: std::collections::BTreeMap<&'static str, u32>,
     pub phase_active_regions: Vec<(usize, &'static str, u32)>,
     pub current_phase_active_max: u32,
+    pub live_qubit_owner: std::collections::BTreeMap<u32, &'static str>,
     // (ops_len_at_transition, new_phase)
     pub phase_transitions: Vec<(usize, &'static str)>,
     pub active_timeline: Vec<(usize, u32)>,
@@ -143,7 +144,6 @@ pub struct PhaseResource {
     pub r_ops: usize,
 }
 
-
 impl B {
     fn new() -> Self {
         Self {
@@ -168,6 +168,7 @@ impl B {
             phase_active_max: std::collections::BTreeMap::new(),
             phase_active_regions: Vec::new(),
             current_phase_active_max: 0,
+            live_qubit_owner: std::collections::BTreeMap::new(),
             phase_transitions: Vec::new(),
             active_timeline: Vec::new(),
             k2_shift2_log: Vec::new(),
@@ -286,7 +287,56 @@ impl B {
             self.current_phase_active_max = 0;
         }
     }
+    fn trace_peak_owner_histogram(&self) {
+        if std::env::var_os("TRACE_PEAK_OWNERS").is_none() {
+            return;
+        }
+        let min_active = std::env::var("TRACE_PEAK_OWNER_MIN")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(self.peak_qubits);
+        if self.active_qubits < min_active {
+            return;
+        }
+        if let Ok(filter) = std::env::var("TRACE_PEAK_OWNER_PHASES") {
+            let matched = filter
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .any(|needle| self.phase.contains(needle));
+            if !matched {
+                return;
+            }
+        }
+        let mut counts = std::collections::BTreeMap::<&'static str, usize>::new();
+        for &owner in self.live_qubit_owner.values() {
+            *counts.entry(owner).or_insert(0) += 1;
+        }
+        let mut rows = counts.into_iter().collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let summary = rows
+            .iter()
+            .take(16)
+            .map(|(owner, count)| format!("{owner}:{count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "OWNER active={} phase='{}' ops_idx={} owners=[{}]",
+            self.active_qubits,
+            self.phase,
+            self.current_ops_len(),
+            summary,
+        );
+    }
     fn alloc_qubit(&mut self) -> QubitId {
+        let q = if let Some(q) = self.free_qubits.pop() {
+            q
+        } else {
+            let q = self.next_qubit;
+            self.next_qubit += 1;
+            q
+        };
+        self.live_qubit_owner.insert(q, self.phase);
         self.active_qubits += 1;
         self.record_phase_active();
         if self.active_qubits > self.peak_qubits {
@@ -307,13 +357,8 @@ impl B {
             self.peak_log
                 .push((self.active_qubits, self.phase, self.current_ops_len()));
         }
-        if let Some(q) = self.free_qubits.pop() {
-            QubitId(q.into())
-        } else {
-            let q = self.next_qubit;
-            self.next_qubit += 1;
-            QubitId(q.into())
-        }
+        self.trace_peak_owner_histogram();
+        QubitId(q.into())
     }
     fn alloc_qubits(&mut self, n: usize) -> Vec<QubitId> {
         (0..n).map(|_| self.alloc_qubit()).collect()
@@ -328,8 +373,9 @@ impl B {
     }
     fn free(&mut self, q: QubitId) {
         self.r(q);
-        self.free_qubits
-            .push(q.0.try_into().expect("qubit id fits in u32"));
+        let q_u32 = q.0.try_into().expect("qubit id fits in u32");
+        self.free_qubits.push(q_u32);
+        self.live_qubit_owner.remove(&q_u32);
         if self.active_qubits > 0 {
             self.active_qubits -= 1;
         }
@@ -346,7 +392,8 @@ impl B {
             .iter()
             .position(|&free_q| u64::from(free_q) == q.0)
             .expect("reacquire qubit that is not currently free");
-        self.free_qubits.swap_remove(pos);
+        let q_u32 = self.free_qubits.swap_remove(pos);
+        self.live_qubit_owner.insert(q_u32, self.phase);
         self.active_qubits += 1;
         self.record_phase_active();
         if self.active_qubits > self.peak_qubits {
@@ -367,6 +414,7 @@ impl B {
             self.peak_log
                 .push((self.active_qubits, self.phase, self.current_ops_len()));
         }
+        self.trace_peak_owner_histogram();
     }
     fn reacquire_vec(&mut self, qs: &[QubitId]) {
         for &q in qs {
@@ -539,7 +587,6 @@ pub const SECP256K1_P: U256 = U256::from_limbs([
     0xFFFFFFFFFFFFFFFF,
 ]);
 
-
 pub const ONE_INV_DX3_AFFINE_PA_ENV: &str = "ONE_INV_DX3_AFFINE_PA";
 pub const ONE_INV_DX3_AFFINE_PA_BLOCKER: &str =
     "ONE_INV_DX3_AFFINE_PA_BLOCKED: the dx^3 algebra gives Rx and Ry with \
@@ -551,7 +598,6 @@ pub const ONE_INV_DX3_AFFINE_PA_BLOCKER: &str =
      emit a clean one-inversion four-register PA.";
 
 // ─── helpers: bit access on U256 ────────────────────────────────────────────
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Cuccaro ripple-carry adder
@@ -585,7 +631,6 @@ pub const ONE_INV_DX3_AFFINE_PA_BLOCKER: &str =
 // qubit register, load the classical value into it, run Cuccaro, then
 // unload. The load/unload is not counted against Toffolis.
 
-
 fn direct_const_walks_enabled() -> bool {
     std::env::var("KAL_DIRECT_CONST_WALKS").ok().as_deref() == Some("1")
 }
@@ -610,12 +655,10 @@ fn kal_vent_halve_enabled() -> bool {
     std::env::var("KAL_VENT_HALVE").ok().as_deref() == Some("1")
 }
 
-
 const ALT_SEED_COUNT: usize = 5;
 const ALT_SEED_COMMIT: usize = 24;
 const ALT_SEED_SHOTS: usize = 4096;
 const ALT_SEED_CLASSICAL_LIMIT: usize = 2;
-
 
 fn secp256k1_curve() -> WeierstrassEllipticCurve {
     WeierstrassEllipticCurve {
@@ -1005,17 +1048,24 @@ fn set_default_env(name: &str, value: &str) {
 }
 
 fn configure_ecdsafail_submission_route() {
-    // q1170 record route. These defaults are first so the historical fallback
-    // block below cannot override the exact state searched on WMI.
-    set_default_env("DIALOG_GCD_ACTIVE_ITERATIONS", "258");
+    // q1161 experimental low-qubit route. These defaults are first so the
+    // historical fallback block below cannot override the exact measured route.
+    //
+    // Status at branch cut: peak q=1161, avg Toffoli ~=1,564,921, simulator
+    // result 61 classical / 27 phase / 0 ancilla over 9024 seeded shots.
+    // This branch preserves the route for further structural repair; it is not
+    // a clean submission candidate yet.
+    set_default_env("DIALOG_GCD_ACTIVE_ITERATIONS", "255");
     set_default_env("DIALOG_GCD_APPLY_BORROW_FUTURE_BOUNDARY_CARRIES", "1");
-    set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_BLOCKS", "20");
+    set_default_env("DIALOG_GCD_APPLY_BOUNDARY_FREE_AFTER_HMR", "1");
+    set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_BLOCKS", "25");
     set_default_env(
         "DIALOG_GCD_APPLY_CHUNKED_F_CUTS",
-        "17,34,50,66,81,96,110,124,137,150,163,175,187,198,209,219,229,238,247",
+        "16,31,46,61,75,89,103,116,129,141,153,164,175,185,195,204,213,221,229,236,243,249,253,255",
     );
     set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "19");
     set_default_env("DIALOG_GCD_APPLY_IMPLICIT_HIGH_ZERO", "1");
+    set_default_env("DIALOG_GCD_APPLY_INTERMEDIATE_LOWQ", "1");
     set_default_env("DIALOG_GCD_BINDER_NOTCH_EXTRA", "3");
     set_default_env("DIALOG_GCD_BINDER_NOTCH_MAP", "11:1,12:1,13:1");
     set_default_env("DIALOG_GCD_BINDER_NOTCH_STEPS", "8,9,10");
@@ -1036,13 +1086,15 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_FOLD_FREED_TAIL", "1");
     set_default_env("DIALOG_GCD_FOLD_FREED_TAIL_ED", "1");
     set_default_env("DIALOG_GCD_FOLD_HOST_DERIVED_CONTROLS", "1");
+    set_default_env("DIALOG_GCD_FOLD_HOST_D_CARRY12", "1");
+    set_default_env("DIALOG_GCD_FOLD_HOST_E_TOP_CARRY", "1");
+    set_default_env("DIALOG_GCD_FOLD_HOST_OVF2_CARRY13", "1");
+    set_default_env("DIALOG_GCD_FOLD_HOST_STREAMED_CONTROL", "1");
     set_default_env("DIALOG_GCD_FOLD_MAJ1", "1");
     set_default_env("DIALOG_GCD_FOLD_MAJ2", "1");
-    set_default_env("DIALOG_GCD_FOLD_PARK_LOW_CARRIES", "15");
-    set_default_env(
-        "DIALOG_GCD_FOLD_PARK_LOW_CARRIES_STEP_MAP",
-        "0:17,3:16,8:16,10:16,21:17,22:16,26:16,33:16,34:16,37:17,42:17,51:16,65:17,73:16,86:16,97:16,104:16,109:16,110:16,120:16,132:17,141:17,142:16,146:16,169:16,170:17,177:16,191:16,192:16,198:16,206:16,212:16,215:16,217:16,224:17,228:16",
-    );
+    set_default_env("DIALOG_GCD_FOLD_PARK_LOW_CARRIES", "23");
+    set_default_env("DIALOG_GCD_FOLD_PARK_LOW_CARRIES_STEP_MAP", "");
+    set_default_env("DIALOG_GCD_FOLD_STREAM_CONTROLS", "1");
     set_default_env("DIALOG_GCD_K2", "1");
     set_default_env("DIALOG_GCD_K5_CLEAN_BLOCK", "1");
     set_default_env("DIALOG_GCD_K5_FIXED_TAIL_APPLY", "0");
@@ -1053,6 +1105,7 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_K5_TAIL3_FIXED_LAST", "0");
     set_default_env("DIALOG_GCD_K5_TAIL3_TOP32_CODEC", "1");
     set_default_env("DIALOG_GCD_K5_TAIL3_TOP32_STREAM_APPLY", "1");
+    set_default_env("DIALOG_GCD_K5_TAIL4_GRAPH9_CODEC", "1");
     set_default_env("DIALOG_GCD_ODD_U_LOWBIT_FASTPATH", "1");
     set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE", "1");
     set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN", "0");
@@ -1067,11 +1120,8 @@ fn configure_ecdsafail_submission_route() {
         "DIALOG_GCD_SPECIAL_FOLD_CARRY_TRUNC_STEP_WINDOWS",
         "10:19,11:19,21:20,63:19,74:19,100:19,107:19,118:19,135:19,136:19,137:19,188:20,227:20,241:19",
     );
-    set_default_env("DIALOG_GCD_SPECIAL_FOLD_PARK_LOW_CARRIES", "13");
-    set_default_env(
-        "DIALOG_GCD_SPECIAL_FOLD_PARK_LOW_CARRIES_STEP_MAP",
-        "10:14,11:14,21:15,63:14,74:14,100:14,107:14,118:14,135:14,136:14,137:14,188:15,227:15,241:14",
-    );
+    set_default_env("DIALOG_GCD_SPECIAL_FOLD_PARK_LOW_CARRIES", "21");
+    set_default_env("DIALOG_GCD_SPECIAL_FOLD_PARK_LOW_CARRIES_STEP_MAP", "");
     set_default_env("DIALOG_GCD_SPECIAL_FOLD_RELEASE_SCRATCH", "1");
     set_default_env(
         "DIALOG_GCD_SPECIAL_OVERFLOW_CLEAN_STEP_BITS",
@@ -1085,9 +1135,12 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_WIDTH_MARGIN", "10");
     set_default_env("DIALOG_GCD_WIDTH_SLOPE_X1000", "1015");
     set_default_env("DIALOG_TAIL_NONCE", "26008558798");
-    set_default_env("KAL_DOUBLE_CARRY_TRUNC_W", "19");
+    set_default_env("DIALOG_GCD_FUSED_DCLEAR_MEASURED", "1");
+    set_default_env("DIALOG_GCD_FUSED_HALVE_EDCLEAR_MEASURED", "1");
+    set_default_env("DIALOG_GCD_FUSED_HCLEAR_MEASURED", "1");
+    set_default_env("KAL_DOUBLE_CARRY_TRUNC_W", "18");
     set_default_env("KAL_FOLD_CARRY_TRUNC_W", "18");
-    set_default_env("SQUARE_ROW_MAX_SEG", "143");
+    set_default_env("SQUARE_ROW_MAX_SEG", "132");
     set_default_env("SQUARE_ROW_WINDOW_CLEAN_COMPARE_BITS", "18");
     set_default_env(
         "SQUARE_ROW_WINDOW_CLEAN_ROW_BITS",
@@ -1216,9 +1269,12 @@ fn configure_ecdsafail_submission_route() {
     // shots: 1309 x 1,503,355 = 1,967,891,695, beats the 1,968,064,139 frontier
     // by 172,444).
     set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "19");
-    set_default_env("DIALOG_GCD_APPLY_BOUNDARY_CONDITIONAL_REPLAY", "1");  // BAKED: condrep ON for env-less grader build
-    set_default_env("DIALOG_GCD_SELECTED_BODY_STREAM_SUFFIX_MAP", "3:2,4:3,5:5,6:6,7:7,8:5,9:7,10:5,11:7,12:6,13:7,14:5,15:6,16:3,17:5,18:1,19:3,21:1");  // BAKED: codex 1285q peak-drop (stream selected high bits through low-qubit suffix)
-    // Bake the exact conditional-replay stack for env-less GPU hunts and grader builds.
+    set_default_env("DIALOG_GCD_APPLY_BOUNDARY_CONDITIONAL_REPLAY", "1"); // BAKED: condrep ON for env-less grader build
+    set_default_env(
+        "DIALOG_GCD_SELECTED_BODY_STREAM_SUFFIX_MAP",
+        "3:2,4:3,5:5,6:6,7:7,8:5,9:7,10:5,11:7,12:6,13:7,14:5,15:6,16:3,17:5,18:1,19:3,21:1",
+    ); // BAKED: codex 1285q peak-drop (stream selected high bits through low-qubit suffix)
+       // Bake the exact conditional-replay stack for env-less GPU hunts and grader builds.
     set_default_env("DIALOG_GCD_REVERSE_BRANCH_CONDITIONAL_REPLAY", "1");
     set_default_env("DIALOG_GCD_SPECIAL_CLEAN_CONDITIONAL_REPLAY", "1");
     set_default_env("MOD_FAST_FLAG_CONDITIONAL_REPLAY", "1");
@@ -1410,7 +1466,10 @@ fn configure_ecdsafail_submission_route() {
     // net Toffoli still beats the flat-50 baseline (1,512,823 -> 1,506,043 @ 1313).
     // Stacked peak-1302 band-trim schedule + measured-ovfclear + F_CUT4=189 (tier-3 "safe lock"):
     // trims average executed Toffoli to 1,456,963 at peak 1302 qubits.
-    set_default_env("DIALOG_GCD_BODY_CARRY_BAND_TRIMS", "0,3,3,3,3,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3,3");
+    set_default_env(
+        "DIALOG_GCD_BODY_CARRY_BAND_TRIMS",
+        "0,3,3,3,3,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3,3",
+    );
     set_default_env("DIALOG_GCD_TOBITVECTOR_CSWAP_BODY_TRIM", "0");
     set_default_env("DIALOG_GCD_BINDER_NOTCH_STEPS", "8,9,10");
     set_default_env("DIALOG_GCD_BINDER_NOTCH_EXTRA", "3");
@@ -1434,12 +1493,12 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("R84_LOWQ", "1");
     set_default_env("R84_LOWQ_CIN_BORROW", "1");
     set_default_env("R84_QPROD_NAF", "1"); // quotient*c uses 977 = 2^10 - 2^5 - 2^4 + 1.
-    // Fold the square's high half into its low half in place, accumulate the
-    // resulting 33-bit quotient, apply quotient*(2^256-p) once, subtract once,
-    // then reversibly unfold before Bennett-uncomputing the square. The final
-    // modular subtract vents onto the folded operand, retaining the 1307q peak.
-    // The 21-bit high-carry propagation and rare folded-lo noncanonical band
-    // are selected away with the shared Fiat-Shamir island.
+                                           // Fold the square's high half into its low half in place, accumulate the
+                                           // resulting 33-bit quotient, apply quotient*(2^256-p) once, subtract once,
+                                           // then reversibly unfold before Bennett-uncomputing the square. The final
+                                           // modular subtract vents onto the folded operand, retaining the 1307q peak.
+                                           // The 21-bit high-carry propagation and rare folded-lo noncanonical band
+                                           // are selected away with the shared Fiat-Shamir island.
     set_default_env("ROUND84_INPLACE_SOLINAS_FOLD", "1");
     set_default_env("ROUND84_INPLACE_QUOTIENT_CARRY_TRUNC_W", "21");
     // Peak-bounded square (1226 tier): the round84 lam^2 schoolbook square parks
@@ -1459,7 +1518,7 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_FOLD_PARK_LOW_CARRIES", "1");
     set_default_env("DIALOG_GCD_SPECIAL_FOLD_BORROW_CARRIES", "1");
     set_default_env("DIALOG_GCD_K2_APPLY_INPLACE_RAW_BLOCK", "1");
-    set_default_env("DIALOG_GCD_FOLD_FREED_TAIL", "1");  // BAKED: 1221 ship
+    set_default_env("DIALOG_GCD_FOLD_FREED_TAIL", "1"); // BAKED: 1221 ship
     set_default_env("DIALOG_GCD_BORROW_CURRENT_S2", "1");
     set_default_env("DIALOG_GCD_BORROW_ZERO_RAW_FUTURE", "1");
     set_default_env("DIALOG_GCD_FREE_SCRATCH_BEFORE_SHIFT", "1");
@@ -1557,7 +1616,7 @@ fn configure_ecdsafail_submission_route() {
     // Binder-notch fallback 8,9: nonce 169924627 validates 0/0/0 over all
     // 9024 shots at 1300q x 1,454,884 T = 1,891,349,200.
     set_default_env("DIALOG_TAIL_NONCE", "9600076011007");
-    set_default_env("ROUND84_FOLD_FAST_ADD", "0");  // round84 Solinas-fold small adders coherent->measured-fast (-1,434 exec-T, peak-neutral 1285)
+    set_default_env("ROUND84_FOLD_FAST_ADD", "0"); // round84 Solinas-fold small adders coherent->measured-fast (-1,434 exec-T, peak-neutral 1285)
     set_default_env("DIALOG_GCD_FOLD_MAJ2", "1");
     set_default_env("DIALOG_GCD_FOLD_MAJ1", "1");
     set_default_env("DIALOG_GCD_APPLY_FINAL_TOPCLEAN", "0");
@@ -1899,7 +1958,9 @@ pub fn build() -> Vec<Op> {
     }
     if std::env::var("FOLD_FREED_TAIL_SELFTEST").is_ok() {
         match fold_freed_tail_selftest() {
-            Ok(()) => eprintln!("FOLD_FREED_TAIL_SELFTEST: PASS (freed-tail ≡ baseline, ancilla & phase clean)"),
+            Ok(()) => eprintln!(
+                "FOLD_FREED_TAIL_SELFTEST: PASS (freed-tail ≡ baseline, ancilla & phase clean)"
+            ),
             Err(e) => panic!("FOLD_FREED_TAIL_SELFTEST: FAIL: {e}"),
         }
         if std::env::var("FOLD_FREED_TAIL_SELFTEST_ONLY")
@@ -1953,8 +2014,16 @@ pub fn square_window_selftest() -> Result<(), String> {
     assert!(nbits > 0);
     let packed_value_check = 2 * nbits < 64;
     let wide_value_check = nbits <= 256;
-    let mask = if packed_value_check { (1u64 << nbits) - 1 } else { u64::MAX };
-    let out_mask = if packed_value_check { (1u64 << (2 * nbits)) - 1 } else { u64::MAX };
+    let mask = if packed_value_check {
+        (1u64 << nbits) - 1
+    } else {
+        u64::MAX
+    };
+    let out_mask = if packed_value_check {
+        (1u64 << (2 * nbits)) - 1
+    } else {
+        u64::MAX
+    };
     let xs: Vec<u64> = (0..SHOTS as u64)
         .map(|s| {
             let r = s
@@ -2055,9 +2124,8 @@ pub fn square_window_selftest() -> Result<(), String> {
                     if idx >= out_limbs {
                         break;
                     }
-                    let cur = product[idx] as u128
-                        + (x_limbs[i] as u128) * (x_limbs[j] as u128)
-                        + carry;
+                    let cur =
+                        product[idx] as u128 + (x_limbs[i] as u128) * (x_limbs[j] as u128) + carry;
                     product[idx] = cur as u64;
                     carry = cur >> 64;
                 }
@@ -2096,7 +2164,6 @@ pub fn square_window_selftest() -> Result<(), String> {
     }
     Ok(())
 }
-
 
 /// Standalone differential selftest for the fused-fold freed-tail lever
 /// (`DIALOG_GCD_FOLD_FREED_TAIL`). Runs in the normal (non-test) build because
@@ -2171,8 +2238,7 @@ pub fn fold_freed_tail_selftest() -> Result<(), String> {
                             is_add,
                         );
                     } else {
-                        let controls =
-                            secp_fold_controls(e, d, h, xed, eord, n10, hi_delta, hi_c);
+                        let controls = secp_fold_controls(e, d, h, xed, eord, n10, hi_delta, hi_c);
                         if is_add {
                             cadd_per_position_controls_trunc(&mut b, &y, &controls, last);
                         } else {
@@ -2208,7 +2274,11 @@ pub fn fold_freed_tail_selftest() -> Result<(), String> {
                 // deterministic random y per shot, including adversarial
                 // carry-propagation patterns (long runs of 1s above bit 33 that
                 // force the truncated tail carry to escape / saturate).
-                let mask: u64 = if nbits >= 64 { u64::MAX } else { (1u64 << nbits) - 1 };
+                let mask: u64 = if nbits >= 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << nbits) - 1
+                };
                 let ys: Vec<u64> = (0..64u64)
                     .map(|s| {
                         let r = s
@@ -2228,41 +2298,45 @@ pub fn fold_freed_tail_selftest() -> Result<(), String> {
                     })
                     .collect();
 
-                let run = |ops: &[Op], y: &[QubitId], nq: usize, nb: usize| -> (Vec<u64>, bool, u64) {
-                    let mut s2 = sha3::Shake128::default();
-                    s2.update(b"fold-sim");
-                    let mut xof2 = s2.finalize_xof();
-                    let mut sim = Simulator::new(nq, nb, &mut xof2);
-                    sim.clear_for_shot();
-                    for (shot, &yv) in ys.iter().enumerate() {
-                        for k in 0..nbits {
-                            if (yv >> k) & 1 != 0 {
-                                *sim.qubit_mut(y[k]) |= 1u64 << shot;
+                let run =
+                    |ops: &[Op], y: &[QubitId], nq: usize, nb: usize| -> (Vec<u64>, bool, u64) {
+                        let mut s2 = sha3::Shake128::default();
+                        s2.update(b"fold-sim");
+                        let mut xof2 = s2.finalize_xof();
+                        let mut sim = Simulator::new(nq, nb, &mut xof2);
+                        sim.clear_for_shot();
+                        for (shot, &yv) in ys.iter().enumerate() {
+                            for k in 0..nbits {
+                                if (yv >> k) & 1 != 0 {
+                                    *sim.qubit_mut(y[k]) |= 1u64 << shot;
+                                }
                             }
                         }
-                    }
-                    sim.apply_iter(ops.iter());
-                    let outs: Vec<u64> = (0..64)
-                        .map(|shot| {
-                            let mut v = 0u64;
-                            for k in 0..nbits {
-                                v |= ((sim.qubit(y[k]) >> shot) & 1) << k;
-                            }
-                            v
-                        })
-                        .collect();
-                    let anc_clean =
-                        (nbits..nq).all(|q| sim.qubit(QubitId(q as u64)) == 0);
-                    (outs, anc_clean, sim.phase)
-                };
+                        sim.apply_iter(ops.iter());
+                        let outs: Vec<u64> = (0..64)
+                            .map(|shot| {
+                                let mut v = 0u64;
+                                for k in 0..nbits {
+                                    v |= ((sim.qubit(y[k]) >> shot) & 1) << k;
+                                }
+                                v
+                            })
+                            .collect();
+                        let anc_clean = (nbits..nq).all(|q| sim.qubit(QubitId(q as u64)) == 0);
+                        (outs, anc_clean, sim.phase)
+                    };
                 let (out_b, clean_b, phase_b) = run(&ops_base, &y_b, nq_b, nb_b);
                 let (out_f, clean_f, phase_f) = run(&ops_freed, &y_f, nq_f, nb_f);
 
                 if !clean_b {
-                    return Err(format!("baseline left ancilla dirty (ed={ed} add={is_add} win={windowed})"));
+                    return Err(format!(
+                        "baseline left ancilla dirty (ed={ed} add={is_add} win={windowed})"
+                    ));
                 }
                 if !clean_f {
-                    return Err(format!("freed-tail left ancilla dirty (ed={ed} add={is_add} win={windowed})"));
+                    return Err(format!(
+                        "freed-tail left ancilla dirty (ed={ed} add={is_add} win={windowed})"
+                    ));
                 }
                 if phase_f != 0 {
                     return Err(format!("freed-tail left phase garbage 0x{phase_f:x} (ed={ed} add={is_add} win={windowed})"));
@@ -2369,8 +2443,7 @@ pub fn special_fold_park_selftest() -> Result<(), String> {
                 (outputs, clean, sim.phase)
             };
 
-            let (base_out, base_clean, base_phase) =
-                run(&base_ops, &base_acc, base_nq, base_nb);
+            let (base_out, base_clean, base_phase) = run(&base_ops, &base_acc, base_nq, base_nb);
             let (parked_out, parked_clean, parked_phase) =
                 run(&parked_ops, &parked_acc, parked_nq, parked_nb);
             if !base_clean || base_phase != 0 {
@@ -2398,7 +2471,6 @@ pub fn special_fold_park_selftest() -> Result<(), String> {
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod direct_const_tests {
