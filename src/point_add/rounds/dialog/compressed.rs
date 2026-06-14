@@ -24,6 +24,252 @@ pub(crate) fn round763_compress_lever_enabled() -> bool {
         == Some("1")
 }
 
+pub(crate) fn dialog_gcd_terminal_residual_replay_enabled() -> bool {
+    std::env::var("DIALOG_GCD_TERMINAL_RESIDUAL_REPLAY")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+fn dialog_gcd_terminal_residual_replay_ipmul_enabled() -> bool {
+    matches!(
+        std::env::var("DIALOG_GCD_TERMINAL_RESIDUAL_REPLAY")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("ipmul") | Some("double") | Some("cadd")
+    )
+}
+
+fn dialog_gcd_terminal_residual_replay_quotient_enabled() -> bool {
+    matches!(
+        std::env::var("DIALOG_GCD_TERMINAL_RESIDUAL_REPLAY")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("quotient")
+    )
+}
+
+fn dialog_gcd_alloc_terminal_residual_step1_controls(b: &mut B, factor: &[QubitId]) -> Vec<QubitId> {
+    let b0 = b.alloc_qubit();
+    let s2 = b.alloc_qubit();
+    dialog_gcd_write_terminal_residual_step1_controls(b, factor, &[b0, s2]);
+    vec![b0, s2]
+}
+
+fn dialog_gcd_write_terminal_residual_step1_controls(
+    b: &mut B,
+    factor: &[QubitId],
+    controls: &[QubitId],
+) {
+    assert_eq!(controls.len(), 2);
+    let b0 = controls[0];
+    let s2 = controls[1];
+    b.cx(factor[0], b0);
+    b.x(factor[1]);
+    b.ccx(factor[0], factor[1], s2);
+    b.x(factor[1]);
+}
+
+fn dialog_gcd_clear_terminal_residual_step1_controls(
+    b: &mut B,
+    factor: &[QubitId],
+    controls: &[QubitId],
+) {
+    assert_eq!(controls.len(), 2);
+    let b0 = controls[0];
+    let s2 = controls[1];
+    b.x(factor[1]);
+    b.ccx(factor[0], factor[1], s2);
+    b.x(factor[1]);
+    b.cx(factor[0], b0);
+    b.free_vec(controls);
+}
+
+fn dialog_gcd_terminal_residual_u_hosts(
+    u: &[QubitId],
+    runway: Option<&DialogGcdCompressedLogUHighRunway>,
+) -> Vec<QubitId> {
+    if std::env::var("DIALOG_GCD_TERMINAL_RESIDUAL_HOST_U")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return Vec::new();
+    }
+    u.iter()
+        .enumerate()
+        .filter_map(|(index, &q)| {
+            (index != 0 && runway.is_none_or(|r| !r.parked_u_indices.contains(&index)))
+                .then_some(q)
+        })
+        .take(2)
+        .collect()
+}
+
+pub(crate) fn dialog_gcd_release_terminal_u_except(
+    b: &mut B,
+    u: &[QubitId],
+    runway: Option<&DialogGcdCompressedLogUHighRunway>,
+    keep: &[QubitId],
+) {
+    for (index, &q) in u.iter().enumerate() {
+        if runway.is_none_or(|r| !r.parked_u_indices.contains(&index)) && !keep.contains(&q) {
+            b.free(q);
+        }
+    }
+}
+
+fn emit_dialog_gcd_terminal_residual_apply_double_y(
+    b: &mut B,
+    y: &[QubitId],
+    p: U256,
+    controls: &[QubitId],
+) {
+    assert_eq!(controls.len(), 2);
+    let s2 = controls[1];
+    b.set_phase("dialog_gcd_terminal_residual_apply_double_y");
+    if dialog_gcd_apply_fused_fold_enabled() {
+        dialog_gcd_fused_double_y_at_step(b, y, p, s2, Some(dialog_gcd_active_iterations()));
+    } else {
+        mod_double_inplace_fast(b, y, p);
+        cmod_double_inplace_lazy(b, y, p, s2);
+    }
+}
+
+fn emit_dialog_gcd_terminal_residual_apply_cadd(
+    b: &mut B,
+    x: &[QubitId],
+    y: &[QubitId],
+    p: U256,
+    controls: &[QubitId],
+    clean_scratch: &[QubitId],
+) {
+    assert_eq!(controls.len(), 2);
+    let b0 = controls[0];
+    if std::env::var("DIALOG_GCD_TERMINAL_RESIDUAL_REPLAY")
+        .ok()
+        .as_deref()
+        == Some("double")
+    {
+        return;
+    }
+    b.set_phase("dialog_gcd_terminal_residual_apply_cadd");
+    if std::env::var("DIALOG_GCD_TERMINAL_RESIDUAL_DIRECT_ADD")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        dialog_gcd_cmod_add_pseudomersenne_lowq(b, y, x, b0, p);
+    } else {
+        let step = Some(dialog_gcd_active_iterations());
+        if let Some(blocks) = dialog_gcd_terminal_residual_blocks() {
+            dialog_gcd_cmod_add_materialized_pseudomersenne_chunked(
+                b,
+                y,
+                x,
+                b0,
+                p,
+                blocks,
+                clean_scratch,
+                &[],
+                step,
+            );
+        } else {
+            dialog_gcd_cmod_add_materialized_pseudomersenne_with_clean_scratch_at_step(
+                b,
+                y,
+                x,
+                b0,
+                p,
+                clean_scratch,
+                &[],
+                step,
+            );
+        }
+    }
+}
+
+fn emit_dialog_gcd_terminal_residual_apply_reverse_csub(
+    b: &mut B,
+    x: &[QubitId],
+    y: &[QubitId],
+    p: U256,
+    controls: &[QubitId],
+    clean_scratch: &[QubitId],
+) {
+    assert_eq!(controls.len(), 2);
+    let b0 = controls[0];
+    if std::env::var("DIALOG_GCD_TERMINAL_RESIDUAL_REPLAY")
+        .ok()
+        .as_deref()
+        != Some("double")
+    {
+        b.set_phase("dialog_gcd_terminal_residual_apply_reverse_csub");
+        if let Some(blocks) = dialog_gcd_terminal_residual_blocks() {
+            dialog_gcd_cmod_sub_materialized_pseudomersenne_chunked(
+                b,
+                y,
+                x,
+                b0,
+                p,
+                blocks,
+                clean_scratch,
+                &[],
+                Some(dialog_gcd_active_iterations()),
+            );
+        } else {
+            dialog_gcd_cmod_sub_materialized_pseudomersenne_with_clean_scratch_at_step(
+                b,
+                y,
+                x,
+                b0,
+                p,
+                clean_scratch,
+                &[],
+                Some(dialog_gcd_active_iterations()),
+            );
+        }
+    }
+}
+
+fn emit_dialog_gcd_terminal_residual_apply_reverse_halve_y(
+    b: &mut B,
+    y: &[QubitId],
+    p: U256,
+    controls: &[QubitId],
+) {
+    assert_eq!(controls.len(), 2);
+    let s2 = controls[1];
+    b.set_phase("dialog_gcd_terminal_residual_apply_reverse_halve_y");
+    if dialog_gcd_apply_fused_fold_enabled()
+        && std::env::var("DIALOG_GCD_FUSE_HALVE_OFF").ok().as_deref() != Some("1")
+    {
+        dialog_gcd_fused_halve_y_at_step(b, y, p, s2, Some(dialog_gcd_active_iterations()));
+    } else {
+        mod_halve_inplace_fast(b, y, p);
+        cmod_halve_inplace_lazy(b, y, p, s2);
+    }
+}
+
+fn dialog_gcd_reacquire_terminal_residual_scratch(
+    b: &mut B,
+    u: &[QubitId],
+    runway: Option<&DialogGcdCompressedLogUHighRunway>,
+) -> Vec<QubitId> {
+    let scratch: Vec<QubitId> = u
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &q)| {
+            runway
+                .is_none_or(|r| !r.parked_u_indices.contains(&index))
+                .then_some(q)
+        })
+        .take(64)
+        .collect();
+    b.reacquire_vec(&scratch);
+    scratch
+}
+
 pub(crate) fn emit_dialog_gcd_round763_compressor(b: &mut B, block: &[QubitId]) {
     assert_eq!(block.len(), 6);
     if round763_compress_lever_enabled() {
@@ -3813,6 +4059,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_block_lifecycle
     y: &[QubitId],
     p: U256,
     raw_block: &[QubitId],
+    terminal_residual_controls: Option<&[QubitId]>,
 ) {
     assert_eq!(x.len(), N);
     assert_eq!(y.len(), N);
@@ -3975,6 +4222,39 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_block_lifecycle
         } else {
             &[][..]
         };
+
+        if block + 1 == dialog_gcd_compressed_sidecar_blocks() {
+            if let Some(controls) = terminal_residual_controls {
+                let free_clean_code = !inplace_raw
+                    && dialog_gcd_apply_replay_swap_host_enabled()
+                    && dialog_gcd_k5_free_clean_block_during_shift_enabled();
+                if !defer_clean_code && !scale_released_code.is_empty() {
+                    b.set_phase("dialog_gcd_terminal_residual_apply_scale_release");
+                    b.free_vec(scale_released_code);
+                }
+                if free_clean_code && !defer_clean_code {
+                    b.set_phase("dialog_gcd_terminal_residual_apply_shift_release");
+                    b.free_vec(shift_clean_code);
+                }
+                emit_dialog_gcd_terminal_residual_apply_double_y(b, y, p, controls);
+                if free_clean_code && !defer_clean_code {
+                    b.set_phase("dialog_gcd_terminal_residual_apply_shift_reacquire");
+                    b.reacquire_vec(shift_clean_code);
+                }
+                if !defer_clean_code && !scale_released_code.is_empty() {
+                    b.set_phase("dialog_gcd_terminal_residual_apply_scale_reacquire");
+                    b.reacquire_vec(scale_released_code);
+                }
+                emit_dialog_gcd_terminal_residual_apply_cadd(
+                    b,
+                    x,
+                    y,
+                    p,
+                    controls,
+                    block_clean_scratch,
+                );
+            }
+        }
 
         for step in (start..end).rev() {
             let slot = step - start;
@@ -4149,6 +4429,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_reverse_exact_b
     y: &[QubitId],
     p: U256,
     raw_block: &[QubitId],
+    terminal_residual_controls: Option<&[QubitId]>,
 ) {
     assert_eq!(x.len(), N);
     assert_eq!(y.len(), N);
@@ -4450,6 +4731,39 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_reverse_exact_b
                 let slot_raw = dialog_gcd_k5_tail3_top32_slot_raw(raw, slot);
                 dialog_gcd_k5_tail3_top32_toggle_slot_raw_from_code(b, compressed_block, raw, slot);
                 b.free_vec(&slot_raw);
+            }
+        }
+
+        if block + 1 == dialog_gcd_compressed_sidecar_blocks() {
+            if let Some(controls) = terminal_residual_controls {
+                emit_dialog_gcd_terminal_residual_apply_reverse_csub(
+                    b,
+                    x,
+                    y,
+                    p,
+                    controls,
+                    block_clean_scratch,
+                );
+                let free_clean_code = !inplace_raw
+                    && dialog_gcd_apply_replay_swap_host_enabled()
+                    && dialog_gcd_k5_free_clean_block_during_shift_enabled();
+                if !defer_clean_code && !scale_released_code.is_empty() {
+                    b.set_phase("dialog_gcd_terminal_residual_apply_reverse_scale_release");
+                    b.free_vec(scale_released_code);
+                }
+                if free_clean_code && !defer_clean_code {
+                    b.set_phase("dialog_gcd_terminal_residual_apply_reverse_shift_release");
+                    b.free_vec(shift_clean_code);
+                }
+                emit_dialog_gcd_terminal_residual_apply_reverse_halve_y(b, y, p, controls);
+                if free_clean_code && !defer_clean_code {
+                    b.set_phase("dialog_gcd_terminal_residual_apply_reverse_shift_reacquire");
+                    b.reacquire_vec(shift_clean_code);
+                }
+                if !defer_clean_code && !scale_released_code.is_empty() {
+                    b.set_phase("dialog_gcd_terminal_residual_apply_reverse_scale_reacquire");
+                    b.reacquire_vec(scale_released_code);
+                }
             }
         }
 
@@ -4776,9 +5090,22 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_ipmul_block_lifecycle(
     );
 
     if dialog_gcd_raw_ipmul_terminal_reuse_enabled() {
+        let terminal_residual_controls = if dialog_gcd_terminal_residual_replay_ipmul_enabled() {
+            b.set_phase("dialog_gcd_compressed_block_ipmul_terminal_residual_copy_controls");
+            let hosts = dialog_gcd_terminal_residual_u_hosts(&u, runway.as_ref());
+            if hosts.len() == 2 {
+                dialog_gcd_write_terminal_residual_step1_controls(b, factor, &hosts);
+                hosts
+            } else {
+                dialog_gcd_alloc_terminal_residual_step1_controls(b, factor)
+            }
+        } else {
+            Vec::new()
+        };
+
         b.set_phase("dialog_gcd_compressed_block_ipmul_release_terminal_u");
         b.x(u[0]);
-        dialog_gcd_release_terminal_u(b, &u, runway.as_ref());
+        dialog_gcd_release_terminal_u_except(b, &u, runway.as_ref(), &terminal_residual_controls);
 
         b.set_phase("dialog_gcd_compressed_block_ipmul_apply_bitvector_reuse_factor_zero");
         let inplace_apply_raw = dialog_gcd_k2_apply_inplace_raw_block_enabled();
@@ -4803,6 +5130,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_ipmul_block_lifecycle(
             } else {
                 &apply_raw_block
             },
+            (!terminal_residual_controls.is_empty()).then_some(terminal_residual_controls.as_slice()),
         );
         if !apply_raw_block.is_empty() {
             b.free_vec(&apply_raw_block);
@@ -4824,6 +5152,15 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_ipmul_block_lifecycle(
 
         if inplace_apply_raw && !raw_block.is_empty() {
             b.reacquire_vec(&raw_block);
+        }
+
+        if !terminal_residual_controls.is_empty() {
+            b.set_phase("dialog_gcd_compressed_block_ipmul_terminal_residual_clear_controls");
+            dialog_gcd_clear_terminal_residual_step1_controls(
+                b,
+                factor,
+                &terminal_residual_controls,
+            );
         }
 
         b.set_phase("dialog_gcd_compressed_block_ipmul_reacquire_terminal_u");
@@ -4857,7 +5194,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_ipmul_block_lifecycle(
     let tmp = b.alloc_qubits(N);
     b.set_phase("dialog_gcd_compressed_block_ipmul_apply_bitvector");
     emit_dialog_gcd_compressed_sidecar_apply_bitvector_block_lifecycle(
-        b, replay_log, target, &tmp, p, &raw_block,
+        b, replay_log, target, &tmp, p, &raw_block, None,
     );
 
     b.set_phase("dialog_gcd_compressed_block_ipmul_swap_product_into_target");
@@ -5056,6 +5393,13 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_quotient_block_lifecycle(
     );
 
     if dialog_gcd_raw_quotient_terminal_reuse_enabled() {
+        let terminal_residual_controls = if dialog_gcd_terminal_residual_replay_quotient_enabled() {
+            b.set_phase("dialog_gcd_compressed_block_quotient_terminal_residual_copy_controls");
+            dialog_gcd_alloc_terminal_residual_step1_controls(b, factor)
+        } else {
+            Vec::new()
+        };
+
         b.set_phase("dialog_gcd_compressed_block_quotient_release_terminal_u");
         b.x(u[0]);
         dialog_gcd_release_terminal_u(b, &u, runway.as_ref());
@@ -5083,6 +5427,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_quotient_block_lifecycle(
             } else {
                 &apply_raw_block
             },
+            (!terminal_residual_controls.is_empty()).then_some(terminal_residual_controls.as_slice()),
         );
         if !apply_raw_block.is_empty() {
             b.free_vec(&apply_raw_block);
@@ -5101,6 +5446,15 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_quotient_block_lifecycle(
         dialog_gcd_reacquire_terminal_u(b, &u, runway.as_ref());
         b.set_phase("dialog_gcd_compressed_block_quotient_seed_terminal_u");
         b.x(u[0]);
+
+        if !terminal_residual_controls.is_empty() {
+            b.set_phase("dialog_gcd_compressed_block_quotient_terminal_residual_clear_controls");
+            dialog_gcd_clear_terminal_residual_step1_controls(
+                b,
+                factor,
+                &terminal_residual_controls,
+            );
+        }
 
         b.set_phase("dialog_gcd_compressed_block_quotient_uncompute_tobitvector");
         emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse_block_lifecycle(
@@ -5127,7 +5481,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_quotient_block_lifecycle(
 
     b.set_phase("dialog_gcd_compressed_block_quotient_apply_reverse");
     emit_dialog_gcd_compressed_sidecar_apply_bitvector_reverse_exact_block_lifecycle(
-        b, replay_log, factor, target, p, &raw_block,
+        b, replay_log, factor, target, p, &raw_block, None,
     );
 
     b.set_phase("dialog_gcd_compressed_block_quotient_uncompute_tobitvector");

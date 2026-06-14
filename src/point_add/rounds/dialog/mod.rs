@@ -1395,6 +1395,28 @@ pub(crate) fn dialog_gcd_clear_controlled_slice_hmr(
 }
 
 pub(crate) fn dialog_gcd_chunk_hi(blocks: usize, block: usize, ext_n: usize) -> usize {
+    if dialog_gcd_terminal_residual_blocks() == Some(blocks) {
+        if let Some(cuts) = dialog_gcd_terminal_residual_cuts() {
+            assert_eq!(
+                cuts.len() + 1,
+                blocks,
+                "DIALOG_GCD_TERMINAL_RESIDUAL_CUTS must contain blocks-1 cuts"
+            );
+            assert!(
+                cuts.first().is_some_and(|&cut| cut > 0)
+                    && cuts.windows(2).all(|pair| pair[0] < pair[1])
+                    && cuts.last().is_some_and(|&cut| cut < ext_n),
+                "DIALOG_GCD_TERMINAL_RESIDUAL_CUTS must be strictly increasing in 1..{ext_n}: {cuts:?}"
+            );
+            if block < cuts.len() {
+                return cuts[block];
+            }
+        }
+        if block + 1 < blocks {
+            return ((block + 1) * ext_n) / blocks;
+        }
+        return ext_n;
+    }
     if let Some(cuts) = dialog_gcd_apply_chunked_f_cuts() {
         assert_eq!(
             cuts.len() + 1,

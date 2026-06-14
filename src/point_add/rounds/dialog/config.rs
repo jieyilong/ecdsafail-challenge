@@ -90,6 +90,29 @@ pub(crate) fn dialog_gcd_apply_chunked_f_cuts() -> Option<Vec<usize>> {
         })
 }
 
+pub(crate) fn dialog_gcd_terminal_residual_blocks() -> Option<usize> {
+    std::env::var("DIALOG_GCD_TERMINAL_RESIDUAL_BLOCKS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&blocks| blocks >= 2)
+}
+
+pub(crate) fn dialog_gcd_terminal_residual_cuts() -> Option<Vec<usize>> {
+    std::env::var("DIALOG_GCD_TERMINAL_RESIDUAL_CUTS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .split(',')
+                .map(|item| {
+                    item.trim()
+                        .parse::<usize>()
+                        .expect("DIALOG_GCD_TERMINAL_RESIDUAL_CUTS")
+                })
+                .collect()
+        })
+}
+
 pub(crate) fn dialog_gcd_apply_chunked_f_cut() -> Option<usize> {
     std::env::var("DIALOG_GCD_APPLY_CHUNKED_F_CUT")
         .ok()
