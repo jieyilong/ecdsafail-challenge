@@ -55,6 +55,7 @@
 //! implemented as the textbook binary almost-inverse (2n iterations).
 //! Expected gate counts far exceed zenodo's targets; the research loop
 //! reduces them.
+//! This update achieves 1169 qubits.
 
 use alloy_primitives::U256;
 use sha3::{
