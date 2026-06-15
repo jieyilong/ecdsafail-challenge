@@ -591,3 +591,8 @@ pub(crate) fn dialog_gcd_sidecar_group_size() -> usize {
 pub(crate) fn dialog_gcd_apply_fused_fold_enabled() -> bool {
     std::env::var("DIALOG_GCD_APPLY_FUSED_FOLD").ok().as_deref() == Some("1")
 }
+
+pub const DIALOG_FUSE_C_FORM_ENV: &str = "DIALOG_FUSE_C_FORM";
+pub(crate) fn dialog_fuse_c_form_enabled() -> bool { std::env::var(DIALOG_FUSE_C_FORM_ENV).ok().as_deref() == Some("1") }
+pub const DIALOG_FUSE_X_RESTORE_ENV: &str = "DIALOG_FUSE_X_RESTORE";
+pub(crate) fn dialog_fuse_x_restore_enabled() -> bool { std::env::var(DIALOG_FUSE_X_RESTORE_ENV).ok().as_deref() == Some("1") }

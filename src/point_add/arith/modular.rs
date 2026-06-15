@@ -1160,3 +1160,25 @@ pub(crate) fn cmod_sub_qq_lowq(b: &mut B, acc: &[QubitId], a: &[QubitId], ctrl: 
     }
     b.free_vec(&f);
 }
+
+pub(crate) fn mod_add_triple_qb(b: &mut B, acc: &[QubitId], bits: &[BitId], p: U256) {
+    let n = bits.len(); let a = load_bits(b, bits); let d = b.alloc_qubits(n);
+    for i in 0..n { b.cx(a[i], d[i]); }
+    mod_double_inplace_fast(b, &d, p); mod_add_qq_vent(b, acc, &d, p); mod_add_qq_vent(b, acc, &a, p);
+    mod_halve_inplace_fast(b, &d, p);
+    for i in 0..n { b.cx(a[i], d[i]); }
+    b.free_vec(&d); unload_bits(b, &a, bits);
+}
+pub(crate) fn mod_const_minus_reg_qb(b: &mut B, tx: &[QubitId], bits: &[BitId], p: U256) {
+    let n = tx.len(); assert_eq!(n, bits.len());
+    let a = load_bits(b, bits); let (a_ext, a_ovf) = ext_reg(b, &a); let (tx_ext, tx_ovf) = ext_reg(b, tx);
+    for i in 0..n { b.x(tx_ext[i]); }
+    let cin = b.alloc_qubit(); b.x(cin); cuccaro_add_low_to_ext_clean(b, &a, &tx_ext, cin); b.x(cin); b.free(cin);
+    let flag = b.alloc_qubit(); b.cx(tx_ovf, flag); b.cx(flag, tx_ovf);
+    let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1)); let c_low = c.as_limbs()[0]; let n1 = tx_ext.len();
+    b.x(flag);
+    { let q2: [QubitId; 2] = [b.alloc_qubit(), b.alloc_qubit()];
+      venting::cisub_dirty_2clean_classical(b, &tx_ext, &a_ext[..n1 - 2], &q2, c_low, flag); b.free(q2[0]); b.free(q2[1]); }
+    b.x(flag); b.x(flag); cmp_lt_into(b, &a, &tx_ext[..n], flag); b.free(flag);
+    unext_reg(b, tx_ovf); unext_reg(b, a_ovf); let _ = (tx_ext, a_ext); unload_bits(b, &a, bits);
+}
