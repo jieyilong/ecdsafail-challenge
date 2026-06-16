@@ -1806,6 +1806,14 @@ pub fn build_builder() -> B {
 }
 
 pub fn build() -> Vec<Op> {
+    // Inject a pre-built op stream (e.g. the translated TrailMix shrunken-PZ
+    // 1050q circuit) instead of building the dialog circuit. The contestant's
+    // build() may produce the op stream however it likes.
+    if let Ok(kmx) = std::env::var("POINT_ADD_FROM_KMX") {
+        return crate::circuit::Circuit::from_kmx(&kmx)
+            .expect("POINT_ADD_FROM_KMX: from_kmx failed")
+            .operations;
+    }
     if std::env::var("DIALOG_GCD_K5_HEAD11_SELFTEST").is_ok() {
         match dialog_gcd_k5_head11_codec_selftest() {
             Ok(()) => eprintln!(
