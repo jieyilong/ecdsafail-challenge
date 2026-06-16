@@ -1805,14 +1805,31 @@ pub fn build_builder() -> B {
     builder
 }
 
+/// Decode the embedded (zstd-compressed) TrailMix shrunken-PZ 1050-qubit kmx
+/// op stream. ~8.7 MB compressed -> ~1.4 GB text -> ~100M ops. Self-contained:
+/// no filesystem access at run time (the data is baked into the binary).
+fn pz1050_embedded_ops() -> Vec<Op> {
+    use std::io::Read;
+    static ZST: &[u8] = include_bytes!("pz1050/ec_shrunken_pz.kmx.zst");
+    let mut dec =
+        ruzstd::decoding::StreamingDecoder::new(ZST).expect("pz1050: zstd decoder init");
+    let mut text = String::new();
+    dec.read_to_string(&mut text)
+        .expect("pz1050: zstd decompress");
+    text.lines().filter_map(Op::from_text).collect()
+}
+
 pub fn build() -> Vec<Op> {
-    // Inject a pre-built op stream (e.g. the translated TrailMix shrunken-PZ
-    // 1050q circuit) instead of building the dialog circuit. The contestant's
-    // build() may produce the op stream however it likes.
-    if let Ok(kmx) = std::env::var("POINT_ADD_FROM_KMX") {
-        return crate::circuit::Circuit::from_kmx(&kmx)
-            .expect("POINT_ADD_FROM_KMX: from_kmx failed")
-            .operations;
+    // This branch defaults to the embedded TrailMix shrunken-PZ 1050-qubit op
+    // stream. Override with POINT_ADD_FROM_KMX=<path> to load an external .kmx,
+    // or POINT_ADD_DIALOG=1 to fall back to the dialog circuit built below.
+    if std::env::var("POINT_ADD_DIALOG").is_err() {
+        if let Ok(kmx) = std::env::var("POINT_ADD_FROM_KMX") {
+            return crate::circuit::Circuit::from_kmx(&kmx)
+                .expect("POINT_ADD_FROM_KMX: from_kmx failed")
+                .operations;
+        }
+        return pz1050_embedded_ops();
     }
     if std::env::var("DIALOG_GCD_K5_HEAD11_SELFTEST").is_ok() {
         match dialog_gcd_k5_head11_codec_selftest() {
