@@ -13,7 +13,7 @@ fn parse_u64_below_max(s: &str) -> Result<u64, ParseIntError> {
     return Ok(result);
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OperationType {
     /// Global phase flip.
     Neg = 0,
@@ -84,11 +84,11 @@ impl OperationType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct QubitId(pub u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BitId(pub u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RegisterId(pub u64);
 
 pub const NO_QUBIT: QubitId = QubitId(u64::MAX);
@@ -101,7 +101,7 @@ pub enum QubitOrBit {
     Bit(BitId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Op {
     pub kind: OperationType,
     pub q_control2: QubitId,
@@ -385,5 +385,4 @@ pub fn analyze_ops<'b>(ops: impl Iterator<Item = &'b Op>) -> (u64, u64, u64, Vec
 
     (num_qubits, num_bits, num_registers, registers)
 }
-
 

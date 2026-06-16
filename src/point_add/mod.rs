@@ -62,7 +62,11 @@ use sha3::{
     Shake256,
 };
 
-use crate::circuit::{analyze_ops, BitId, Op, OperationType, QubitId, QubitOrBit, RegisterId};
+use crate::circuit::{
+    analyze_ops, BitId, Op, OperationType, QubitId, QubitOrBit, RegisterId, NO_BIT, NO_QUBIT,
+    NO_REG,
+};
+use std::collections::HashMap;
 use crate::sim::Simulator;
 use crate::weierstrass_elliptic_curve::WeierstrassEllipticCurve;
 
@@ -1858,7 +1862,872 @@ pub(crate) fn pz1050_embedded_ops() -> Vec<Op> {
     static BLOB: &[u8] = include_bytes!("pz1050/ec_shrunken_pz.kmx.lz");
     let text = pz1050_lz_decode(BLOB);
     let text = std::str::from_utf8(&text).expect("pz1050: utf8");
-    text.lines().filter_map(Op::from_text).collect()
+    let ops: Vec<Op> = text.lines().filter_map(Op::from_text).collect();
+    let ops = if std::env::var("PZ1050_DISABLE_EXACT_REDUCE").ok().as_deref() == Some("1") {
+        ops
+    } else {
+        pz1050_exact_reduce_ops(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_EXACT_COMPACT").ok().as_deref() == Some("1") {
+        ops
+    } else {
+        pz1050_exact_compact_ops(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_DIRTY_BORROW_C3X").ok().as_deref() == Some("1") {
+        ops
+    } else {
+        pz1050_exact_dirty_borrow_peak_c3x(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_CONST_SIMPLIFY").ok().as_deref() == Some("1") {
+        ops
+    } else {
+        pz1050_exact_const_simplify_ops(ops)
+    };
+    if std::env::var("PZ1050_DISABLE_EXACT_COMPACT").ok().as_deref() == Some("1") {
+        ops
+    } else {
+        pz1050_exact_compact_ops(ops)
+    }
+}
+
+fn pz1050_self_inverse_op(op: &Op) -> bool {
+    matches!(
+        op.kind,
+        OperationType::Neg
+            | OperationType::BitInvert
+            | OperationType::X
+            | OperationType::Z
+            | OperationType::CX
+            | OperationType::CZ
+            | OperationType::Swap
+            | OperationType::CCX
+            | OperationType::CCZ
+    )
+}
+
+fn pz1050_exact_reduce_ops(ops: Vec<Op>) -> Vec<Op> {
+    let mut slots: Vec<Option<Op>> = Vec::with_capacity(ops.len());
+    let mut same_op_stack: HashMap<Op, Vec<usize>> = HashMap::new();
+    let mut qubit_touch_stack: Vec<Vec<usize>> = Vec::new();
+    let mut bit_touch_stack: Vec<Vec<usize>> = Vec::new();
+    let mut reg_touch_stack: Vec<Vec<usize>> = Vec::new();
+    let mut condition_barrier = 0usize;
+    let mut canceled_pairs = 0usize;
+    let mut canceled_toffoli_pairs = 0usize;
+    for op in ops {
+        let candidate = if pz1050_self_inverse_op(&op) {
+            same_op_stack
+                .get(&op)
+                .and_then(|positions| positions.last().copied())
+        } else {
+            None
+        };
+        if let Some(prev_pos) = candidate {
+            let touches_are_clean = pz1050_resource_tops_match(
+                &op,
+                prev_pos,
+                &qubit_touch_stack,
+                &bit_touch_stack,
+                &reg_touch_stack,
+            );
+            if condition_barrier <= prev_pos && touches_are_clean {
+                slots[prev_pos] = None;
+                pz1050_pop_resource_touches(
+                    &op,
+                    &mut qubit_touch_stack,
+                    &mut bit_touch_stack,
+                    &mut reg_touch_stack,
+                );
+                if let Some(positions) = same_op_stack.get_mut(&op) {
+                    debug_assert_eq!(positions.pop(), Some(prev_pos));
+                }
+                if matches!(op.kind, OperationType::CCX | OperationType::CCZ) {
+                    canceled_toffoli_pairs += 1;
+                }
+                canceled_pairs += 1;
+                continue;
+            }
+        }
+
+        let pos = slots.len();
+        slots.push(Some(op));
+        if matches!(op.kind, OperationType::PushCondition | OperationType::PopCondition) {
+            condition_barrier = pos;
+        }
+        if pz1050_self_inverse_op(&op) {
+            same_op_stack.entry(op).or_default().push(pos);
+        }
+        pz1050_push_resource_touches(
+            &op,
+            pos,
+            &mut qubit_touch_stack,
+            &mut bit_touch_stack,
+            &mut reg_touch_stack,
+        );
+    }
+    let out: Vec<Op> = slots.into_iter().flatten().collect();
+    eprintln!(
+        "pz1050 exact reducer: canceled {} inverse pairs ({} ops, {} Toffoli ops)",
+        canceled_pairs,
+        canceled_pairs * 2,
+        canceled_toffoli_pairs * 2
+    );
+    out
+}
+
+fn pz1050_resource_tops_match(
+    op: &Op,
+    pos: usize,
+    q_touches: &[Vec<usize>],
+    b_touches: &[Vec<usize>],
+    r_touches: &[Vec<usize>],
+) -> bool {
+    let mut ok = true;
+    if op.q_target != NO_QUBIT {
+        ok &= q_touches
+            .get(op.q_target.0 as usize)
+            .and_then(|v| v.last())
+            .copied()
+            == Some(pos);
+    }
+    if op.q_control1 != NO_QUBIT {
+        ok &= q_touches
+            .get(op.q_control1.0 as usize)
+            .and_then(|v| v.last())
+            .copied()
+            == Some(pos);
+    }
+    if op.q_control2 != NO_QUBIT {
+        ok &= q_touches
+            .get(op.q_control2.0 as usize)
+            .and_then(|v| v.last())
+            .copied()
+            == Some(pos);
+    }
+    if op.c_target != NO_BIT {
+        ok &= b_touches
+            .get(op.c_target.0 as usize)
+            .and_then(|v| v.last())
+            .copied()
+            == Some(pos);
+    }
+    if op.c_condition != NO_BIT {
+        ok &= b_touches
+            .get(op.c_condition.0 as usize)
+            .and_then(|v| v.last())
+            .copied()
+            == Some(pos);
+    }
+    if op.r_target != NO_REG {
+        ok &= r_touches
+            .get(op.r_target.0 as usize)
+            .and_then(|v| v.last())
+            .copied()
+            == Some(pos);
+    }
+    ok
+}
+
+fn pz1050_push_resource_touches(
+    op: &Op,
+    pos: usize,
+    q_touches: &mut Vec<Vec<usize>>,
+    b_touches: &mut Vec<Vec<usize>>,
+    r_touches: &mut Vec<Vec<usize>>,
+) {
+    if op.q_target != NO_QUBIT {
+        while q_touches.len() <= op.q_target.0 as usize {
+            q_touches.push(Vec::new());
+        }
+        q_touches[op.q_target.0 as usize].push(pos);
+    }
+    if op.q_control1 != NO_QUBIT {
+        while q_touches.len() <= op.q_control1.0 as usize {
+            q_touches.push(Vec::new());
+        }
+        q_touches[op.q_control1.0 as usize].push(pos);
+    }
+    if op.q_control2 != NO_QUBIT {
+        while q_touches.len() <= op.q_control2.0 as usize {
+            q_touches.push(Vec::new());
+        }
+        q_touches[op.q_control2.0 as usize].push(pos);
+    }
+    if op.c_target != NO_BIT {
+        while b_touches.len() <= op.c_target.0 as usize {
+            b_touches.push(Vec::new());
+        }
+        b_touches[op.c_target.0 as usize].push(pos);
+    }
+    if op.c_condition != NO_BIT {
+        while b_touches.len() <= op.c_condition.0 as usize {
+            b_touches.push(Vec::new());
+        }
+        b_touches[op.c_condition.0 as usize].push(pos);
+    }
+    if op.r_target != NO_REG {
+        while r_touches.len() <= op.r_target.0 as usize {
+            r_touches.push(Vec::new());
+        }
+        r_touches[op.r_target.0 as usize].push(pos);
+    }
+}
+
+fn pz1050_pop_resource_touches(
+    op: &Op,
+    q_touches: &mut [Vec<usize>],
+    b_touches: &mut [Vec<usize>],
+    r_touches: &mut [Vec<usize>],
+) {
+    if op.q_target != NO_QUBIT {
+        q_touches[op.q_target.0 as usize].pop();
+    }
+    if op.q_control1 != NO_QUBIT {
+        q_touches[op.q_control1.0 as usize].pop();
+    }
+    if op.q_control2 != NO_QUBIT {
+        q_touches[op.q_control2.0 as usize].pop();
+    }
+    if op.c_target != NO_BIT {
+        b_touches[op.c_target.0 as usize].pop();
+    }
+    if op.c_condition != NO_BIT {
+        b_touches[op.c_condition.0 as usize].pop();
+    }
+    if op.r_target != NO_REG {
+        r_touches[op.r_target.0 as usize].pop();
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pz1050Const {
+    Zero,
+    One,
+    Unknown,
+}
+
+fn pz1050_const_xor(a: Pz1050Const, b: Pz1050Const) -> Pz1050Const {
+    match (a, b) {
+        (Pz1050Const::Unknown, _) | (_, Pz1050Const::Unknown) => Pz1050Const::Unknown,
+        (Pz1050Const::Zero, x) | (x, Pz1050Const::Zero) => x,
+        (Pz1050Const::One, Pz1050Const::One) => Pz1050Const::Zero,
+    }
+}
+
+fn pz1050_const_and(a: Pz1050Const, b: Pz1050Const) -> Pz1050Const {
+    match (a, b) {
+        (Pz1050Const::Zero, _) | (_, Pz1050Const::Zero) => Pz1050Const::Zero,
+        (Pz1050Const::One, x) | (x, Pz1050Const::One) => x,
+        (Pz1050Const::Unknown, Pz1050Const::Unknown) => Pz1050Const::Unknown,
+    }
+}
+
+fn pz1050_cx(control: QubitId, target: QubitId, c_condition: BitId) -> Op {
+    Op {
+        kind: OperationType::CX,
+        q_control2: NO_QUBIT,
+        q_control1: control,
+        q_target: target,
+        c_target: NO_BIT,
+        c_condition,
+        r_target: NO_REG,
+    }
+}
+
+fn pz1050_x(target: QubitId, c_condition: BitId) -> Op {
+    Op {
+        kind: OperationType::X,
+        q_control2: NO_QUBIT,
+        q_control1: NO_QUBIT,
+        q_target: target,
+        c_target: NO_BIT,
+        c_condition,
+        r_target: NO_REG,
+    }
+}
+
+fn pz1050_cz(control: QubitId, target: QubitId, c_condition: BitId) -> Op {
+    Op {
+        kind: OperationType::CZ,
+        q_control2: NO_QUBIT,
+        q_control1: control,
+        q_target: target,
+        c_target: NO_BIT,
+        c_condition,
+        r_target: NO_REG,
+    }
+}
+
+fn pz1050_z(target: QubitId, c_condition: BitId) -> Op {
+    Op {
+        kind: OperationType::Z,
+        q_control2: NO_QUBIT,
+        q_control1: NO_QUBIT,
+        q_target: target,
+        c_target: NO_BIT,
+        c_condition,
+        r_target: NO_REG,
+    }
+}
+
+fn pz1050_neg(c_condition: BitId) -> Op {
+    Op {
+        kind: OperationType::Neg,
+        q_control2: NO_QUBIT,
+        q_control1: NO_QUBIT,
+        q_target: NO_QUBIT,
+        c_target: NO_BIT,
+        c_condition,
+        r_target: NO_REG,
+    }
+}
+
+fn pz1050_exact_const_simplify_ops(ops: Vec<Op>) -> Vec<Op> {
+    let mut max_q = 0usize;
+    let mut max_b = 0usize;
+    for op in &ops {
+        for q in [op.q_control2, op.q_control1, op.q_target] {
+            if q != NO_QUBIT {
+                max_q = max_q.max(q.0 as usize);
+            }
+        }
+        for b in [op.c_target, op.c_condition] {
+            if b != NO_BIT {
+                max_b = max_b.max(b.0 as usize);
+            }
+        }
+    }
+    let mut qv = vec![Pz1050Const::Zero; max_q + 1];
+    let mut bv = vec![Pz1050Const::Zero; max_b + 1];
+    let mut condition_stack = Vec::<Pz1050Const>::new();
+    let mut current_base = Pz1050Const::One;
+    let mut out = Vec::with_capacity(ops.len());
+    let mut removed = 0usize;
+    let mut demoted_toffoli = 0usize;
+    let mut removed_toffoli = 0usize;
+
+    for op in ops {
+        let mut cond = current_base;
+        if op.c_condition != NO_BIT {
+            cond = pz1050_const_and(cond, bv[op.c_condition.0 as usize]);
+        }
+
+        let mut replacement = Some(op);
+        match op.kind {
+            OperationType::Register | OperationType::DebugPrint => {}
+            OperationType::AppendToRegister => {
+                if op.q_target != NO_QUBIT {
+                    qv[op.q_target.0 as usize] = Pz1050Const::Unknown;
+                }
+                if op.c_target != NO_BIT {
+                    bv[op.c_target.0 as usize] = Pz1050Const::Unknown;
+                }
+            }
+            OperationType::PushCondition => {
+                condition_stack.push(current_base);
+                current_base = pz1050_const_and(current_base, bv[op.c_condition.0 as usize]);
+            }
+            OperationType::PopCondition => {
+                current_base = condition_stack
+                    .pop()
+                    .expect("pz1050 const simplifier: condition stack underflow");
+            }
+            OperationType::BitStore0 => {
+                if cond == Pz1050Const::Zero {
+                    replacement = None;
+                } else {
+                    bv[op.c_target.0 as usize] = if cond == Pz1050Const::One {
+                        Pz1050Const::Zero
+                    } else {
+                        Pz1050Const::Unknown
+                    };
+                }
+            }
+            OperationType::BitStore1 => {
+                if cond == Pz1050Const::Zero {
+                    replacement = None;
+                } else {
+                    bv[op.c_target.0 as usize] = if cond == Pz1050Const::One {
+                        Pz1050Const::One
+                    } else {
+                        Pz1050Const::Unknown
+                    };
+                }
+            }
+            OperationType::BitInvert => {
+                if cond == Pz1050Const::Zero {
+                    replacement = None;
+                } else {
+                    let b = op.c_target.0 as usize;
+                    bv[b] = pz1050_const_xor(bv[b], cond);
+                }
+            }
+            OperationType::R => {
+                // Keep even no-op resets; changing random draw cadence is not
+                // needed for Toffoli reduction.
+                if cond == Pz1050Const::One {
+                    qv[op.q_target.0 as usize] = Pz1050Const::Zero;
+                } else {
+                    qv[op.q_target.0 as usize] = Pz1050Const::Unknown;
+                }
+            }
+            OperationType::Hmr => {
+                // Keep HMRs for the same RNG-cadence reason as R.
+                if cond == Pz1050Const::One {
+                    qv[op.q_target.0 as usize] = Pz1050Const::Zero;
+                    bv[op.c_target.0 as usize] = Pz1050Const::Unknown;
+                } else {
+                    qv[op.q_target.0 as usize] = Pz1050Const::Unknown;
+                    bv[op.c_target.0 as usize] = Pz1050Const::Unknown;
+                }
+            }
+            OperationType::X => {
+                if cond == Pz1050Const::Zero {
+                    replacement = None;
+                } else {
+                    let t = op.q_target.0 as usize;
+                    qv[t] = pz1050_const_xor(qv[t], cond);
+                }
+            }
+            OperationType::CX => {
+                let c = pz1050_const_and(cond, qv[op.q_control1.0 as usize]);
+                if c == Pz1050Const::Zero {
+                    replacement = None;
+                } else if cond == Pz1050Const::One
+                    && qv[op.q_control1.0 as usize] == Pz1050Const::One
+                {
+                    replacement = Some(pz1050_x(op.q_target, NO_BIT));
+                }
+                let t = op.q_target.0 as usize;
+                qv[t] = pz1050_const_xor(qv[t], c);
+            }
+            OperationType::CCX => {
+                let c1 = qv[op.q_control1.0 as usize];
+                let c2 = qv[op.q_control2.0 as usize];
+                let c = pz1050_const_and(cond, pz1050_const_and(c1, c2));
+                if c == Pz1050Const::Zero {
+                    replacement = None;
+                    removed_toffoli += 1;
+                } else if c1 == Pz1050Const::One && c2 == Pz1050Const::One {
+                    replacement = Some(pz1050_x(op.q_target, op.c_condition));
+                    demoted_toffoli += 1;
+                } else if c1 == Pz1050Const::One {
+                    replacement = Some(pz1050_cx(op.q_control2, op.q_target, op.c_condition));
+                    demoted_toffoli += 1;
+                } else if c2 == Pz1050Const::One {
+                    replacement = Some(pz1050_cx(op.q_control1, op.q_target, op.c_condition));
+                    demoted_toffoli += 1;
+                }
+                let t = op.q_target.0 as usize;
+                qv[t] = pz1050_const_xor(qv[t], c);
+            }
+            OperationType::Z => {
+                if cond == Pz1050Const::Zero || qv[op.q_target.0 as usize] == Pz1050Const::Zero {
+                    replacement = None;
+                } else if cond == Pz1050Const::One
+                    && qv[op.q_target.0 as usize] == Pz1050Const::One
+                {
+                    replacement = Some(pz1050_neg(NO_BIT));
+                }
+            }
+            OperationType::CZ => {
+                let c1 = qv[op.q_control1.0 as usize];
+                let c2 = qv[op.q_target.0 as usize];
+                let c = pz1050_const_and(cond, pz1050_const_and(c1, c2));
+                if c == Pz1050Const::Zero {
+                    replacement = None;
+                } else if c1 == Pz1050Const::One && c2 == Pz1050Const::One {
+                    replacement = Some(pz1050_neg(op.c_condition));
+                } else if c1 == Pz1050Const::One {
+                    replacement = Some(pz1050_z(op.q_target, op.c_condition));
+                } else if c2 == Pz1050Const::One {
+                    replacement = Some(pz1050_z(op.q_control1, op.c_condition));
+                }
+            }
+            OperationType::CCZ => {
+                let c1 = qv[op.q_control2.0 as usize];
+                let c2 = qv[op.q_control1.0 as usize];
+                let c3 = qv[op.q_target.0 as usize];
+                let c = pz1050_const_and(cond, pz1050_const_and(c1, pz1050_const_and(c2, c3)));
+                if c == Pz1050Const::Zero {
+                    replacement = None;
+                    removed_toffoli += 1;
+                } else if c1 == Pz1050Const::One && c2 == Pz1050Const::One && c3 == Pz1050Const::One
+                {
+                    replacement = Some(pz1050_neg(op.c_condition));
+                    demoted_toffoli += 1;
+                } else if c1 == Pz1050Const::One && c2 == Pz1050Const::One {
+                    replacement = Some(pz1050_z(op.q_target, op.c_condition));
+                    demoted_toffoli += 1;
+                } else if c1 == Pz1050Const::One && c3 == Pz1050Const::One {
+                    replacement = Some(pz1050_z(op.q_control1, op.c_condition));
+                    demoted_toffoli += 1;
+                } else if c2 == Pz1050Const::One && c3 == Pz1050Const::One {
+                    replacement = Some(pz1050_z(op.q_control2, op.c_condition));
+                    demoted_toffoli += 1;
+                } else if c1 == Pz1050Const::One {
+                    replacement = Some(pz1050_cz(op.q_control1, op.q_target, op.c_condition));
+                    demoted_toffoli += 1;
+                } else if c2 == Pz1050Const::One {
+                    replacement = Some(pz1050_cz(op.q_control2, op.q_target, op.c_condition));
+                    demoted_toffoli += 1;
+                } else if c3 == Pz1050Const::One {
+                    replacement = Some(pz1050_cz(op.q_control2, op.q_control1, op.c_condition));
+                    demoted_toffoli += 1;
+                }
+            }
+            OperationType::Neg => {
+                if cond == Pz1050Const::Zero {
+                    replacement = None;
+                }
+            }
+            OperationType::Swap => {
+                if cond == Pz1050Const::Zero {
+                    replacement = None;
+                } else {
+                    let a = op.q_control1.0 as usize;
+                    let b = op.q_target.0 as usize;
+                    if cond == Pz1050Const::One {
+                        qv.swap(a, b);
+                    } else {
+                        qv[a] = Pz1050Const::Unknown;
+                        qv[b] = Pz1050Const::Unknown;
+                    }
+                }
+            }
+        }
+        if let Some(op) = replacement {
+            op.validate();
+            out.push(op);
+        } else {
+            removed += 1;
+        }
+    }
+    eprintln!(
+        "pz1050 const simplifier: removed {} ops, removed {} Toffoli, demoted {} Toffoli",
+        removed, removed_toffoli, demoted_toffoli
+    );
+    out
+}
+
+#[derive(Clone, Copy)]
+struct Pz1050QubitSegment {
+    start: usize,
+    end: usize,
+    color: u64,
+}
+
+#[derive(Default, Clone)]
+struct Pz1050QubitState {
+    active_start: Option<usize>,
+    is_register: bool,
+}
+
+fn pz1050_touch_segment(states: &mut [Pz1050QubitState], q: QubitId, op_index: usize) {
+    if q == crate::circuit::NO_QUBIT {
+        return;
+    }
+    let state = &mut states[q.0 as usize];
+    if state.active_start.is_none() {
+        state.active_start = Some(op_index);
+    }
+}
+
+fn pz1050_close_segment(
+    states: &mut [Pz1050QubitState],
+    segments: &mut Vec<(u64, usize, usize, bool)>,
+    q: QubitId,
+    op_index: usize,
+) {
+    if q == crate::circuit::NO_QUBIT {
+        return;
+    }
+    let state = &mut states[q.0 as usize];
+    if let Some(start) = state.active_start.take() {
+        segments.push((q.0, start, op_index, state.is_register));
+    }
+}
+
+fn pz1050_exact_compact_ops(mut ops: Vec<Op>) -> Vec<Op> {
+    use std::cmp::Reverse;
+    use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+
+    let mut max_q = 0u64;
+    let mut registers: BTreeMap<u64, Vec<QubitId>> = BTreeMap::new();
+    for op in &ops {
+        for q in [op.q_control2, op.q_control1, op.q_target] {
+            if q != crate::circuit::NO_QUBIT {
+                max_q = max_q.max(q.0);
+            }
+        }
+        if op.kind == OperationType::AppendToRegister && op.q_target != crate::circuit::NO_QUBIT {
+            registers.entry(op.r_target.0).or_default().push(op.q_target);
+        }
+    }
+
+    let mut states = vec![Pz1050QubitState::default(); max_q as usize + 1];
+    let mut register_qs = BTreeSet::new();
+    for reg in [0u64, 1u64] {
+        if let Some(items) = registers.get(&reg) {
+            for &q in items {
+                register_qs.insert(q.0);
+                let state = &mut states[q.0 as usize];
+                state.is_register = true;
+                state.active_start = Some(0);
+            }
+        }
+    }
+
+    let mut raw_segments: Vec<(u64, usize, usize, bool)> = Vec::new();
+    for (op_index, op) in ops.iter().enumerate() {
+        match op.kind {
+            OperationType::Register
+            | OperationType::AppendToRegister
+            | OperationType::BitInvert
+            | OperationType::BitStore0
+            | OperationType::BitStore1
+            | OperationType::PushCondition
+            | OperationType::PopCondition
+            | OperationType::DebugPrint
+            | OperationType::Neg => {}
+            _ => {
+                pz1050_touch_segment(&mut states, op.q_control2, op_index);
+                pz1050_touch_segment(&mut states, op.q_control1, op_index);
+                pz1050_touch_segment(&mut states, op.q_target, op_index);
+            }
+        }
+        if matches!(op.kind, OperationType::R | OperationType::Hmr)
+            && op.q_target != crate::circuit::NO_QUBIT
+            && op.c_condition == crate::circuit::NO_BIT
+            && !register_qs.contains(&op.q_target.0)
+        {
+            pz1050_close_segment(&mut states, &mut raw_segments, op.q_target, op_index);
+        }
+    }
+    for (q, state) in states.iter_mut().enumerate() {
+        if let Some(start) = state.active_start.take() {
+            raw_segments.push((q as u64, start, ops.len(), state.is_register));
+        }
+    }
+
+    raw_segments.sort_by_key(|&(logical, start, end, is_register)| {
+        (start, end, !is_register, logical)
+    });
+
+    let mut free = BinaryHeap::<Reverse<u64>>::new();
+    let mut busy = BinaryHeap::<Reverse<(usize, u64)>>::new();
+    let mut next_color = 0u64;
+    let mut by_qubit: Vec<Vec<Pz1050QubitSegment>> = vec![Vec::new(); max_q as usize + 1];
+    let mut moved_segments = 0usize;
+    let mut assigned_max = 0u64;
+
+    for (logical, start, end, is_register) in raw_segments {
+        while let Some(&Reverse((busy_end, color))) = busy.peek() {
+            if busy_end < start {
+                busy.pop();
+                free.push(Reverse(color));
+            } else {
+                break;
+            }
+        }
+        let color = if is_register {
+            logical
+        } else if let Some(Reverse(color)) = free.pop() {
+            color
+        } else {
+            let color = next_color;
+            next_color += 1;
+            color
+        };
+        next_color = next_color.max(color + 1);
+        assigned_max = assigned_max.max(color);
+        if color != logical {
+            moved_segments += 1;
+        }
+        busy.push(Reverse((end, color)));
+        by_qubit[logical as usize].push(Pz1050QubitSegment { start, end, color });
+    }
+
+    for segments in &mut by_qubit {
+        segments.sort_by_key(|s| (s.start, s.end));
+    }
+    let mut cursors = vec![0usize; by_qubit.len()];
+
+    fn remap_q(
+        q: QubitId,
+        op_index: usize,
+        by_qubit: &[Vec<Pz1050QubitSegment>],
+        cursors: &mut [usize],
+    ) -> QubitId {
+        if q == crate::circuit::NO_QUBIT {
+            return q;
+        }
+        let qi = q.0 as usize;
+        let segments = &by_qubit[qi];
+        let cursor = &mut cursors[qi];
+        while *cursor + 1 < segments.len() && segments[*cursor].end < op_index {
+            *cursor += 1;
+        }
+        let segment = segments
+            .get(*cursor)
+            .unwrap_or_else(|| panic!("q{} has no compact segment", q.0));
+        assert!(
+            segment.start <= op_index && op_index <= segment.end,
+            "q{} op {} outside compact segment [{}..{}]",
+            q.0,
+            op_index,
+            segment.start,
+            segment.end
+        );
+        QubitId(segment.color)
+    }
+
+    for (op_index, op) in ops.iter_mut().enumerate() {
+        op.q_control2 = remap_q(op.q_control2, op_index, &by_qubit, &mut cursors);
+        op.q_control1 = remap_q(op.q_control1, op_index, &by_qubit, &mut cursors);
+        op.q_target = remap_q(op.q_target, op_index, &by_qubit, &mut cursors);
+        op.validate();
+    }
+
+    eprintln!(
+        "pz1050 exact compactor: max q {} -> {} (moved {} reset-bounded segments)",
+        max_q + 1,
+        assigned_max + 1,
+        moved_segments
+    );
+    ops
+}
+
+fn pz1050_ccx(control2: u64, control1: u64, target: u64) -> Op {
+    Op {
+        kind: OperationType::CCX,
+        q_control2: QubitId(control2),
+        q_control1: QubitId(control1),
+        q_target: QubitId(target),
+        c_target: NO_BIT,
+        c_condition: NO_BIT,
+        r_target: NO_REG,
+    }
+}
+
+fn pz1050_touches_q(op: &Op, q: u64) -> bool {
+    op.q_target.0 == q || op.q_control1.0 == q || op.q_control2.0 == q
+}
+
+fn pz1050_same_ccx(op: &Op, control2: u64, control1: u64, target: u64) -> bool {
+    *op == pz1050_ccx(control2, control1, target)
+}
+
+fn pz1050_ccx_with_control(op: &Op, control: u64) -> Option<(u64, u64)> {
+    if op.kind != OperationType::CCX || op.c_condition != NO_BIT {
+        return None;
+    }
+    if op.q_control2.0 == control {
+        Some((op.q_control1.0, op.q_target.0))
+    } else if op.q_control1.0 == control {
+        Some((op.q_control2.0, op.q_target.0))
+    } else {
+        None
+    }
+}
+
+fn pz1050_exact_dirty_borrow_peak_c3x(ops: Vec<Op>) -> Vec<Op> {
+    const A: u64 = 1042;
+    const B: u64 = 1043;
+    const TEMP: u64 = 1047;
+    const DIRTY: u64 = 1044;
+
+    let mut compute = None;
+    let mut uncompute = None;
+    for (idx, op) in ops.iter().enumerate() {
+        if pz1050_same_ccx(op, A, B, TEMP) || pz1050_same_ccx(op, B, A, TEMP) {
+            if compute.is_none() {
+                compute = Some(idx);
+            } else {
+                uncompute = Some(idx);
+                break;
+            }
+        }
+    }
+    let Some(compute) = compute else {
+        return ops;
+    };
+    let Some(uncompute) = uncompute else {
+        return ops;
+    };
+
+    let mut use_sites = Vec::<(usize, u64, u64)>::new();
+    for (idx, op) in ops.iter().enumerate().take(uncompute).skip(compute + 1) {
+        if pz1050_touches_q(op, DIRTY) {
+            return ops;
+        }
+        if let Some((control, target)) = pz1050_ccx_with_control(op, TEMP) {
+            use_sites.push((idx, control, target));
+        } else if pz1050_touches_q(op, TEMP) {
+            return ops;
+        }
+    }
+    if use_sites.is_empty() {
+        return ops;
+    }
+
+    let mut reset = None;
+    for (idx, op) in ops.iter().enumerate().skip(uncompute + 1) {
+        if pz1050_touches_q(op, TEMP) {
+            if op.kind == OperationType::R
+                && op.q_target.0 == TEMP
+                && op.c_condition == NO_BIT
+                && op.q_control1 == NO_QUBIT
+                && op.q_control2 == NO_QUBIT
+            {
+                reset = Some(idx);
+            }
+            break;
+        }
+        if idx > uncompute + 128 {
+            break;
+        }
+    }
+    let Some(reset) = reset else {
+        return ops;
+    };
+
+    let mut replacements: HashMap<usize, (u64, u64)> = HashMap::new();
+    for (idx, control, target) in &use_sites {
+        if [*control, *target].contains(&A)
+            || [*control, *target].contains(&B)
+            || [*control, *target].contains(&DIRTY)
+            || control == target
+        {
+            return ops;
+        }
+        replacements.insert(*idx, (*control, *target));
+    }
+
+    let mut out = Vec::with_capacity(ops.len() + use_sites.len() * 3);
+    for (idx, op) in ops.into_iter().enumerate() {
+        if idx == compute || idx == uncompute || idx == reset {
+            continue;
+        }
+        if let Some((control, target)) = replacements.get(&idx).copied() {
+            // Dirty-borrow exact C3X:
+            //   t ^= d&c; d ^= a&b; t ^= d&c; d ^= a&b.
+            // The dirty wire `d` is restored, and the net effect is target ^= a&b&c.
+            out.push(pz1050_ccx(DIRTY, control, target));
+            out.push(pz1050_ccx(A, B, DIRTY));
+            out.push(pz1050_ccx(DIRTY, control, target));
+            out.push(pz1050_ccx(A, B, DIRTY));
+        } else {
+            out.push(op);
+        }
+    }
+    eprintln!(
+        "pz1050 dirty-borrow C3X: removed clean q{} temp, rewrote {} uses through dirty q{}",
+        TEMP,
+        use_sites.len(),
+        DIRTY
+    );
+    out
 }
 
 pub fn build() -> Vec<Op> {
