@@ -1901,21 +1901,75 @@ pub(crate) fn pz1050_embedded_ops() -> Vec<Op> {
     } else {
         pz1050_exact_inline_single_temp_and(ops)
     };
+    let ops = if std::env::var("PZ1050_DISABLE_Q1045_SAVED_COPY_BORROW")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_q1045_saved_copy_borrow(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_Q1045_SINGLE_USE_COPY")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_q1045_single_use_copy(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_Q1044_SINGLE_USE_COPY")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_q1044_single_use_copy(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_Q1044_DIRTY_BORROW")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_dirty_borrow_q1044(ops)
+    };
     let ops = if std::env::var("PZ1050_DISABLE_RETARGET_ZERO_RESETS").ok().as_deref() == Some("1")
     {
         ops
     } else {
         pz1050_exact_retarget_zero_resets(ops)
     };
+    let ops = if std::env::var("PZ1050_DISABLE_DROP_Q1045_ZERO_RESETS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_drop_q1045_zero_resets(ops)
+    };
     let ops = if std::env::var("PZ1050_ENABLE_ZERO_RESET_DROP").ok().as_deref() == Some("1") {
         pz1050_exact_drop_zero_resets(ops)
     } else {
         ops
     };
-    if std::env::var("PZ1050_DISABLE_EXACT_COMPACT").ok().as_deref() == Some("1") {
+    let ops = if std::env::var("PZ1050_DISABLE_EXACT_COMPACT").ok().as_deref() == Some("1") {
         ops
     } else {
         pz1050_exact_compact_ops(ops)
+    };
+    if std::env::var("PZ1050_DISABLE_DROP_Q1045_ZERO_RESETS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_drop_q1045_zero_resets(ops)
     }
 }
 
@@ -2334,6 +2388,13 @@ fn pz1050_touches_q(op: &Op, q: u64) -> bool {
 
 fn pz1050_same_ccx(op: &Op, control2: u64, control1: u64, target: u64) -> bool {
     *op == pz1050_ccx(control2, control1, target)
+}
+
+fn pz1050_controls_are(op: &Op, a: u64, b: u64) -> bool {
+    op.kind == OperationType::CCX
+        && op.c_condition == NO_BIT
+        && ((op.q_control2.0 == a && op.q_control1.0 == b)
+            || (op.q_control2.0 == b && op.q_control1.0 == a))
 }
 
 fn pz1050_ccx_with_control(op: &Op, control: u64) -> Option<(u64, u64)> {
@@ -2950,8 +3011,396 @@ fn pz1050_exact_inline_single_temp_and(ops: Vec<Op>) -> Vec<Op> {
     out
 }
 
+fn pz1050_exact_q1045_saved_copy_borrow(ops: Vec<Op>) -> Vec<Op> {
+    const TEMP: u64 = 1045;
+    const DIRTY: u64 = 1044;
+
+    let mut out = Vec::with_capacity(ops.len());
+    let mut idx = 0usize;
+    let mut windows = 0usize;
+
+    while idx < ops.len() {
+        if idx + 7 >= ops.len() {
+            out.push(ops[idx]);
+            idx += 1;
+            continue;
+        }
+
+        let op0 = ops[idx];
+        let op1 = ops[idx + 1];
+        let op2 = ops[idx + 2];
+        let op3 = ops[idx + 3];
+        let op4 = ops[idx + 4];
+        let op5 = ops[idx + 5];
+        let op6 = ops[idx + 6];
+        let op7 = ops[idx + 7];
+
+        let matched = op0.kind == OperationType::CX
+            && op0.q_control2 == NO_QUBIT
+            && op0.q_control1 != NO_QUBIT
+            && op0.q_target.0 == TEMP
+            && op0.c_target == NO_BIT
+            && op0.c_condition == NO_BIT
+            && op7 == op0
+            && op1.kind == OperationType::CX
+            && op1.q_control2 == NO_QUBIT
+            && op1.q_control1 == op0.q_control1
+            && op1.q_target != NO_QUBIT
+            && op1.q_target.0 != TEMP
+            && op1.c_target == NO_BIT
+            && op1.c_condition == NO_BIT
+            && op5 == op1
+            && op2 == op4
+            && op2.kind == OperationType::CCX
+            && op2.q_target == op0.q_control1
+            && op2.c_condition == NO_BIT
+            && op3.kind == OperationType::CCX
+            && op3.q_target != NO_QUBIT
+            && op3.q_target != op0.q_control1
+            && op3.q_target != op1.q_target
+            && op3.q_target.0 != TEMP
+            && op3.c_condition == NO_BIT
+            && op6.kind == OperationType::CCX
+            && op6.q_target == op1.q_target
+            && op6.c_condition == NO_BIT;
+
+        if !matched {
+            out.push(op0);
+            idx += 1;
+            continue;
+        }
+
+        let x = op0.q_control1.0;
+        let u = op1.q_target.0;
+        if !pz1050_controls_are(&op2, u, TEMP) {
+            out.push(op0);
+            idx += 1;
+            continue;
+        }
+
+        let c = if op3.q_control1.0 == x {
+            op3.q_control2.0
+        } else if op3.q_control2.0 == x {
+            op3.q_control1.0
+        } else {
+            out.push(op0);
+            idx += 1;
+            continue;
+        };
+        if !pz1050_controls_are(&op6, c, TEMP) {
+            out.push(op0);
+            idx += 1;
+            continue;
+        }
+
+        let target = op3.q_target.0;
+        if [x, u, c, target].contains(&DIRTY)
+            || x == u
+            || x == c
+            || x == target
+            || u == c
+            || u == target
+            || c == target
+        {
+            out.push(op0);
+            idx += 1;
+            continue;
+        }
+
+        if ops[idx..idx + 8].iter().any(|op| pz1050_touches_q(op, DIRTY))
+            || !ops[idx.saturating_sub(8)..idx]
+                .iter()
+                .any(|op| pz1050_touches_q(op, DIRTY))
+            || !ops[idx + 8..ops.len().min(idx + 24)]
+                .iter()
+                .any(|op| pz1050_touches_q(op, DIRTY))
+        {
+            out.push(op0);
+            idx += 1;
+            continue;
+        }
+
+        // Original packet:
+        //   temp=x; u^=x; x^=u&temp; target^=c&x; x^=u&temp; u^=x; u^=c&temp; temp^=x
+        // Net: target ^= c&x&u_original and u ^= c&x.  Borrow the already-live dirty
+        // q1044 to synthesize the three-control target update, restoring q1044 exactly.
+        out.push(pz1050_ccx(DIRTY, c, target));
+        out.push(pz1050_ccx(x, u, DIRTY));
+        out.push(pz1050_ccx(DIRTY, c, target));
+        out.push(pz1050_ccx(x, u, DIRTY));
+        out.push(pz1050_ccx(c, x, u));
+        windows += 1;
+        idx += 8;
+    }
+
+    if windows > 0 {
+        eprintln!(
+            "pz1050 q1045 saved-copy borrow: removed {} clean q{} packets using dirty q{}",
+            windows, TEMP, DIRTY
+        );
+    }
+    out
+}
+
+fn pz1050_exact_q1045_single_use_copy(ops: Vec<Op>) -> Vec<Op> {
+    const TEMP: u64 = 1045;
+
+    let mut out = Vec::with_capacity(ops.len());
+    let mut idx = 0usize;
+    let mut windows = 0usize;
+
+    while idx < ops.len() {
+        if idx + 2 >= ops.len() {
+            out.push(ops[idx]);
+            idx += 1;
+            continue;
+        }
+
+        let first = ops[idx];
+        let mid = ops[idx + 1];
+        let last = ops[idx + 2];
+        if !(first.kind == OperationType::CX
+            && first.q_control2 == NO_QUBIT
+            && first.q_control1 != NO_QUBIT
+            && first.q_target.0 == TEMP
+            && first.c_target == NO_BIT
+            && first.c_condition == NO_BIT
+            && last == first
+            && mid.kind == OperationType::CCX
+            && mid.q_target != NO_QUBIT
+            && mid.q_target.0 != TEMP
+            && mid.q_target != first.q_control1
+            && mid.c_condition == NO_BIT)
+        {
+            out.push(first);
+            idx += 1;
+            continue;
+        }
+
+        let src = first.q_control1.0;
+        let other = if mid.q_control2.0 == TEMP {
+            mid.q_control1.0
+        } else if mid.q_control1.0 == TEMP {
+            mid.q_control2.0
+        } else {
+            out.push(first);
+            idx += 1;
+            continue;
+        };
+        let target = mid.q_target.0;
+        if other == src || other == TEMP || other == target {
+            out.push(first);
+            idx += 1;
+            continue;
+        }
+
+        out.push(pz1050_ccx(other, src, target));
+        windows += 1;
+        idx += 3;
+    }
+
+    if windows > 0 {
+        eprintln!(
+            "pz1050 q1045 single-use copy: replaced {} q{} copy-use-uncompute windows",
+            windows, TEMP
+        );
+    }
+    out
+}
+
+fn pz1050_exact_q1044_single_use_copy(ops: Vec<Op>) -> Vec<Op> {
+    const TEMP: u64 = 1044;
+
+    let mut out = Vec::with_capacity(ops.len());
+    let mut idx = 0usize;
+    let mut windows = 0usize;
+
+    while idx < ops.len() {
+        if idx + 2 >= ops.len() {
+            out.push(ops[idx]);
+            idx += 1;
+            continue;
+        }
+
+        let first = ops[idx];
+        let mid = ops[idx + 1];
+        let last = ops[idx + 2];
+        if !(first.kind == OperationType::CX
+            && first.q_control2 == NO_QUBIT
+            && first.q_control1 != NO_QUBIT
+            && first.q_target.0 == TEMP
+            && first.c_target == NO_BIT
+            && first.c_condition == NO_BIT
+            && last == first
+            && mid.kind == OperationType::CCX
+            && mid.q_target != NO_QUBIT
+            && mid.q_target.0 != TEMP
+            && mid.q_target != first.q_control1
+            && mid.c_condition == NO_BIT)
+        {
+            out.push(first);
+            idx += 1;
+            continue;
+        }
+
+        let src = first.q_control1.0;
+        let other = if mid.q_control2.0 == TEMP {
+            mid.q_control1.0
+        } else if mid.q_control1.0 == TEMP {
+            mid.q_control2.0
+        } else {
+            out.push(first);
+            idx += 1;
+            continue;
+        };
+        let target = mid.q_target.0;
+        if other == src || other == TEMP || other == target {
+            out.push(first);
+            idx += 1;
+            continue;
+        }
+
+        out.push(pz1050_ccx(other, src, target));
+        windows += 1;
+        idx += 3;
+    }
+
+    if windows > 0 {
+        eprintln!(
+            "pz1050 q1044 single-use copy: replaced {} q{} copy-use-uncompute windows",
+            windows, TEMP
+        );
+    }
+    out
+}
+
+fn pz1050_exact_dirty_borrow_q1044(ops: Vec<Op>) -> Vec<Op> {
+    const TEMP: u64 = 1044;
+    const DIRTY: u64 = 1043;
+
+    let mut skip = HashSet::<usize>::new();
+    let mut replacements = HashMap::<usize, (u64, u64, u64, u64)>::new();
+    let mut windows = 0usize;
+    let mut uses = 0usize;
+    let mut idx = 0usize;
+
+    while idx < ops.len() {
+        let op = ops[idx];
+        if op.kind != OperationType::CCX
+            || op.q_target.0 != TEMP
+            || op.q_control1 == NO_QUBIT
+            || op.q_control2 == NO_QUBIT
+            || op.c_condition != NO_BIT
+        {
+            idx += 1;
+            continue;
+        }
+        let a = op.q_control2.0;
+        let b = op.q_control1.0;
+        if a == b || [a, b].contains(&TEMP) || [a, b].contains(&DIRTY) {
+            idx += 1;
+            continue;
+        }
+
+        let mut uncompute = None;
+        for j in idx + 1..ops.len().min(idx + 768) {
+            if ops[j] == op {
+                uncompute = Some(j);
+                break;
+            }
+        }
+        let Some(uncompute) = uncompute else {
+            idx += 1;
+            continue;
+        };
+
+        let mut use_sites = Vec::<(usize, u64, u64)>::new();
+        let mut safe = true;
+        for (j, inner) in ops.iter().enumerate().take(uncompute).skip(idx + 1) {
+            if pz1050_touches_q(inner, DIRTY) {
+                safe = false;
+                break;
+            }
+            if let Some((control, target)) = pz1050_ccx_with_control(inner, TEMP) {
+                if control == target
+                    || [control, target].contains(&TEMP)
+                    || [control, target].contains(&DIRTY)
+                    || [control, target].contains(&a)
+                    || [control, target].contains(&b)
+                {
+                    safe = false;
+                    break;
+                }
+                use_sites.push((j, control, target));
+            } else if pz1050_touches_q(inner, TEMP) {
+                safe = false;
+                break;
+            }
+        }
+        if !safe || use_sites.is_empty() {
+            idx += 1;
+            continue;
+        }
+
+        let mut reset = None;
+        for j in uncompute + 1..ops.len().min(uncompute + 256) {
+            if pz1050_touches_q(&ops[j], TEMP) {
+                let r = ops[j];
+                if r.kind == OperationType::R
+                    && r.q_target.0 == TEMP
+                    && r.q_control1 == NO_QUBIT
+                    && r.q_control2 == NO_QUBIT
+                    && r.c_target == NO_BIT
+                    && r.c_condition == NO_BIT
+                {
+                    reset = Some(j);
+                }
+                break;
+            }
+        }
+        let Some(reset) = reset else {
+            idx += 1;
+            continue;
+        };
+
+        skip.insert(idx);
+        skip.insert(uncompute);
+        skip.insert(reset);
+        for (use_idx, control, target) in use_sites {
+            replacements.insert(use_idx, (a, b, control, target));
+            uses += 1;
+        }
+        windows += 1;
+        idx = reset + 1;
+    }
+
+    if windows == 0 {
+        return ops;
+    }
+
+    let mut out = Vec::with_capacity(ops.len() + uses * 3);
+    for (idx, op) in ops.into_iter().enumerate() {
+        if skip.contains(&idx) {
+            continue;
+        }
+        if let Some((a, b, control, target)) = replacements.get(&idx).copied() {
+            out.push(pz1050_ccx(DIRTY, control, target));
+            out.push(pz1050_ccx(a, b, DIRTY));
+            out.push(pz1050_ccx(DIRTY, control, target));
+            out.push(pz1050_ccx(a, b, DIRTY));
+        } else {
+            out.push(op);
+        }
+    }
+    eprintln!(
+        "pz1050 q1044 dirty-borrow C3X: removed {} q{} temp windows, rewrote {} uses through dirty q{}",
+        windows, TEMP, uses, DIRTY
+    );
+    out
+}
+
 fn pz1050_exact_retarget_zero_resets(ops: Vec<Op>) -> Vec<Op> {
-    const HIGH: u64 = 1046;
+    const HIGHS: [u64; 2] = [1046, 1045];
 
     let mut max_q = 0u64;
     let mut register_qs = HashSet::<u64>::new();
@@ -2973,45 +3422,44 @@ fn pz1050_exact_retarget_zero_resets(ops: Vec<Op>) -> Vec<Op> {
     let mut out = Vec::with_capacity(ops.len());
     let mut retargeted = 0usize;
     let mut highest_sink = 0u64;
-    let mut seen_high_resets = 0usize;
-    let mut inactive_high_resets = 0usize;
-    let mut lower_sink_resets = 0usize;
+    let mut seen_high_resets = HashMap::<u64, usize>::new();
+    let mut inactive_high_resets = HashMap::<u64, usize>::new();
+    let mut lower_sink_resets = HashMap::<u64, usize>::new();
     for (idx, mut op) in ops.into_iter().enumerate() {
-        if op.kind == OperationType::R
-            && op.q_target.0 == HIGH
+        let high = if op.kind == OperationType::R
             && op.q_control1 == NO_QUBIT
             && op.q_control2 == NO_QUBIT
             && op.c_target == NO_BIT
             && op.c_condition == NO_BIT
-            && !register_qs.contains(&HIGH)
+            && HIGHS.contains(&op.q_target.0)
+            && !register_qs.contains(&op.q_target.0)
         {
-            seen_high_resets += 1;
-            if active_start[HIGH as usize].is_none() {
-                inactive_high_resets += 1;
-            }
-        }
-        let reset_sink = if op.kind == OperationType::R
-            && op.q_target.0 == HIGH
-            && op.q_control1 == NO_QUBIT
-            && op.q_control2 == NO_QUBIT
-            && op.c_target == NO_BIT
-            && op.c_condition == NO_BIT
-            && !register_qs.contains(&HIGH)
-            && active_start[HIGH as usize].is_none()
-        {
-            (0..HIGH)
-                .rev()
-                .find(|&q| !register_qs.contains(&q) && active_start[q as usize].is_none())
+            Some(op.q_target.0)
         } else {
             None
         };
-        if reset_sink.is_some() {
-            lower_sink_resets += 1;
+        if let Some(high) = high {
+            *seen_high_resets.entry(high).or_default() += 1;
+            if active_start[high as usize].is_none() {
+                *inactive_high_resets.entry(high).or_default() += 1;
+            }
         }
-        let can_retarget = reset_sink.is_some();
+        let reset_sink = high.and_then(|high| {
+            if active_start[high as usize].is_none() {
+                let max_sink = high.min(1045) - 1;
+                (0..=max_sink)
+                    .rev()
+                    .find(|&q| !register_qs.contains(&q) && active_start[q as usize].is_none())
+                    .map(|sink| (high, sink))
+            } else {
+                None
+            }
+        });
+        if let Some((high, _)) = reset_sink {
+            *lower_sink_resets.entry(high).or_default() += 1;
+        }
 
-        if can_retarget {
-            let sink = reset_sink.unwrap();
+        if let Some((_high, sink)) = reset_sink {
             highest_sink = highest_sink.max(sink);
             op.q_target = QubitId(sink);
             op.validate();
@@ -3047,8 +3495,88 @@ fn pz1050_exact_retarget_zero_resets(ops: Vec<Op>) -> Vec<Op> {
     }
 
     eprintln!(
-        "pz1050 zero-reset retarget: seen {} q{} resets, inactive {}, with lower sink {}, moved {} (highest sink q{})",
-        seen_high_resets, HIGH, inactive_high_resets, lower_sink_resets, retargeted, highest_sink
+        "pz1050 zero-reset retarget: seen {:?}, inactive {:?}, with lower sink {:?}, moved {} (highest sink q{})",
+        seen_high_resets, inactive_high_resets, lower_sink_resets, retargeted, highest_sink
+    );
+    out
+}
+
+fn pz1050_exact_drop_q1045_zero_resets(ops: Vec<Op>) -> Vec<Op> {
+    const TEMPS: [u64; 2] = [1045, 1044];
+
+    let mut max_q = 0u64;
+    let mut register_qs = HashSet::<u64>::new();
+    for op in &ops {
+        for q in [op.q_control2, op.q_control1, op.q_target] {
+            if q != NO_QUBIT {
+                max_q = max_q.max(q.0);
+            }
+        }
+        if op.kind == OperationType::AppendToRegister && op.q_target != NO_QUBIT {
+            register_qs.insert(op.q_target.0);
+        }
+    }
+
+    let mut active_start = vec![None::<usize>; max_q as usize + 1];
+    for &q in &register_qs {
+        active_start[q as usize] = Some(0);
+    }
+    let mut drop = HashSet::<usize>::new();
+
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind {
+            OperationType::Register
+            | OperationType::AppendToRegister
+            | OperationType::BitInvert
+            | OperationType::BitStore0
+            | OperationType::BitStore1
+            | OperationType::PushCondition
+            | OperationType::PopCondition
+            | OperationType::DebugPrint
+            | OperationType::Neg => {}
+            _ => {
+                for q in [op.q_control2, op.q_control1, op.q_target] {
+                    if q != NO_QUBIT && active_start[q.0 as usize].is_none() {
+                        active_start[q.0 as usize] = Some(idx);
+                    }
+                }
+            }
+        }
+
+        if op.kind == OperationType::R
+            && TEMPS.contains(&op.q_target.0)
+            && op.q_control1 == NO_QUBIT
+            && op.q_control2 == NO_QUBIT
+            && op.c_target == NO_BIT
+            && op.c_condition == NO_BIT
+            && !register_qs.contains(&op.q_target.0)
+        {
+            let qi = op.q_target.0 as usize;
+            if active_start[qi] == Some(idx) {
+                drop.insert(idx);
+            }
+            active_start[qi] = None;
+        } else if matches!(op.kind, OperationType::R | OperationType::Hmr)
+            && op.q_target != NO_QUBIT
+            && op.c_condition == NO_BIT
+            && !register_qs.contains(&op.q_target.0)
+        {
+            active_start[op.q_target.0 as usize] = None;
+        }
+    }
+
+    if drop.is_empty() {
+        return ops;
+    }
+    let before = ops.len();
+    let out: Vec<Op> = ops
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, op)| (!drop.contains(&idx)).then_some(op))
+        .collect();
+    eprintln!(
+        "pz1050 high zero-reset drop: removed {} first-touch q1045/q1044 resets",
+        before - out.len()
     );
     out
 }
