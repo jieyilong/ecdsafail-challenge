@@ -62,7 +62,10 @@ use sha3::{
     Shake256,
 };
 
-use crate::circuit::{analyze_ops, BitId, Op, OperationType, QubitId, QubitOrBit, RegisterId};
+use crate::circuit::{
+    analyze_ops, BitId, Op, OperationType, QubitId, QubitOrBit, RegisterId, NO_BIT, NO_QUBIT,
+    NO_REG,
+};
 use crate::sim::Simulator;
 use crate::weierstrass_elliptic_curve::WeierstrassEllipticCurve;
 
@@ -142,7 +145,6 @@ pub struct PhaseResource {
     pub hmr_ops: usize,
     pub r_ops: usize,
 }
-
 
 impl B {
     fn new() -> Self {
@@ -539,7 +541,6 @@ pub const SECP256K1_P: U256 = U256::from_limbs([
     0xFFFFFFFFFFFFFFFF,
 ]);
 
-
 pub const ONE_INV_DX3_AFFINE_PA_ENV: &str = "ONE_INV_DX3_AFFINE_PA";
 pub const ONE_INV_DX3_AFFINE_PA_BLOCKER: &str =
     "ONE_INV_DX3_AFFINE_PA_BLOCKED: the dx^3 algebra gives Rx and Ry with \
@@ -551,7 +552,6 @@ pub const ONE_INV_DX3_AFFINE_PA_BLOCKER: &str =
      emit a clean one-inversion four-register PA.";
 
 // ─── helpers: bit access on U256 ────────────────────────────────────────────
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Cuccaro ripple-carry adder
@@ -585,7 +585,6 @@ pub const ONE_INV_DX3_AFFINE_PA_BLOCKER: &str =
 // qubit register, load the classical value into it, run Cuccaro, then
 // unload. The load/unload is not counted against Toffolis.
 
-
 fn direct_const_walks_enabled() -> bool {
     std::env::var("KAL_DIRECT_CONST_WALKS").ok().as_deref() == Some("1")
 }
@@ -610,12 +609,10 @@ fn kal_vent_halve_enabled() -> bool {
     std::env::var("KAL_VENT_HALVE").ok().as_deref() == Some("1")
 }
 
-
 const ALT_SEED_COUNT: usize = 5;
 const ALT_SEED_COMMIT: usize = 24;
 const ALT_SEED_SHOTS: usize = 4096;
 const ALT_SEED_CLASSICAL_LIMIT: usize = 2;
-
 
 fn secp256k1_curve() -> WeierstrassEllipticCurve {
     WeierstrassEllipticCurve {
@@ -1033,10 +1030,7 @@ fn configure_ecdsafail_submission_route() {
         "DIALOG_GCD_COMPARE_STEP_BITS",
         "181:48,194:48,199:48,202:48,207:48,212:48,216:48",
     );
-    set_default_env(
-        "DIALOG_GCD_FOLD_CARRY_TRUNC_STEP_WINDOWS",
-        "",
-    );
+    set_default_env("DIALOG_GCD_FOLD_CARRY_TRUNC_STEP_WINDOWS", "");
     set_default_env("DIALOG_GCD_FOLD_CARRY_TRUNC_W", "17");
     set_default_env("DIALOG_GCD_FOLD_FREED_TAIL", "1");
     set_default_env("DIALOG_GCD_FOLD_FREED_TAIL_ED", "1");
@@ -1060,10 +1054,7 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_K5_HEAD11_STREAM_PAIR_APPLY", "1");
     set_default_env("DIALOG_GCD_K5_HEAD11_SPLIT_PAIR_SHIFT_APPLY", "1");
     set_default_env("DIALOG_GCD_K5_HEAD11_PAIR01_S2_PERMUTE_APPLY", "1");
-    set_default_env(
-        "DIALOG_GCD_K5_HEAD11_PAIR23_S2_BORROW_PAIR01_APPLY",
-        "1",
-    );
+    set_default_env("DIALOG_GCD_K5_HEAD11_PAIR23_S2_BORROW_PAIR01_APPLY", "1");
     set_default_env("DIALOG_GCD_K5_PARTIAL_RAW_RELEASE", "8");
     set_default_env("DIALOG_GCD_K5_RELEASE_SCALE_BITS", "5");
     set_default_env("DIALOG_GCD_K5_STREAM_PAIR_APPLY", "1");
@@ -1087,10 +1078,7 @@ fn configure_ecdsafail_submission_route() {
         "10:19,11:19,21:20,63:19,74:19,100:19,107:19,110:19,118:19,135:19,136:19,137:19,188:20,204:19,227:20,241:19",
     );
     set_default_env("DIALOG_GCD_SPECIAL_FOLD_PARK_LOW_CARRIES", "16");
-    set_default_env(
-        "DIALOG_GCD_SPECIAL_FOLD_PARK_LOW_CARRIES_STEP_MAP",
-        "",
-    );
+    set_default_env("DIALOG_GCD_SPECIAL_FOLD_PARK_LOW_CARRIES_STEP_MAP", "");
     set_default_env("DIALOG_GCD_SPECIAL_FOLD_RELEASE_SCRATCH", "1");
     set_default_env(
         "DIALOG_GCD_SPECIAL_OVERFLOW_CLEAN_STEP_BITS",
@@ -1239,9 +1227,12 @@ fn configure_ecdsafail_submission_route() {
     // shots: 1309 x 1,503,355 = 1,967,891,695, beats the 1,968,064,139 frontier
     // by 172,444).
     set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "19");
-    set_default_env("DIALOG_GCD_APPLY_BOUNDARY_CONDITIONAL_REPLAY", "1");  // BAKED: condrep ON for env-less grader build
-    set_default_env("DIALOG_GCD_SELECTED_BODY_STREAM_SUFFIX_MAP", "3:2,4:3,5:5,6:6,7:7,8:5,9:7,10:5,11:7,12:6,13:7,14:5,15:6,16:3,17:5,18:1,19:3,21:1");  // BAKED: codex 1285q peak-drop (stream selected high bits through low-qubit suffix)
-    // Bake the exact conditional-replay stack for env-less GPU hunts and grader builds.
+    set_default_env("DIALOG_GCD_APPLY_BOUNDARY_CONDITIONAL_REPLAY", "1"); // BAKED: condrep ON for env-less grader build
+    set_default_env(
+        "DIALOG_GCD_SELECTED_BODY_STREAM_SUFFIX_MAP",
+        "3:2,4:3,5:5,6:6,7:7,8:5,9:7,10:5,11:7,12:6,13:7,14:5,15:6,16:3,17:5,18:1,19:3,21:1",
+    ); // BAKED: codex 1285q peak-drop (stream selected high bits through low-qubit suffix)
+       // Bake the exact conditional-replay stack for env-less GPU hunts and grader builds.
     set_default_env("DIALOG_GCD_REVERSE_BRANCH_CONDITIONAL_REPLAY", "1");
     set_default_env("DIALOG_GCD_SPECIAL_CLEAN_CONDITIONAL_REPLAY", "1");
     set_default_env("MOD_FAST_FLAG_CONDITIONAL_REPLAY", "1");
@@ -1433,7 +1424,10 @@ fn configure_ecdsafail_submission_route() {
     // net Toffoli still beats the flat-50 baseline (1,512,823 -> 1,506,043 @ 1313).
     // Stacked peak-1302 band-trim schedule + measured-ovfclear + F_CUT4=189 (tier-3 "safe lock"):
     // trims average executed Toffoli to 1,456,963 at peak 1302 qubits.
-    set_default_env("DIALOG_GCD_BODY_CARRY_BAND_TRIMS", "0,3,3,3,3,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3,3");
+    set_default_env(
+        "DIALOG_GCD_BODY_CARRY_BAND_TRIMS",
+        "0,3,3,3,3,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3,3",
+    );
     set_default_env("DIALOG_GCD_TOBITVECTOR_CSWAP_BODY_TRIM", "0");
     set_default_env("DIALOG_GCD_BINDER_NOTCH_STEPS", "8,9,10");
     set_default_env("DIALOG_GCD_BINDER_NOTCH_EXTRA", "3");
@@ -1457,12 +1451,12 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("R84_LOWQ", "1");
     set_default_env("R84_LOWQ_CIN_BORROW", "1");
     set_default_env("R84_QPROD_NAF", "1"); // quotient*c uses 977 = 2^10 - 2^5 - 2^4 + 1.
-    // Fold the square's high half into its low half in place, accumulate the
-    // resulting 33-bit quotient, apply quotient*(2^256-p) once, subtract once,
-    // then reversibly unfold before Bennett-uncomputing the square. The final
-    // modular subtract vents onto the folded operand, retaining the 1307q peak.
-    // The 21-bit high-carry propagation and rare folded-lo noncanonical band
-    // are selected away with the shared Fiat-Shamir island.
+                                           // Fold the square's high half into its low half in place, accumulate the
+                                           // resulting 33-bit quotient, apply quotient*(2^256-p) once, subtract once,
+                                           // then reversibly unfold before Bennett-uncomputing the square. The final
+                                           // modular subtract vents onto the folded operand, retaining the 1307q peak.
+                                           // The 21-bit high-carry propagation and rare folded-lo noncanonical band
+                                           // are selected away with the shared Fiat-Shamir island.
     set_default_env("ROUND84_INPLACE_SOLINAS_FOLD", "1");
     set_default_env("ROUND84_INPLACE_QUOTIENT_CARRY_TRUNC_W", "21");
     // Peak-bounded square (1226 tier): the round84 lam^2 schoolbook square parks
@@ -1482,7 +1476,7 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_FOLD_PARK_LOW_CARRIES", "1");
     set_default_env("DIALOG_GCD_SPECIAL_FOLD_BORROW_CARRIES", "1");
     set_default_env("DIALOG_GCD_K2_APPLY_INPLACE_RAW_BLOCK", "1");
-    set_default_env("DIALOG_GCD_FOLD_FREED_TAIL", "1");  // BAKED: 1221 ship
+    set_default_env("DIALOG_GCD_FOLD_FREED_TAIL", "1"); // BAKED: 1221 ship
     set_default_env("DIALOG_GCD_BORROW_CURRENT_S2", "1");
     set_default_env("DIALOG_GCD_BORROW_ZERO_RAW_FUTURE", "1");
     set_default_env("DIALOG_GCD_FREE_SCRATCH_BEFORE_SHIFT", "1");
@@ -1580,7 +1574,7 @@ fn configure_ecdsafail_submission_route() {
     // Binder-notch fallback 8,9: nonce 169924627 validates 0/0/0 over all
     // 9024 shots at 1300q x 1,454,884 T = 1,891,349,200.
     set_default_env("DIALOG_TAIL_NONCE", "18100027017098");
-    set_default_env("ROUND84_FOLD_FAST_ADD", "0");  // round84 Solinas-fold small adders coherent->measured-fast (-1,434 exec-T, peak-neutral 1285)
+    set_default_env("ROUND84_FOLD_FAST_ADD", "0"); // round84 Solinas-fold small adders coherent->measured-fast (-1,434 exec-T, peak-neutral 1285)
     set_default_env("DIALOG_GCD_FOLD_MAJ2", "1");
     set_default_env("DIALOG_GCD_FOLD_MAJ1", "1");
     set_default_env("DIALOG_GCD_APPLY_FINAL_TOPCLEAN", "0");
@@ -1858,7 +1852,857 @@ pub(crate) fn pz1050_embedded_ops() -> Vec<Op> {
     static BLOB: &[u8] = include_bytes!("pz1050/ec_shrunken_pz.kmx.lz");
     let text = pz1050_lz_decode(BLOB);
     let text = std::str::from_utf8(&text).expect("pz1050: utf8");
-    text.lines().filter_map(Op::from_text).collect()
+    let ops: Vec<Op> = text.lines().filter_map(Op::from_text).collect();
+    pz1050_postprocess_ops(ops)
+}
+
+fn pz1050_hmr(target: QubitId, bit: BitId) -> Op {
+    let mut op = Op::empty();
+    op.kind = OperationType::Hmr;
+    op.q_target = target;
+    op.c_target = bit;
+    op
+}
+
+fn pz1050_cz(control: QubitId, target: QubitId, c_condition: BitId) -> Op {
+    let mut op = Op::empty();
+    op.kind = OperationType::CZ;
+    op.q_control1 = control;
+    op.q_target = target;
+    op.c_condition = c_condition;
+    op
+}
+
+#[derive(Clone, Copy)]
+struct Pz1050AndCandidate {
+    a: QubitId,
+    b: QubitId,
+}
+
+fn pz1050_value_targets(op: Op, out: &mut Vec<QubitId>) {
+    out.clear();
+    match op.kind {
+        OperationType::X
+        | OperationType::CX
+        | OperationType::CCX
+        | OperationType::R
+        | OperationType::Hmr => out.push(op.q_target),
+        OperationType::Swap => {
+            out.push(op.q_control1);
+            out.push(op.q_target);
+        }
+        _ => {}
+    }
+}
+
+fn pz1050_exact_hmr_uncompute_ops(ops: Vec<Op>) -> Vec<Op> {
+    let (nq, nb, _nr, regs) = analyze_ops(ops.iter());
+    let allow_control_touch = std::env::var("PZ1050_HMR_ALLOW_CONTROL_TOUCH")
+        .ok()
+        .as_deref()
+        == Some("1");
+    let replacement_limit = std::env::var("PZ1050_HMR_REPLACEMENT_LIMIT")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(usize::MAX);
+    let mut is_input_q = vec![false; nq as usize];
+    for reg in regs.iter().take(2) {
+        for item in reg {
+            if let QubitOrBit::Qubit(q) = item {
+                is_input_q[q.0 as usize] = true;
+            }
+        }
+    }
+
+    let mut known_zero = vec![true; nq as usize];
+    for (q, is_input) in is_input_q.iter().copied().enumerate() {
+        if is_input {
+            known_zero[q] = false;
+        }
+    }
+    let mut candidate = vec![None::<Pz1050AndCandidate>; nq as usize];
+    let mut value_targets = Vec::<QubitId>::new();
+    let mut out = Vec::<Op>::with_capacity(ops.len());
+    let mut next_bit = nb;
+    let mut replacements = 0usize;
+    let mut condition_depth = 0usize;
+
+    for op in ops {
+        if op.kind == OperationType::PushCondition {
+            condition_depth += 1;
+            candidate.fill(None);
+            out.push(op);
+            continue;
+        }
+        if op.kind == OperationType::PopCondition {
+            condition_depth = condition_depth.saturating_sub(1);
+            candidate.fill(None);
+            out.push(op);
+            continue;
+        }
+
+        pz1050_value_targets(op, &mut value_targets);
+        for &q in &value_targets {
+            if q == NO_QUBIT {
+                continue;
+            }
+            let qi = q.0 as usize;
+            if !(op.kind == OperationType::CCX && op.q_target == q && condition_depth == 0) {
+                candidate[qi] = None;
+            }
+        }
+        if !allow_control_touch {
+            for &q in &value_targets {
+                if q == NO_QUBIT {
+                    continue;
+                }
+                for c in &mut candidate {
+                    if c.map(|c| c.a == q || c.b == q).unwrap_or(false) {
+                        *c = None;
+                    }
+                }
+            }
+        }
+
+        if condition_depth != 0 || op.c_condition != NO_BIT {
+            for &q in &value_targets {
+                if q != NO_QUBIT {
+                    known_zero[q.0 as usize] = false;
+                    candidate[q.0 as usize] = None;
+                }
+            }
+            out.push(op);
+            continue;
+        }
+
+        match op.kind {
+            OperationType::R | OperationType::Hmr => {
+                known_zero[op.q_target.0 as usize] = true;
+                out.push(op);
+            }
+            OperationType::X | OperationType::CX | OperationType::Swap => {
+                for &q in &value_targets {
+                    if q != NO_QUBIT {
+                        known_zero[q.0 as usize] = false;
+                    }
+                }
+                out.push(op);
+            }
+            OperationType::CCX => {
+                let t = op.q_target.0 as usize;
+                if let Some(c) = candidate[t] {
+                    if c.a == op.q_control1
+                        && c.b == op.q_control2
+                        && replacements < replacement_limit
+                    {
+                        let bit = BitId(next_bit);
+                        next_bit += 1;
+                        out.push(pz1050_hmr(op.q_target, bit));
+                        out.push(pz1050_cz(op.q_control1, op.q_control2, bit));
+                        candidate[t] = None;
+                        known_zero[t] = true;
+                        replacements += 1;
+                    } else {
+                        candidate[t] = None;
+                        known_zero[t] = false;
+                        out.push(op);
+                    }
+                } else if known_zero[t] {
+                    candidate[t] = Some(Pz1050AndCandidate {
+                        a: op.q_control1,
+                        b: op.q_control2,
+                    });
+                    known_zero[t] = false;
+                    out.push(op);
+                } else {
+                    known_zero[t] = false;
+                    out.push(op);
+                }
+            }
+            _ => out.push(op),
+        }
+    }
+
+    eprintln!(
+        "pz1050 exact HMR uncompute: replaced {} CCX clears with HMR+CZ",
+        replacements
+    );
+    out
+}
+
+fn pz1050_postprocess_ops(ops: Vec<Op>) -> Vec<Op> {
+    let ops = if std::env::var("PZ1050_DISABLE_EXACT_REDUCE").ok().as_deref() == Some("1") {
+        ops
+    } else {
+        pz1050_exact_reduce_ops(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_EXACT_HMR_UNCOMPUTE")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_hmr_uncompute_ops(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_ZERO_CONTROL_NOOPS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_zero_control_noops(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_FINAL_EXACT_REDUCE")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_reduce_ops(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_SECOND_ZERO_CONTROL_NOOPS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_zero_control_noops(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_SECOND_FINAL_EXACT_REDUCE")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_reduce_ops(ops)
+    };
+    let ops = if std::env::var("PZ1050_DISABLE_SECOND_HMR_UNCOMPUTE")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_hmr_uncompute_ops(ops)
+    };
+    if std::env::var("PZ1050_DISABLE_EXACT_COMPACT")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        ops
+    } else {
+        pz1050_exact_compact_ops(ops)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Pz1050QubitSegment {
+    start: usize,
+    end: usize,
+    color: u64,
+}
+
+#[derive(Default, Clone)]
+struct Pz1050QubitState {
+    active_start: Option<usize>,
+    is_register: bool,
+}
+
+fn pz1050_touch_segment(states: &mut [Pz1050QubitState], q: QubitId, op_index: usize) {
+    if q == NO_QUBIT {
+        return;
+    }
+    let state = &mut states[q.0 as usize];
+    if state.active_start.is_none() {
+        state.active_start = Some(op_index);
+    }
+}
+
+fn pz1050_close_segment(
+    states: &mut [Pz1050QubitState],
+    segments: &mut Vec<(u64, usize, usize, bool)>,
+    q: QubitId,
+    op_index: usize,
+) {
+    if q == NO_QUBIT {
+        return;
+    }
+    let state = &mut states[q.0 as usize];
+    if let Some(start) = state.active_start.take() {
+        segments.push((q.0, start, op_index, state.is_register));
+    }
+}
+
+fn pz1050_exact_compact_ops(mut ops: Vec<Op>) -> Vec<Op> {
+    use std::cmp::Reverse;
+    use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+
+    let mut max_q = 0u64;
+    let mut registers: BTreeMap<u64, Vec<QubitId>> = BTreeMap::new();
+    for op in &ops {
+        for q in [op.q_control2, op.q_control1, op.q_target] {
+            if q != NO_QUBIT {
+                max_q = max_q.max(q.0);
+            }
+        }
+        if op.kind == OperationType::AppendToRegister && op.q_target != NO_QUBIT {
+            registers
+                .entry(op.r_target.0)
+                .or_default()
+                .push(op.q_target);
+        }
+    }
+
+    let mut states = vec![Pz1050QubitState::default(); max_q as usize + 1];
+    let mut register_qs = BTreeSet::new();
+    for reg in [0u64, 1u64] {
+        if let Some(items) = registers.get(&reg) {
+            for &q in items {
+                register_qs.insert(q.0);
+                let state = &mut states[q.0 as usize];
+                state.is_register = true;
+                state.active_start = Some(0);
+            }
+        }
+    }
+
+    let mut raw_segments: Vec<(u64, usize, usize, bool)> = Vec::new();
+    for (op_index, op) in ops.iter().enumerate() {
+        match op.kind {
+            OperationType::Register
+            | OperationType::AppendToRegister
+            | OperationType::BitInvert
+            | OperationType::BitStore0
+            | OperationType::BitStore1
+            | OperationType::PushCondition
+            | OperationType::PopCondition
+            | OperationType::DebugPrint
+            | OperationType::Neg => {}
+            _ => {
+                pz1050_touch_segment(&mut states, op.q_control2, op_index);
+                pz1050_touch_segment(&mut states, op.q_control1, op_index);
+                pz1050_touch_segment(&mut states, op.q_target, op_index);
+            }
+        }
+        if matches!(op.kind, OperationType::R | OperationType::Hmr)
+            && op.q_target != NO_QUBIT
+            && op.c_condition == NO_BIT
+            && !register_qs.contains(&op.q_target.0)
+        {
+            pz1050_close_segment(&mut states, &mut raw_segments, op.q_target, op_index);
+        }
+    }
+    for (q, state) in states.iter_mut().enumerate() {
+        if let Some(start) = state.active_start.take() {
+            raw_segments.push((q as u64, start, ops.len(), state.is_register));
+        }
+    }
+
+    raw_segments
+        .sort_by_key(|&(logical, start, end, is_register)| (start, end, !is_register, logical));
+
+    let mut free = BinaryHeap::<Reverse<u64>>::new();
+    let mut busy = BinaryHeap::<Reverse<(usize, u64)>>::new();
+    let mut next_color = 0u64;
+    let mut by_qubit: Vec<Vec<Pz1050QubitSegment>> = vec![Vec::new(); max_q as usize + 1];
+    let mut moved_segments = 0usize;
+    let mut assigned_max = 0u64;
+
+    for (logical, start, end, is_register) in raw_segments {
+        while let Some(&Reverse((busy_end, color))) = busy.peek() {
+            if busy_end < start {
+                busy.pop();
+                free.push(Reverse(color));
+            } else {
+                break;
+            }
+        }
+        let color = if is_register {
+            logical
+        } else if let Some(Reverse(color)) = free.pop() {
+            color
+        } else {
+            let color = next_color;
+            next_color += 1;
+            color
+        };
+        next_color = next_color.max(color + 1);
+        assigned_max = assigned_max.max(color);
+        if color != logical {
+            moved_segments += 1;
+        }
+        busy.push(Reverse((end, color)));
+        by_qubit[logical as usize].push(Pz1050QubitSegment { start, end, color });
+    }
+
+    for segments in &mut by_qubit {
+        segments.sort_by_key(|s| (s.start, s.end));
+    }
+    let mut cursors = vec![0usize; by_qubit.len()];
+
+    fn remap_q(
+        q: QubitId,
+        op_index: usize,
+        by_qubit: &[Vec<Pz1050QubitSegment>],
+        cursors: &mut [usize],
+    ) -> QubitId {
+        if q == NO_QUBIT {
+            return q;
+        }
+        let qi = q.0 as usize;
+        let segments = &by_qubit[qi];
+        let cursor = &mut cursors[qi];
+        while *cursor + 1 < segments.len() && segments[*cursor].end < op_index {
+            *cursor += 1;
+        }
+        let segment = segments
+            .get(*cursor)
+            .unwrap_or_else(|| panic!("q{} has no compact segment", q.0));
+        assert!(
+            segment.start <= op_index && op_index <= segment.end,
+            "q{} op {} outside compact segment [{}..{}]",
+            q.0,
+            op_index,
+            segment.start,
+            segment.end
+        );
+        QubitId(segment.color)
+    }
+
+    for (op_index, op) in ops.iter_mut().enumerate() {
+        op.q_control2 = remap_q(op.q_control2, op_index, &by_qubit, &mut cursors);
+        op.q_control1 = remap_q(op.q_control1, op_index, &by_qubit, &mut cursors);
+        op.q_target = remap_q(op.q_target, op_index, &by_qubit, &mut cursors);
+        op.validate();
+    }
+
+    eprintln!(
+        "pz1050 exact compactor: max q {} -> {} (moved {} reset-bounded segments)",
+        max_q + 1,
+        assigned_max + 1,
+        moved_segments
+    );
+    ops
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pz1050ConstQ {
+    Unknown,
+    Zero,
+    One,
+}
+
+impl Pz1050ConstQ {
+    fn flip(self) -> Self {
+        match self {
+            Self::Unknown => Self::Unknown,
+            Self::Zero => Self::One,
+            Self::One => Self::Zero,
+        }
+    }
+
+    fn xor(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Zero, b) | (b, Self::Zero) => b,
+            (Self::One, b) | (b, Self::One) => b.flip(),
+            _ => Self::Unknown,
+        }
+    }
+
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Zero, _) | (_, Self::Zero) => Self::Zero,
+            (Self::One, b) | (b, Self::One) => b,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+fn pz1050_x(target: QubitId) -> Op {
+    let mut op = Op::empty();
+    op.kind = OperationType::X;
+    op.q_target = target;
+    op
+}
+
+fn pz1050_z(target: QubitId) -> Op {
+    let mut op = Op::empty();
+    op.kind = OperationType::Z;
+    op.q_target = target;
+    op
+}
+
+fn pz1050_cx(control: QubitId, target: QubitId) -> Op {
+    let mut op = Op::empty();
+    op.kind = OperationType::CX;
+    op.q_control1 = control;
+    op.q_target = target;
+    op
+}
+
+fn pz1050_neg() -> Op {
+    let mut op = Op::empty();
+    op.kind = OperationType::Neg;
+    op
+}
+
+fn pz1050_exact_zero_control_noops(ops: Vec<Op>) -> Vec<Op> {
+    let (nq, _nb, _nr, regs) = analyze_ops(ops.iter());
+    let mut state = vec![Pz1050ConstQ::Zero; nq as usize];
+    for reg in regs.iter().take(2) {
+        for item in reg {
+            if let QubitOrBit::Qubit(q) = item {
+                state[q.0 as usize] = Pz1050ConstQ::Unknown;
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(ops.len());
+    let mut removed_ccx = 0usize;
+    let mut removed_ccz = 0usize;
+    let mut demoted_ccx = 0usize;
+    let mut demoted_ccz = 0usize;
+    let mut condition_depth = 0usize;
+    for op in ops {
+        if op.kind == OperationType::PushCondition {
+            condition_depth += 1;
+            out.push(op);
+            continue;
+        }
+        if op.kind == OperationType::PopCondition {
+            condition_depth = condition_depth.saturating_sub(1);
+            out.push(op);
+            continue;
+        }
+        let conditional = condition_depth != 0 || op.c_condition != NO_BIT;
+        if !conditional {
+            match op.kind {
+                OperationType::CCX => {
+                    let c1 = state[op.q_control1.0 as usize];
+                    let c2 = state[op.q_control2.0 as usize];
+                    if c1 == Pz1050ConstQ::Zero || c2 == Pz1050ConstQ::Zero {
+                        removed_ccx += 1;
+                        continue;
+                    } else if c1 == Pz1050ConstQ::One && c2 == Pz1050ConstQ::One {
+                        let replacement = pz1050_x(op.q_target);
+                        state[op.q_target.0 as usize] = state[op.q_target.0 as usize].flip();
+                        out.push(replacement);
+                        demoted_ccx += 1;
+                        continue;
+                    } else if c1 == Pz1050ConstQ::One {
+                        let replacement = pz1050_cx(op.q_control2, op.q_target);
+                        state[op.q_target.0 as usize] = state[op.q_target.0 as usize].xor(c2);
+                        out.push(replacement);
+                        demoted_ccx += 1;
+                        continue;
+                    } else if c2 == Pz1050ConstQ::One {
+                        let replacement = pz1050_cx(op.q_control1, op.q_target);
+                        state[op.q_target.0 as usize] = state[op.q_target.0 as usize].xor(c1);
+                        out.push(replacement);
+                        demoted_ccx += 1;
+                        continue;
+                    }
+                }
+                OperationType::CCZ => {
+                    let qs = [op.q_control1, op.q_control2, op.q_target];
+                    let consts = [
+                        state[qs[0].0 as usize],
+                        state[qs[1].0 as usize],
+                        state[qs[2].0 as usize],
+                    ];
+                    if consts.contains(&Pz1050ConstQ::Zero) {
+                        removed_ccz += 1;
+                        continue;
+                    }
+                    let live: Vec<QubitId> = qs
+                        .into_iter()
+                        .zip(consts)
+                        .filter_map(|(q, c)| (c == Pz1050ConstQ::Unknown).then_some(q))
+                        .collect();
+                    match live.as_slice() {
+                        [] => {
+                            out.push(pz1050_neg());
+                            demoted_ccz += 1;
+                            continue;
+                        }
+                        [q] => {
+                            out.push(pz1050_z(*q));
+                            demoted_ccz += 1;
+                            continue;
+                        }
+                        [a, b] => {
+                            out.push(pz1050_cz(*a, *b, NO_BIT));
+                            demoted_ccz += 1;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        match op.kind {
+            OperationType::R | OperationType::Hmr if !conditional => {
+                state[op.q_target.0 as usize] = Pz1050ConstQ::Zero;
+            }
+            OperationType::X if !conditional => {
+                state[op.q_target.0 as usize] = state[op.q_target.0 as usize].flip();
+            }
+            OperationType::CX if !conditional => {
+                let c = state[op.q_control1.0 as usize];
+                let t = state[op.q_target.0 as usize];
+                state[op.q_target.0 as usize] = t.xor(c);
+            }
+            OperationType::CCX if !conditional => {
+                let c1 = state[op.q_control1.0 as usize];
+                let c2 = state[op.q_control2.0 as usize];
+                let t = state[op.q_target.0 as usize];
+                state[op.q_target.0 as usize] = t.xor(c1.and(c2));
+            }
+            OperationType::Swap if !conditional => {
+                let a = op.q_control1.0 as usize;
+                let b = op.q_target.0 as usize;
+                state.swap(a, b);
+            }
+            _ => {
+                if conditional {
+                    for q in [op.q_control1, op.q_control2, op.q_target] {
+                        if q != NO_QUBIT
+                            && matches!(
+                                op.kind,
+                                OperationType::X
+                                    | OperationType::CX
+                                    | OperationType::CCX
+                                    | OperationType::Swap
+                                    | OperationType::R
+                                    | OperationType::Hmr
+                            )
+                        {
+                            state[q.0 as usize] = Pz1050ConstQ::Unknown;
+                        }
+                    }
+                }
+            }
+        }
+        out.push(op);
+    }
+    eprintln!(
+        "pz1050 constant-control reductions: removed {} CCX and {} CCZ; demoted {} CCX and {} CCZ",
+        removed_ccx, removed_ccz, demoted_ccx, demoted_ccz
+    );
+    out
+}
+
+fn pz1050_self_inverse_op(op: Op) -> bool {
+    matches!(
+        op.kind,
+        OperationType::Neg
+            | OperationType::BitInvert
+            | OperationType::X
+            | OperationType::Z
+            | OperationType::CX
+            | OperationType::CZ
+            | OperationType::Swap
+            | OperationType::CCX
+            | OperationType::CCZ
+    )
+}
+
+fn pz1050_op_resources(op: Op, qs: &mut Vec<usize>, bs: &mut Vec<usize>, rs: &mut Vec<usize>) {
+    qs.clear();
+    bs.clear();
+    rs.clear();
+    for q in [op.q_control2, op.q_control1, op.q_target] {
+        if q != NO_QUBIT {
+            let q = q.0 as usize;
+            if !qs.contains(&q) {
+                qs.push(q);
+            }
+        }
+    }
+    for b in [op.c_target, op.c_condition] {
+        if b != NO_BIT {
+            let b = b.0 as usize;
+            if !bs.contains(&b) {
+                bs.push(b);
+            }
+        }
+    }
+    if op.r_target != NO_REG {
+        rs.push(op.r_target.0 as usize);
+    }
+}
+
+fn pz1050_pop_resource_tops(
+    q_stack: &mut [Vec<(usize, Op)>],
+    b_stack: &mut [Vec<(usize, Op)>],
+    r_stack: &mut [Vec<(usize, Op)>],
+    qs: &[usize],
+    bs: &[usize],
+    rs: &[usize],
+) {
+    for &q in qs {
+        q_stack[q].pop();
+    }
+    for &b in bs {
+        b_stack[b].pop();
+    }
+    for &r in rs {
+        r_stack[r].pop();
+    }
+}
+
+fn pz1050_push_resource_tops(
+    q_stack: &mut [Vec<(usize, Op)>],
+    b_stack: &mut [Vec<(usize, Op)>],
+    r_stack: &mut [Vec<(usize, Op)>],
+    qs: &[usize],
+    bs: &[usize],
+    rs: &[usize],
+    item: (usize, Op),
+) {
+    for &q in qs {
+        q_stack[q].push(item);
+    }
+    for &b in bs {
+        b_stack[b].push(item);
+    }
+    for &r in rs {
+        r_stack[r].push(item);
+    }
+}
+
+fn pz1050_all_resource_tops_match(
+    q_stack: &[Vec<(usize, Op)>],
+    b_stack: &[Vec<(usize, Op)>],
+    r_stack: &[Vec<(usize, Op)>],
+    qs: &[usize],
+    bs: &[usize],
+    rs: &[usize],
+    item: (usize, Op),
+) -> bool {
+    qs.iter().all(|&q| q_stack[q].last().copied() == Some(item))
+        && bs.iter().all(|&b| b_stack[b].last().copied() == Some(item))
+        && rs.iter().all(|&r| r_stack[r].last().copied() == Some(item))
+}
+
+fn pz1050_exact_reduce_ops(ops: Vec<Op>) -> Vec<Op> {
+    let mut max_q = 0usize;
+    let mut max_b = 0usize;
+    let mut max_r = 0usize;
+    for op in &ops {
+        for q in [op.q_control2, op.q_control1, op.q_target] {
+            if q != NO_QUBIT {
+                max_q = max_q.max(q.0 as usize);
+            }
+        }
+        for b in [op.c_target, op.c_condition] {
+            if b != NO_BIT {
+                max_b = max_b.max(b.0 as usize);
+            }
+        }
+        if op.r_target != NO_REG {
+            max_r = max_r.max(op.r_target.0 as usize);
+        }
+    }
+
+    let mut q_stack = vec![Vec::<(usize, Op)>::new(); max_q + 1];
+    let mut b_stack = vec![Vec::<(usize, Op)>::new(); max_b + 1];
+    let mut r_stack = vec![Vec::<(usize, Op)>::new(); max_r + 1];
+    let mut out = Vec::<Op>::with_capacity(ops.len());
+    let mut live = Vec::<bool>::new();
+    let mut qs = Vec::<usize>::new();
+    let mut bs = Vec::<usize>::new();
+    let mut rs = Vec::<usize>::new();
+    let mut canceled = 0usize;
+    let mut canceled_toffoli = 0usize;
+
+    for op in ops {
+        if matches!(
+            op.kind,
+            OperationType::PushCondition | OperationType::PopCondition
+        ) {
+            for s in &mut q_stack {
+                s.clear();
+            }
+            for s in &mut b_stack {
+                s.clear();
+            }
+            for s in &mut r_stack {
+                s.clear();
+            }
+            out.push(op);
+            live.push(true);
+            continue;
+        }
+
+        pz1050_op_resources(op, &mut qs, &mut bs, &mut rs);
+        let mut canceled_here = false;
+        if pz1050_self_inverse_op(op) && (!qs.is_empty() || !bs.is_empty() || !rs.is_empty()) {
+            let top = qs
+                .iter()
+                .filter_map(|&q| q_stack[q].last().copied())
+                .chain(bs.iter().filter_map(|&b| b_stack[b].last().copied()))
+                .chain(rs.iter().filter_map(|&r| r_stack[r].last().copied()))
+                .next();
+            if let Some(item) = top {
+                if item.1 == op
+                    && pz1050_all_resource_tops_match(
+                        &q_stack, &b_stack, &r_stack, &qs, &bs, &rs, item,
+                    )
+                {
+                    live[item.0] = false;
+                    pz1050_pop_resource_tops(
+                        &mut q_stack,
+                        &mut b_stack,
+                        &mut r_stack,
+                        &qs,
+                        &bs,
+                        &rs,
+                    );
+                    canceled += 1;
+                    if matches!(op.kind, OperationType::CCX | OperationType::CCZ) {
+                        canceled_toffoli += 1;
+                    }
+                    canceled_here = true;
+                }
+            }
+        }
+        if !canceled_here {
+            let idx = out.len();
+            out.push(op);
+            live.push(true);
+            pz1050_push_resource_tops(
+                &mut q_stack,
+                &mut b_stack,
+                &mut r_stack,
+                &qs,
+                &bs,
+                &rs,
+                (idx, op),
+            );
+        }
+    }
+
+    let reduced: Vec<Op> = out
+        .into_iter()
+        .zip(live)
+        .filter_map(|(op, is_live)| is_live.then_some(op))
+        .collect();
+    eprintln!(
+        "pz1050 exact reducer: canceled {} inverse pairs ({} ops, {} Toffoli ops)",
+        canceled,
+        2 * canceled,
+        2 * canceled_toffoli
+    );
+    reduced
 }
 
 pub fn build() -> Vec<Op> {
@@ -1989,7 +2833,9 @@ pub fn build() -> Vec<Op> {
     }
     if std::env::var("FOLD_FREED_TAIL_SELFTEST").is_ok() {
         match fold_freed_tail_selftest() {
-            Ok(()) => eprintln!("FOLD_FREED_TAIL_SELFTEST: PASS (freed-tail ≡ baseline, ancilla & phase clean)"),
+            Ok(()) => eprintln!(
+                "FOLD_FREED_TAIL_SELFTEST: PASS (freed-tail ≡ baseline, ancilla & phase clean)"
+            ),
             Err(e) => panic!("FOLD_FREED_TAIL_SELFTEST: FAIL: {e}"),
         }
         if std::env::var("FOLD_FREED_TAIL_SELFTEST_ONLY")
@@ -2043,8 +2889,16 @@ pub fn square_window_selftest() -> Result<(), String> {
     assert!(nbits > 0);
     let packed_value_check = 2 * nbits < 64;
     let wide_value_check = nbits <= 256;
-    let mask = if packed_value_check { (1u64 << nbits) - 1 } else { u64::MAX };
-    let out_mask = if packed_value_check { (1u64 << (2 * nbits)) - 1 } else { u64::MAX };
+    let mask = if packed_value_check {
+        (1u64 << nbits) - 1
+    } else {
+        u64::MAX
+    };
+    let out_mask = if packed_value_check {
+        (1u64 << (2 * nbits)) - 1
+    } else {
+        u64::MAX
+    };
     let xs: Vec<u64> = (0..SHOTS as u64)
         .map(|s| {
             let r = s
@@ -2145,9 +2999,8 @@ pub fn square_window_selftest() -> Result<(), String> {
                     if idx >= out_limbs {
                         break;
                     }
-                    let cur = product[idx] as u128
-                        + (x_limbs[i] as u128) * (x_limbs[j] as u128)
-                        + carry;
+                    let cur =
+                        product[idx] as u128 + (x_limbs[i] as u128) * (x_limbs[j] as u128) + carry;
                     product[idx] = cur as u64;
                     carry = cur >> 64;
                 }
@@ -2186,7 +3039,6 @@ pub fn square_window_selftest() -> Result<(), String> {
     }
     Ok(())
 }
-
 
 /// Standalone differential selftest for the fused-fold freed-tail lever
 /// (`DIALOG_GCD_FOLD_FREED_TAIL`). Runs in the normal (non-test) build because
@@ -2261,8 +3113,7 @@ pub fn fold_freed_tail_selftest() -> Result<(), String> {
                             is_add,
                         );
                     } else {
-                        let controls =
-                            secp_fold_controls(e, d, h, xed, eord, n10, hi_delta, hi_c);
+                        let controls = secp_fold_controls(e, d, h, xed, eord, n10, hi_delta, hi_c);
                         if is_add {
                             cadd_per_position_controls_trunc(&mut b, &y, &controls, last);
                         } else {
@@ -2298,7 +3149,11 @@ pub fn fold_freed_tail_selftest() -> Result<(), String> {
                 // deterministic random y per shot, including adversarial
                 // carry-propagation patterns (long runs of 1s above bit 33 that
                 // force the truncated tail carry to escape / saturate).
-                let mask: u64 = if nbits >= 64 { u64::MAX } else { (1u64 << nbits) - 1 };
+                let mask: u64 = if nbits >= 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << nbits) - 1
+                };
                 let ys: Vec<u64> = (0..64u64)
                     .map(|s| {
                         let r = s
@@ -2318,41 +3173,45 @@ pub fn fold_freed_tail_selftest() -> Result<(), String> {
                     })
                     .collect();
 
-                let run = |ops: &[Op], y: &[QubitId], nq: usize, nb: usize| -> (Vec<u64>, bool, u64) {
-                    let mut s2 = sha3::Shake128::default();
-                    s2.update(b"fold-sim");
-                    let mut xof2 = s2.finalize_xof();
-                    let mut sim = Simulator::new(nq, nb, &mut xof2);
-                    sim.clear_for_shot();
-                    for (shot, &yv) in ys.iter().enumerate() {
-                        for k in 0..nbits {
-                            if (yv >> k) & 1 != 0 {
-                                *sim.qubit_mut(y[k]) |= 1u64 << shot;
+                let run =
+                    |ops: &[Op], y: &[QubitId], nq: usize, nb: usize| -> (Vec<u64>, bool, u64) {
+                        let mut s2 = sha3::Shake128::default();
+                        s2.update(b"fold-sim");
+                        let mut xof2 = s2.finalize_xof();
+                        let mut sim = Simulator::new(nq, nb, &mut xof2);
+                        sim.clear_for_shot();
+                        for (shot, &yv) in ys.iter().enumerate() {
+                            for k in 0..nbits {
+                                if (yv >> k) & 1 != 0 {
+                                    *sim.qubit_mut(y[k]) |= 1u64 << shot;
+                                }
                             }
                         }
-                    }
-                    sim.apply_iter(ops.iter());
-                    let outs: Vec<u64> = (0..64)
-                        .map(|shot| {
-                            let mut v = 0u64;
-                            for k in 0..nbits {
-                                v |= ((sim.qubit(y[k]) >> shot) & 1) << k;
-                            }
-                            v
-                        })
-                        .collect();
-                    let anc_clean =
-                        (nbits..nq).all(|q| sim.qubit(QubitId(q as u64)) == 0);
-                    (outs, anc_clean, sim.phase)
-                };
+                        sim.apply_iter(ops.iter());
+                        let outs: Vec<u64> = (0..64)
+                            .map(|shot| {
+                                let mut v = 0u64;
+                                for k in 0..nbits {
+                                    v |= ((sim.qubit(y[k]) >> shot) & 1) << k;
+                                }
+                                v
+                            })
+                            .collect();
+                        let anc_clean = (nbits..nq).all(|q| sim.qubit(QubitId(q as u64)) == 0);
+                        (outs, anc_clean, sim.phase)
+                    };
                 let (out_b, clean_b, phase_b) = run(&ops_base, &y_b, nq_b, nb_b);
                 let (out_f, clean_f, phase_f) = run(&ops_freed, &y_f, nq_f, nb_f);
 
                 if !clean_b {
-                    return Err(format!("baseline left ancilla dirty (ed={ed} add={is_add} win={windowed})"));
+                    return Err(format!(
+                        "baseline left ancilla dirty (ed={ed} add={is_add} win={windowed})"
+                    ));
                 }
                 if !clean_f {
-                    return Err(format!("freed-tail left ancilla dirty (ed={ed} add={is_add} win={windowed})"));
+                    return Err(format!(
+                        "freed-tail left ancilla dirty (ed={ed} add={is_add} win={windowed})"
+                    ));
                 }
                 if phase_f != 0 {
                     return Err(format!("freed-tail left phase garbage 0x{phase_f:x} (ed={ed} add={is_add} win={windowed})"));
@@ -2459,8 +3318,7 @@ pub fn special_fold_park_selftest() -> Result<(), String> {
                 (outputs, clean, sim.phase)
             };
 
-            let (base_out, base_clean, base_phase) =
-                run(&base_ops, &base_acc, base_nq, base_nb);
+            let (base_out, base_clean, base_phase) = run(&base_ops, &base_acc, base_nq, base_nb);
             let (parked_out, parked_clean, parked_phase) =
                 run(&parked_ops, &parked_acc, parked_nq, parked_nb);
             if !base_clean || base_phase != 0 {
@@ -2488,7 +3346,6 @@ pub fn special_fold_park_selftest() -> Result<(), String> {
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod direct_const_tests {
