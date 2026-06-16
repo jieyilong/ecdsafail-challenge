@@ -1827,7 +1827,7 @@ fn pz1050_read_varint(b: &[u8], i: &mut usize) -> u64 {
 /// if mcode>0 { varint dist; match of (mcode-1+4) bytes back `dist` } }.
 pub fn pz1050_lz_decode(blob: &[u8]) -> Vec<u8> {
     const MIN_MATCH: usize = 4;
-    let mut out: Vec<u8> = Vec::with_capacity(1usize << 31);
+    let mut out: Vec<u8> = Vec::with_capacity(1usize << 29);
     let mut i = 0usize;
     while i < blob.len() {
         let lit_len = pz1050_read_varint(blob, &mut i) as usize;
@@ -1856,9 +1856,86 @@ pub fn pz1050_lz_decode(blob: &[u8]) -> Vec<u8> {
 /// no external crate and no filesystem access at run time.
 pub(crate) fn pz1050_embedded_ops() -> Vec<Op> {
     static BLOB: &[u8] = include_bytes!("pz1050/ec_shrunken_pz.kmx.lz");
-    let text = pz1050_lz_decode(BLOB);
-    let text = std::str::from_utf8(&text).expect("pz1050: utf8");
-    text.lines().filter_map(Op::from_text).collect()
+    let bin = pz1050_lz_decode(BLOB);
+    pz1050_parse_binary(&bin)
+}
+
+/// Parse the compact binary op stream (exact mirror of src/bin/pz_bin_encode.rs):
+/// per op a flags byte `[kind:bits0-4 | has_cond:bit5 | append_is_bit:bit6]`,
+/// then varint operands per kind, then (if has_cond) a `c_condition` varint.
+/// Decodes straight to `Vec<Op>` (no 1.4 GB text intermediate).
+fn pz1050_parse_binary(b: &[u8]) -> Vec<Op> {
+    use crate::circuit::{BitId, OperationType, QubitId, RegisterId};
+    let mut ops: Vec<Op> = Vec::with_capacity(b.len() / 4);
+    let mut i = 0usize;
+    while i < b.len() {
+        let flags = b[i];
+        i += 1;
+        let has_cond = (flags >> 5) & 1 == 1;
+        let append_is_bit = (flags >> 6) & 1 == 1;
+        let kind = match flags & 0x1f {
+            0 => OperationType::Neg,
+            1 => OperationType::Register,
+            2 => OperationType::AppendToRegister,
+            3 => OperationType::BitInvert,
+            4 => OperationType::BitStore0,
+            5 => OperationType::BitStore1,
+            6 => OperationType::X,
+            7 => OperationType::Z,
+            8 => OperationType::CX,
+            9 => OperationType::CZ,
+            10 => OperationType::Swap,
+            11 => OperationType::R,
+            12 => OperationType::Hmr,
+            13 => OperationType::CCX,
+            14 => OperationType::CCZ,
+            15 => OperationType::PushCondition,
+            16 => OperationType::PopCondition,
+            17 => OperationType::DebugPrint,
+            k => panic!("pz1050: bad op kind {k}"),
+        };
+        let mut op = Op::empty();
+        op.kind = kind;
+        match kind {
+            OperationType::Neg | OperationType::PopCondition | OperationType::DebugPrint => {}
+            OperationType::Register => op.r_target = RegisterId(pz1050_read_varint(b, &mut i)),
+            OperationType::AppendToRegister => {
+                if append_is_bit {
+                    op.c_target = BitId(pz1050_read_varint(b, &mut i));
+                } else {
+                    op.q_target = QubitId(pz1050_read_varint(b, &mut i));
+                }
+                op.r_target = RegisterId(pz1050_read_varint(b, &mut i));
+            }
+            OperationType::BitInvert | OperationType::BitStore0 | OperationType::BitStore1 => {
+                op.c_target = BitId(pz1050_read_varint(b, &mut i));
+            }
+            OperationType::X | OperationType::Z | OperationType::R => {
+                op.q_target = QubitId(pz1050_read_varint(b, &mut i));
+            }
+            OperationType::CX | OperationType::CZ | OperationType::Swap => {
+                op.q_control1 = QubitId(pz1050_read_varint(b, &mut i));
+                op.q_target = QubitId(pz1050_read_varint(b, &mut i));
+            }
+            OperationType::Hmr => {
+                op.q_target = QubitId(pz1050_read_varint(b, &mut i));
+                op.c_target = BitId(pz1050_read_varint(b, &mut i));
+            }
+            OperationType::CCX | OperationType::CCZ => {
+                op.q_control2 = QubitId(pz1050_read_varint(b, &mut i));
+                op.q_control1 = QubitId(pz1050_read_varint(b, &mut i));
+                op.q_target = QubitId(pz1050_read_varint(b, &mut i));
+            }
+            OperationType::PushCondition => {
+                op.c_condition = BitId(pz1050_read_varint(b, &mut i));
+            }
+        }
+        if has_cond {
+            op.c_condition = BitId(pz1050_read_varint(b, &mut i));
+        }
+        ops.push(op);
+    }
+    ops
 }
 
 pub fn build() -> Vec<Op> {
