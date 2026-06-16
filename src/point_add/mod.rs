@@ -1805,17 +1805,59 @@ pub fn build_builder() -> B {
     builder
 }
 
-/// Decode the embedded (zstd-compressed) TrailMix shrunken-PZ 1050-qubit kmx
-/// op stream. ~8.7 MB compressed -> ~1.4 GB text -> ~100M ops. Self-contained:
-/// no filesystem access at run time (the data is baked into the binary).
-fn pz1050_embedded_ops() -> Vec<Op> {
-    use std::io::Read;
-    static ZST: &[u8] = include_bytes!("pz1050/ec_shrunken_pz.kmx.zst");
-    let mut dec =
-        ruzstd::decoding::StreamingDecoder::new(ZST).expect("pz1050: zstd decoder init");
-    let mut text = String::new();
-    dec.read_to_string(&mut text)
-        .expect("pz1050: zstd decompress");
+#[inline]
+fn pz1050_read_varint(b: &[u8], i: &mut usize) -> u64 {
+    let mut v = 0u64;
+    let mut s = 0u32;
+    loop {
+        let byte = b[*i];
+        *i += 1;
+        v |= ((byte & 0x7f) as u64) << s;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        s += 7;
+    }
+    v
+}
+
+/// Pure-std LZSS decoder for the embedded shrunken-PZ kmx blob. No external
+/// crates (so the whole 1050q route lives inside the editable `src/point_add`).
+/// Token stream: repeat { varint lit_len; lit_len literal bytes; varint mcode;
+/// if mcode>0 { varint dist; match of (mcode-1+4) bytes back `dist` } }.
+pub fn pz1050_lz_decode(blob: &[u8]) -> Vec<u8> {
+    const MIN_MATCH: usize = 4;
+    let mut out: Vec<u8> = Vec::with_capacity(1usize << 31);
+    let mut i = 0usize;
+    while i < blob.len() {
+        let lit_len = pz1050_read_varint(blob, &mut i) as usize;
+        out.extend_from_slice(&blob[i..i + lit_len]);
+        i += lit_len;
+        if i >= blob.len() {
+            break;
+        }
+        let mcode = pz1050_read_varint(blob, &mut i);
+        if mcode == 0 {
+            break;
+        }
+        let mlen = (mcode - 1) as usize + MIN_MATCH;
+        let dist = pz1050_read_varint(blob, &mut i) as usize;
+        let start = out.len() - dist;
+        for k in 0..mlen {
+            let b = out[start + k];
+            out.push(b);
+        }
+    }
+    out
+}
+
+/// Decode the embedded (LZSS-compressed) TrailMix shrunken-PZ 1050-qubit kmx
+/// op stream. ~38 MB compressed -> ~1.4 GB text -> ~100M ops. Self-contained:
+/// no external crate and no filesystem access at run time.
+pub(crate) fn pz1050_embedded_ops() -> Vec<Op> {
+    static BLOB: &[u8] = include_bytes!("pz1050/ec_shrunken_pz.kmx.lz");
+    let text = pz1050_lz_decode(BLOB);
+    let text = std::str::from_utf8(&text).expect("pz1050: utf8");
     text.lines().filter_map(Op::from_text).collect()
 }
 

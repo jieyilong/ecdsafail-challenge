@@ -22,11 +22,14 @@ structurally exact `P += Q`, so it is clean on the first try — **no island hun
 
 ## How it works
 
-This branch is **self-contained**: `ec_shrunken_pz.kmx.zst` (the 1.4 GB kmx
-compressed to ~8.7 MB) is **embedded into the binary** (`include_bytes!`) and
-`point_add::build()` (`src/point_add/mod.rs`) decodes it by **default** with the
-pure-Rust `ruzstd` decoder, returning the PZ op stream instead of the dialog
-circuit. So a bare benchmark run yields 1050:
+**Fully self-contained and submission-clean** — everything lives inside
+`src/point_add` (the only editable path) with **no new dependency**: `Cargo.toml`
+is unchanged from the base. `ec_shrunken_pz.kmx.lz` (the 1.4 GB kmx compressed to
+~38.5 MB with a custom large-window LZSS) is **embedded into the binary**
+(`include_bytes!`), and `point_add::build()` (`src/point_add/mod.rs`) decodes it
+by **default** with a ~40-line pure-`std` LZSS decoder (`pz1050_lz_decode`),
+returning the PZ op stream instead of the dialog circuit. So a bare benchmark run
+yields 1050:
 
 ```bash
 ecdsafail run
@@ -40,12 +43,11 @@ Overrides:
 The two stacks share the same op IR and register layout (`reg0=tx` P.x,
 `reg1=ty` P.y quantum; `reg2=ox` Q.x, `reg3=oy` Q.y classical), so translation is
 a 1:1 op-name remap (via the repo's own `Circuit::from_kmx` / `Op::from_text`).
-`src/bin/kmx_to_ops.rs` is a standalone `.kmx -> ops.bin` translator.
 
-> Note: the embedded-decode path adds a `ruzstd` dependency in `Cargo.toml`
-> (outside `editablePaths=["src/point_add"]`). Fine for this fork branch; an
-> official submission that must keep edits inside `src/point_add` would instead
-> vendor a decoder there or use `POINT_ADD_FROM_KMX` with the decompressed kmx.
+Dev tools (outside `src/point_add`, not part of a submission):
+`src/bin/kmx_to_ops.rs` (`.kmx -> ops.bin`), `src/bin/pz_lz_encode.rs` (the LZSS
+encoder that produced the blob), `src/bin/pz_lz_verify.rs` (bit-exact round-trip
+check).
 
 ## Regenerating the kmx from TrailMix (provenance)
 
