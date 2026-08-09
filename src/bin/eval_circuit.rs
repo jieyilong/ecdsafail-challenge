@@ -20,9 +20,14 @@ use sha3::{
     digest::{ExtendableOutput, Update, XofReader},
     Shake256,
 };
+use std::collections::HashSet;
+use std::fmt::Write as FmtWrite;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const OPS_PATH: &str = "ops.bin";
@@ -217,6 +222,26 @@ fn fiat_shamir_seed(ops: &[Op]) -> sha3::Shake256Reader {
     hasher.finalize_xof()
 }
 
+fn evaluation_seed(ops: &[Op]) -> sha3::Shake256Reader {
+    let Ok(seed) = std::env::var("EVAL_SHARED_SEED") else {
+        return fiat_shamir_seed(ops);
+    };
+    let mut hasher = Shake256::default();
+    hasher.update(b"quantum_ecc-shared-comparison-v1");
+    hasher.update(seed.as_bytes());
+    hasher.finalize_xof()
+}
+
+fn parallel_batch_seed(batch: usize) -> sha3::Shake256Reader {
+    let mut hasher = Shake256::default();
+    hasher.update(b"quantum_ecc-shared-comparison-batch-v1");
+    if let Ok(seed) = std::env::var("EVAL_SHARED_SEED") {
+        hasher.update(seed.as_bytes());
+    }
+    hasher.update(&(batch as u64).to_le_bytes());
+    hasher.finalize_xof()
+}
+
 // ─── Test runner ──────────────────────────────────────────────────────────
 
 struct SeedReport {
@@ -227,9 +252,235 @@ struct SeedReport {
     tot_cliff: u64,
     n_shots: usize,
     classical_failures: usize,
+    phase_failure_shots: usize,
+    ancilla_failure_shots: usize,
+    any_failure_shots: usize,
+    identity_rows: usize,
     phase_garbage_batches: usize,
     ancilla_garbage_batches: usize,
     fail_reason: Option<String>,
+}
+
+struct WindowCases {
+    targets: Vec<(U256, U256)>,
+    addresses: Vec<usize>,
+    addends: Vec<(U256, U256)>,
+    expected: Vec<(U256, U256)>,
+    identity_rows: usize,
+}
+
+#[derive(Clone, Default)]
+struct ParallelReport {
+    toffoli_gates: u64,
+    clifford_gates: u64,
+    classical_failures: usize,
+    phase_failure_shots: usize,
+    ancilla_failure_shots: usize,
+    any_failure_shots: usize,
+    phase_garbage_batches: usize,
+    ancilla_garbage_batches: usize,
+    fail_reason: Option<String>,
+}
+
+struct CheckpointStore {
+    inputs: File,
+    batches: File,
+    completed_batches: HashSet<usize>,
+    aggregate: ParallelReport,
+    completed_shots: usize,
+}
+
+impl CheckpointStore {
+    const INPUT_HEADER: &'static str = "batch\tindex\taddress\ttarget_x\ttarget_y\taddend_x\taddend_y\texpected_x\texpected_y\tgot_x\tgot_y\tgot_address\tclassical_failure\tphase_failure\tancilla_failure\tany_failure\n";
+    const BATCH_HEADER: &'static str = "batch\tshots\ttoffoli\tclifford\tclassical_failures\tphase_failure_shots\tancilla_failure_shots\tany_failure_shots\tphase_garbage_batches\tancilla_garbage_batches\tinputs_end_offset\n";
+
+    fn open(root: &Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(root)?;
+        let inputs_path = root.join("inputs.tsv");
+        let batches_path = root.join("batches.tsv");
+
+        let batch_text = std::fs::read_to_string(&batches_path).unwrap_or_default();
+        let mut valid_batch_lines = Vec::new();
+        let mut completed_batches = HashSet::new();
+        let mut aggregate = ParallelReport::default();
+        let mut completed_shots = 0usize;
+        let mut committed_input_end = Self::INPUT_HEADER.len() as u64;
+
+        for line in batch_text.lines() {
+            if line.is_empty() || line.starts_with("batch\t") {
+                continue;
+            }
+            let fields = line.split('\t').collect::<Vec<_>>();
+            if fields.len() != 11 {
+                continue;
+            }
+            let parsed = (
+                fields[0].parse::<usize>(),
+                fields[1].parse::<usize>(),
+                fields[2].parse::<u64>(),
+                fields[3].parse::<u64>(),
+                fields[4].parse::<usize>(),
+                fields[5].parse::<usize>(),
+                fields[6].parse::<usize>(),
+                fields[7].parse::<usize>(),
+                fields[8].parse::<usize>(),
+                fields[9].parse::<usize>(),
+                fields[10].parse::<u64>(),
+            );
+            let (
+                Ok(batch),
+                Ok(shots),
+                Ok(toffoli),
+                Ok(clifford),
+                Ok(classical),
+                Ok(phase),
+                Ok(ancilla),
+                Ok(any),
+                Ok(phase_batches),
+                Ok(ancilla_batches),
+                Ok(input_end),
+            ) = parsed
+            else {
+                continue;
+            };
+            if !completed_batches.insert(batch) {
+                continue;
+            }
+            valid_batch_lines.push(line.to_string());
+            completed_shots += shots;
+            aggregate.toffoli_gates += toffoli;
+            aggregate.clifford_gates += clifford;
+            aggregate.classical_failures += classical;
+            aggregate.phase_failure_shots += phase;
+            aggregate.ancilla_failure_shots += ancilla;
+            aggregate.any_failure_shots += any;
+            aggregate.phase_garbage_batches += phase_batches;
+            aggregate.ancilla_garbage_batches += ancilla_batches;
+            committed_input_end = input_end;
+        }
+
+        let mut inputs = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&inputs_path)?;
+        if inputs.metadata()?.len() == 0 {
+            inputs.write_all(Self::INPUT_HEADER.as_bytes())?;
+            inputs.flush()?;
+            committed_input_end = inputs.metadata()?.len();
+        } else {
+            let minimum = Self::INPUT_HEADER.len() as u64;
+            inputs.set_len(committed_input_end.max(minimum))?;
+        }
+
+        {
+            let mut repaired = File::create(&batches_path)?;
+            repaired.write_all(Self::BATCH_HEADER.as_bytes())?;
+            for line in &valid_batch_lines {
+                writeln!(repaired, "{line}")?;
+            }
+            repaired.flush()?;
+        }
+        let batches = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&batches_path)?;
+
+        Ok(Self {
+            inputs,
+            batches,
+            completed_batches,
+            aggregate,
+            completed_shots,
+        })
+    }
+
+    fn record_batch(
+        &mut self,
+        batch: usize,
+        shots: usize,
+        report: &ParallelReport,
+        input_rows: &str,
+    ) -> std::io::Result<()> {
+        self.inputs.write_all(input_rows.as_bytes())?;
+        self.inputs.flush()?;
+        let input_end = self.inputs.metadata()?.len();
+        writeln!(
+            self.batches,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            batch,
+            shots,
+            report.toffoli_gates,
+            report.clifford_gates,
+            report.classical_failures,
+            report.phase_failure_shots,
+            report.ancilla_failure_shots,
+            report.any_failure_shots,
+            report.phase_garbage_batches,
+            report.ancilla_garbage_batches,
+            input_end,
+        )?;
+        self.batches.flush()?;
+        self.completed_batches.insert(batch);
+        self.completed_shots += shots;
+        self.aggregate.toffoli_gates += report.toffoli_gates;
+        self.aggregate.clifford_gates += report.clifford_gates;
+        self.aggregate.classical_failures += report.classical_failures;
+        self.aggregate.phase_failure_shots += report.phase_failure_shots;
+        self.aggregate.ancilla_failure_shots += report.ancilla_failure_shots;
+        self.aggregate.any_failure_shots += report.any_failure_shots;
+        self.aggregate.phase_garbage_batches += report.phase_garbage_batches;
+        self.aggregate.ancilla_garbage_batches += report.ancilla_garbage_batches;
+        Ok(())
+    }
+}
+
+fn generate_window_cases(
+    xof: &mut sha3::Shake256Reader,
+    target_shots: usize,
+    window_bits: usize,
+) -> WindowCases {
+    let curve = secp256k1();
+    let table = quantum_ecc::windowed_table::WindowTable::new(window_bits);
+    let mut targets = Vec::with_capacity(target_shots);
+    let mut addresses = Vec::with_capacity(target_shots);
+    let mut addends = Vec::with_capacity(target_shots);
+    let mut expected = Vec::with_capacity(target_shots);
+    let mut identity_rows = 0usize;
+    while targets.len() < target_shots {
+        let mut scalar_bytes = [0u8; 32];
+        let mut address_bytes = [0u8; 8];
+        XofReader::read(xof, &mut scalar_bytes);
+        XofReader::read(xof, &mut address_bytes);
+        let target = curve.mul(curve.gx, curve.gy, U256::from_le_bytes(scalar_bytes));
+        if target.0.is_zero() && target.1.is_zero() {
+            continue;
+        }
+        let address = (u64::from_le_bytes(address_bytes) as usize) & (table.len() - 1);
+        let addend = table.point(address);
+        if address != 0 && target.0 == addend.0 {
+            continue;
+        }
+        if address == 0 {
+            identity_rows += 1;
+        }
+        let result = if address == 0 {
+            target
+        } else {
+            curve.add(target.0, target.1, addend.0, addend.1)
+        };
+        targets.push(target);
+        addresses.push(address);
+        addends.push(addend);
+        expected.push(result);
+    }
+    WindowCases {
+        targets,
+        addresses,
+        addends,
+        expected,
+        identity_rows,
+    }
 }
 
 fn run_tests(
@@ -292,7 +543,7 @@ fn run_tests(
             sim.set_register(&layout_regs[3], offsets[i].1, shot);
         }
 
-        sim.apply_iter(ops.iter());
+        sim.apply_iter_masked(ops.iter(), cond_mask);
 
         for shot in 0..bs {
             let i = batch * BATCH + shot;
@@ -363,6 +614,491 @@ fn run_tests(
         tot_cliff: sim.stats.clifford_gates,
         n_shots: n,
         classical_failures,
+        phase_failure_shots: 0,
+        ancilla_failure_shots: 0,
+        any_failure_shots: classical_failures,
+        identity_rows: 0,
+        phase_garbage_batches,
+        ancilla_garbage_batches,
+        fail_reason,
+    }
+}
+
+fn run_windowed_tests(
+    ops: &[Op],
+    layout_regs: &[Vec<QubitOrBit>],
+    total_qubits: u64,
+    num_bits: u64,
+    mut xof: sha3::Shake256Reader,
+    target_shots: usize,
+    window_bits: usize,
+) -> SeedReport {
+    let cases = generate_window_cases(&mut xof, target_shots, window_bits);
+    let n = cases.targets.len();
+    let mut sim = Simulator::new(total_qubits as usize, num_bits as usize, &mut xof);
+    let mut fail_reason = None;
+    let mut classical_failures = 0usize;
+    let mut phase_failure_shots = 0usize;
+    let mut ancilla_failure_shots = 0usize;
+    let mut any_failure_shots = 0usize;
+    let mut phase_garbage_batches = 0usize;
+    let mut ancilla_garbage_batches = 0usize;
+
+    const BATCH: usize = 64;
+    let num_batches = (n + BATCH - 1) / BATCH;
+    for batch in 0..num_batches {
+        let bs = BATCH.min(n - batch * BATCH);
+        let cond_mask = if bs == 64 { u64::MAX } else { (1u64 << bs) - 1 };
+        sim.clear_for_shot();
+        let mut classical_failure_mask = 0u64;
+        for shot in 0..bs {
+            let index = batch * BATCH + shot;
+            sim.set_register(&layout_regs[0], cases.targets[index].0, shot);
+            sim.set_register(&layout_regs[1], cases.targets[index].1, shot);
+            sim.set_register(&layout_regs[2], U256::from(cases.addresses[index]), shot);
+        }
+        sim.apply_iter_masked(ops.iter(), cond_mask);
+
+        for shot in 0..bs {
+            let index = batch * BATCH + shot;
+            let got_x = sim.get_register(&layout_regs[0], shot);
+            let got_y = sim.get_register(&layout_regs[1], shot);
+            let got_address = sim.get_register(&layout_regs[2], shot);
+            if got_x != cases.expected[index].0
+                || got_y != cases.expected[index].1
+                || got_address != U256::from(cases.addresses[index])
+            {
+                classical_failures += 1;
+                classical_failure_mask |= 1u64 << shot;
+                if fail_reason.is_none() {
+                    fail_reason = Some(format!(
+                        "CLASSICAL MISMATCH shot {index} address {}: got ({got_x:#x},{got_y:#x}) exp ({:#x},{:#x})",
+                        cases.addresses[index], cases.expected[index].0, cases.expected[index].1,
+                    ));
+                }
+            }
+        }
+
+        let phase = sim.phase & cond_mask;
+        if phase != 0 {
+            phase_garbage_batches += 1;
+            phase_failure_shots += phase.count_ones() as usize;
+            if fail_reason.is_none() {
+                fail_reason = Some(format!("PHASE GARBAGE: global_phase = {phase:#018x}"));
+            }
+        }
+
+        for register in layout_regs {
+            for qb in register {
+                if let QubitOrBit::Qubit(qubit) = *qb {
+                    *sim.qubit_mut(qubit) = 0;
+                }
+            }
+        }
+        let mut garbage_mask = 0u64;
+        for q in 0..total_qubits {
+            garbage_mask |= sim.qubit(QubitId(q)) & cond_mask;
+        }
+        if garbage_mask != 0 {
+            ancilla_garbage_batches += 1;
+            ancilla_failure_shots += garbage_mask.count_ones() as usize;
+            if fail_reason.is_none() {
+                fail_reason = Some(format!("ANCILLA GARBAGE mask = {garbage_mask:#018x}"));
+            }
+        }
+        any_failure_shots += (classical_failure_mask | phase | garbage_mask).count_ones() as usize;
+    }
+
+    let denom = n.max(1) as f64;
+    SeedReport {
+        ok: classical_failures == 0 && phase_failure_shots == 0 && ancilla_failure_shots == 0,
+        avg_cliff: sim.stats.clifford_gates as f64 / denom,
+        avg_tof: sim.stats.toffoli_gates as f64 / denom,
+        tot_tof: sim.stats.toffoli_gates,
+        tot_cliff: sim.stats.clifford_gates,
+        n_shots: n,
+        classical_failures,
+        phase_failure_shots,
+        ancilla_failure_shots,
+        any_failure_shots,
+        identity_rows: cases.identity_rows,
+        phase_garbage_batches,
+        ancilla_garbage_batches,
+        fail_reason,
+    }
+}
+
+fn run_windowed_tests_parallel(
+    ops: &[Op],
+    layout_regs: &[Vec<QubitOrBit>],
+    total_qubits: u64,
+    num_bits: u64,
+    mut xof: sha3::Shake256Reader,
+    target_shots: usize,
+    window_bits: usize,
+    requested_threads: usize,
+) -> SeedReport {
+    let cases = generate_window_cases(&mut xof, target_shots, window_bits);
+    let n = cases.targets.len();
+    const BATCH: usize = 64;
+    let num_batches = (n + BATCH - 1) / BATCH;
+    let threads = requested_threads.max(1).min(num_batches.max(1));
+    let only_batch = std::env::var("EVAL_ONLY_BATCH")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
+
+    let checkpoint = std::env::var("EVAL_CHECKPOINT_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .map(|path| {
+            println!("  checkpoint directory     : {}", path.display());
+            CheckpointStore::open(&path).expect("failed to open evaluation checkpoint")
+        });
+    let (previously_completed, prior_report, prior_shots) = checkpoint
+        .as_ref()
+        .map(|store| {
+            (
+                store.completed_batches.clone(),
+                store.aggregate.clone(),
+                store.completed_shots,
+            )
+        })
+        .unwrap_or_default();
+    let checkpoint = checkpoint.map(Mutex::new);
+    let completed_shots = AtomicUsize::new(prior_shots);
+    let observed_failures = AtomicUsize::new(prior_report.any_failure_shots);
+    let first_threshold = (((prior_shots / 10_000) + 1) * 10_000).min(n.max(1));
+    let next_progress = AtomicUsize::new(first_threshold);
+
+    println!("  evaluator threads        : {threads}");
+    if prior_shots > 0 {
+        println!(
+            "  resumed progress         : {prior_shots}/{n} shots; {} failures observed",
+            prior_report.any_failure_shots,
+        );
+    }
+
+    let worker_reports = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(threads);
+        for worker in 0..threads {
+            let completed_shots = &completed_shots;
+            let observed_failures = &observed_failures;
+            let next_progress = &next_progress;
+            let cases = &cases;
+            let previously_completed = &previously_completed;
+            let checkpoint = &checkpoint;
+            handles.push(scope.spawn(move || {
+                let mut report = ParallelReport::default();
+
+                for batch in (worker..num_batches).step_by(threads) {
+                    if only_batch.is_some_and(|selected| batch != selected) {
+                        continue;
+                    }
+                    if previously_completed.contains(&batch) {
+                        continue;
+                    }
+                    let bs = BATCH.min(n - batch * BATCH);
+                    let cond_mask = if bs == 64 {
+                        u64::MAX
+                    } else {
+                        (1u64 << bs) - 1
+                    };
+                    let mut batch_xof = parallel_batch_seed(batch);
+                    let mut sim = Simulator::new(
+                        total_qubits as usize,
+                        num_bits as usize,
+                        &mut batch_xof,
+                    );
+                    let mut classical_failure_mask = 0u64;
+                    let mut got_values = Vec::with_capacity(bs);
+                    for shot in 0..bs {
+                        let index = batch * BATCH + shot;
+                        sim.set_register(&layout_regs[0], cases.targets[index].0, shot);
+                        sim.set_register(&layout_regs[1], cases.targets[index].1, shot);
+                        sim.set_register(
+                            &layout_regs[2],
+                            U256::from(cases.addresses[index]),
+                            shot,
+                        );
+                    }
+                    sim.apply_iter_masked(ops.iter(), cond_mask);
+
+                    for shot in 0..bs {
+                        let index = batch * BATCH + shot;
+                        let got_x = sim.get_register(&layout_regs[0], shot);
+                        let got_y = sim.get_register(&layout_regs[1], shot);
+                        let got_address = sim.get_register(&layout_regs[2], shot);
+                        got_values.push((got_x, got_y, got_address));
+                        if got_x != cases.expected[index].0
+                            || got_y != cases.expected[index].1
+                            || got_address != U256::from(cases.addresses[index])
+                        {
+                            classical_failure_mask |= 1u64 << shot;
+                            if report.fail_reason.is_none() {
+                                report.fail_reason = Some(format!(
+                                    "CLASSICAL MISMATCH shot {index} address {}: got ({got_x:#x},{got_y:#x}) exp ({:#x},{:#x})",
+                                    cases.addresses[index],
+                                    cases.expected[index].0,
+                                    cases.expected[index].1,
+                                ));
+                            }
+                        }
+                    }
+
+                    let phase = sim.phase & cond_mask;
+                    if phase != 0 && report.fail_reason.is_none() {
+                        report.fail_reason =
+                            Some(format!("PHASE GARBAGE: global_phase = {phase:#018x}"));
+                    }
+
+                    for register in layout_regs {
+                        for item in register {
+                            if let QubitOrBit::Qubit(qubit) = *item {
+                                *sim.qubit_mut(qubit) = 0;
+                            }
+                        }
+                    }
+                    let mut garbage_mask = 0u64;
+                    for q in 0..total_qubits {
+                        garbage_mask |= sim.qubit(QubitId(q)) & cond_mask;
+                    }
+                    if garbage_mask != 0 && report.fail_reason.is_none() {
+                        report.fail_reason =
+                            Some(format!("ANCILLA GARBAGE mask = {garbage_mask:#018x}"));
+                    }
+
+                    let any_failure_mask = classical_failure_mask | phase | garbage_mask;
+                    let mut batch_report = ParallelReport {
+                        toffoli_gates: sim.stats.toffoli_gates,
+                        clifford_gates: sim.stats.clifford_gates,
+                        classical_failures: classical_failure_mask.count_ones() as usize,
+                        phase_failure_shots: phase.count_ones() as usize,
+                        ancilla_failure_shots: garbage_mask.count_ones() as usize,
+                        any_failure_shots: any_failure_mask.count_ones() as usize,
+                        phase_garbage_batches: usize::from(phase != 0),
+                        ancilla_garbage_batches: usize::from(garbage_mask != 0),
+                        fail_reason: report.fail_reason.clone(),
+                    };
+                    let mut input_rows = String::with_capacity(bs * 700);
+                    for shot in 0..bs {
+                        let index = batch * BATCH + shot;
+                        let bit = 1u64 << shot;
+                        let (got_x, got_y, got_address) = got_values[shot];
+                        writeln!(
+                            input_rows,
+                            "{}\t{}\t{}\t{:#x}\t{:#x}\t{:#x}\t{:#x}\t{:#x}\t{:#x}\t{:#x}\t{:#x}\t{:#x}\t{}\t{}\t{}\t{}",
+                            batch,
+                            index,
+                            cases.addresses[index],
+                            cases.targets[index].0,
+                            cases.targets[index].1,
+                            cases.addends[index].0,
+                            cases.addends[index].1,
+                            cases.expected[index].0,
+                            cases.expected[index].1,
+                            got_x,
+                            got_y,
+                            got_address,
+                            usize::from(classical_failure_mask & bit != 0),
+                            usize::from(phase & bit != 0),
+                            usize::from(garbage_mask & bit != 0),
+                            usize::from(any_failure_mask & bit != 0),
+                        )
+                        .expect("failed to format per-input checkpoint row");
+                    }
+                    if let Some(checkpoint) = checkpoint {
+                        checkpoint
+                            .lock()
+                            .expect("evaluation checkpoint lock poisoned")
+                            .record_batch(batch, bs, &batch_report, &input_rows)
+                            .expect("failed to persist evaluation checkpoint");
+                    }
+
+                    report.toffoli_gates += batch_report.toffoli_gates;
+                    report.clifford_gates += batch_report.clifford_gates;
+                    report.classical_failures += batch_report.classical_failures;
+                    report.phase_failure_shots += batch_report.phase_failure_shots;
+                    report.ancilla_failure_shots += batch_report.ancilla_failure_shots;
+                    report.any_failure_shots += batch_report.any_failure_shots;
+                    report.phase_garbage_batches += batch_report.phase_garbage_batches;
+                    report.ancilla_garbage_batches += batch_report.ancilla_garbage_batches;
+                    if report.fail_reason.is_none() {
+                        report.fail_reason = batch_report.fail_reason.take();
+                    }
+
+                    let batch_failures = batch_report.any_failure_shots;
+                    observed_failures.fetch_add(batch_failures, Ordering::Relaxed);
+                    let done = completed_shots.fetch_add(bs, Ordering::Relaxed) + bs;
+
+                    loop {
+                        let threshold = next_progress.load(Ordering::Relaxed);
+                        if done < threshold || threshold > n {
+                            break;
+                        }
+                        let next = (threshold + 10_000).min(n + 1);
+                        if next_progress
+                            .compare_exchange(
+                                threshold,
+                                next,
+                                Ordering::Relaxed,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                        {
+                            let failures = observed_failures.load(Ordering::Relaxed);
+                            println!(
+                                "  progress                : {done}/{n} shots; {failures} failures observed"
+                            );
+                            let _ = std::io::stdout().flush();
+                            break;
+                        }
+                    }
+                }
+
+                report
+            }));
+        }
+
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("parallel evaluator worker panicked"))
+            .collect::<Vec<_>>()
+    });
+
+    let mut merged = prior_report;
+    for worker in worker_reports {
+        merged.toffoli_gates += worker.toffoli_gates;
+        merged.clifford_gates += worker.clifford_gates;
+        merged.classical_failures += worker.classical_failures;
+        merged.phase_failure_shots += worker.phase_failure_shots;
+        merged.ancilla_failure_shots += worker.ancilla_failure_shots;
+        merged.any_failure_shots += worker.any_failure_shots;
+        merged.phase_garbage_batches += worker.phase_garbage_batches;
+        merged.ancilla_garbage_batches += worker.ancilla_garbage_batches;
+        if merged.fail_reason.is_none() {
+            merged.fail_reason = worker.fail_reason;
+        }
+    }
+    if merged.fail_reason.is_none() && merged.any_failure_shots > 0 {
+        merged.fail_reason = Some("failure details are recorded in the resumed checkpoint".into());
+    }
+
+    let denom = n.max(1) as f64;
+    SeedReport {
+        ok: merged.classical_failures == 0
+            && merged.phase_failure_shots == 0
+            && merged.ancilla_failure_shots == 0,
+        avg_cliff: merged.clifford_gates as f64 / denom,
+        avg_tof: merged.toffoli_gates as f64 / denom,
+        tot_tof: merged.toffoli_gates,
+        tot_cliff: merged.clifford_gates,
+        n_shots: n,
+        classical_failures: merged.classical_failures,
+        phase_failure_shots: merged.phase_failure_shots,
+        ancilla_failure_shots: merged.ancilla_failure_shots,
+        any_failure_shots: merged.any_failure_shots,
+        identity_rows: cases.identity_rows,
+        phase_garbage_batches: merged.phase_garbage_batches,
+        ancilla_garbage_batches: merged.ancilla_garbage_batches,
+        fail_reason: merged.fail_reason,
+    }
+}
+
+fn run_mixed_window_tests(
+    ops: &[Op],
+    layout_regs: &[Vec<QubitOrBit>],
+    total_qubits: u64,
+    num_bits: u64,
+    mut xof: sha3::Shake256Reader,
+    target_shots: usize,
+    window_bits: usize,
+) -> SeedReport {
+    let cases = generate_window_cases(&mut xof, target_shots, window_bits);
+    let n = cases.targets.len();
+    let mut sim = Simulator::new(total_qubits as usize, num_bits as usize, &mut xof);
+    let mut fail_reason = None;
+    let mut classical_failures = 0usize;
+    let mut phase_failure_shots = 0usize;
+    let mut ancilla_failure_shots = 0usize;
+    let mut any_failure_shots = 0usize;
+    let mut phase_garbage_batches = 0usize;
+    let mut ancilla_garbage_batches = 0usize;
+
+    const BATCH: usize = 64;
+    let num_batches = (n + BATCH - 1) / BATCH;
+    for batch in 0..num_batches {
+        let bs = BATCH.min(n - batch * BATCH);
+        let cond_mask = if bs == 64 { u64::MAX } else { (1u64 << bs) - 1 };
+        sim.clear_for_shot();
+        let mut classical_failure_mask = 0u64;
+        for shot in 0..bs {
+            let index = batch * BATCH + shot;
+            sim.set_register(&layout_regs[0], cases.targets[index].0, shot);
+            sim.set_register(&layout_regs[1], cases.targets[index].1, shot);
+            sim.set_register(&layout_regs[2], cases.addends[index].0, shot);
+            sim.set_register(&layout_regs[3], cases.addends[index].1, shot);
+        }
+        sim.apply_iter_masked(ops.iter(), cond_mask);
+
+        for shot in 0..bs {
+            let index = batch * BATCH + shot;
+            let got_x = sim.get_register(&layout_regs[0], shot);
+            let got_y = sim.get_register(&layout_regs[1], shot);
+            if got_x != cases.expected[index].0 || got_y != cases.expected[index].1 {
+                classical_failures += 1;
+                classical_failure_mask |= 1u64 << shot;
+                if fail_reason.is_none() {
+                    fail_reason = Some(format!(
+                        "CLASSICAL MISMATCH shot {index} address {}: got ({got_x:#x},{got_y:#x}) exp ({:#x},{:#x})",
+                        cases.addresses[index], cases.expected[index].0, cases.expected[index].1,
+                    ));
+                }
+            }
+        }
+
+        let phase = sim.phase & cond_mask;
+        if phase != 0 {
+            phase_garbage_batches += 1;
+            phase_failure_shots += phase.count_ones() as usize;
+            if fail_reason.is_none() {
+                fail_reason = Some(format!("PHASE GARBAGE: global_phase = {phase:#018x}"));
+            }
+        }
+
+        for register in layout_regs {
+            for item in register {
+                if let QubitOrBit::Qubit(qubit) = *item {
+                    *sim.qubit_mut(qubit) = 0;
+                }
+            }
+        }
+        let mut garbage_mask = 0u64;
+        for q in 0..total_qubits {
+            garbage_mask |= sim.qubit(QubitId(q)) & cond_mask;
+        }
+        if garbage_mask != 0 {
+            ancilla_garbage_batches += 1;
+            ancilla_failure_shots += garbage_mask.count_ones() as usize;
+            if fail_reason.is_none() {
+                fail_reason = Some(format!("ANCILLA GARBAGE mask = {garbage_mask:#018x}"));
+            }
+        }
+        any_failure_shots += (classical_failure_mask | phase | garbage_mask).count_ones() as usize;
+    }
+
+    let denom = n.max(1) as f64;
+    SeedReport {
+        ok: classical_failures == 0 && phase_failure_shots == 0 && ancilla_failure_shots == 0,
+        avg_cliff: sim.stats.clifford_gates as f64 / denom,
+        avg_tof: sim.stats.toffoli_gates as f64 / denom,
+        tot_tof: sim.stats.toffoli_gates,
+        tot_cliff: sim.stats.clifford_gates,
+        n_shots: n,
+        classical_failures,
+        phase_failure_shots,
+        ancilla_failure_shots,
+        any_failure_shots,
+        identity_rows: cases.identity_rows,
         phase_garbage_batches,
         ancilla_garbage_batches,
         fail_reason,
@@ -468,6 +1204,151 @@ fn main() {
 
     let (total_qubits, num_bits, _num_regs, regs) = analyze_ops(ops.iter());
 
+    if std::env::var_os("WINDOWED_MODE").is_some() {
+        let window_bits = quantum_ecc::windowed_table::window_bits_from_env();
+        if regs.len() != 3 {
+            fail_and_exit(
+                &format!("windowed mode expected 3 quantum registers, got {}", regs.len()),
+                &note,
+                ops.len(),
+                total_qubits,
+            );
+        }
+        for (index, expected_width) in [256usize, 256usize, window_bits].into_iter().enumerate() {
+            if regs[index].len() != expected_width {
+                fail_and_exit(
+                    &format!(
+                        "windowed register {index} should be {expected_width} wide, got {}",
+                        regs[index].len()
+                    ),
+                    &note,
+                    ops.len(),
+                    total_qubits,
+                );
+            }
+            if regs[index]
+                .iter()
+                .any(|item| !matches!(item, QubitOrBit::Qubit(_)))
+            {
+                fail_and_exit(
+                    &format!("windowed register {index} must contain only qubits"),
+                    &note,
+                    ops.len(),
+                    total_qubits,
+                );
+            }
+        }
+
+        let tests = std::env::var("WINDOWED_TESTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(NUM_TESTS);
+        let max_error_rate = std::env::var("WINDOWED_MAX_ERROR_RATE")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(0.0025);
+        let evaluator_threads = std::env::var("EVAL_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1);
+        println!("  qubits      : {total_qubits}");
+        println!("  bits        : {num_bits}");
+        println!(
+            "\n-- coherent {window_bits}-bit window tests ({tests} shots; allowed error {:.4}%) --",
+            100.0 * max_error_rate,
+        );
+        let xof = evaluation_seed(&ops);
+        let report = if evaluator_threads > 1 {
+            run_windowed_tests_parallel(
+                &ops,
+                &regs,
+                total_qubits,
+                num_bits,
+                xof,
+                tests,
+                window_bits,
+                evaluator_threads,
+            )
+        } else {
+            run_windowed_tests(
+                &ops,
+                &regs,
+                total_qubits,
+                num_bits,
+                xof,
+                tests,
+                window_bits,
+            )
+        };
+        let denom = report.n_shots.max(1) as f64;
+        let classical_rate = report.classical_failures as f64 / denom;
+        let phase_rate = report.phase_failure_shots as f64 / denom;
+        let ancilla_rate = report.ancilla_failure_shots as f64 / denom;
+        let overlap_counting_rate =
+            (report.classical_failures + report.phase_failure_shots + report.ancilla_failure_shots)
+                as f64
+                / denom;
+        let any_failure_rate = report.any_failure_shots as f64 / denom;
+        println!("  tested shots            : {}", report.n_shots);
+        println!(
+            "  identity-table rows     : {} ({:.4}%)",
+            report.identity_rows,
+            100.0 * report.identity_rows as f64 / denom,
+        );
+        println!(
+            "  classical mismatches    : {} ({:.4}%)",
+            report.classical_failures,
+            100.0 * classical_rate,
+        );
+        println!(
+            "  phase-failure shots     : {} ({:.4}%; {} batches)",
+            report.phase_failure_shots,
+            100.0 * phase_rate,
+            report.phase_garbage_batches,
+        );
+        println!(
+            "  ancilla-failure shots   : {} ({:.4}%; {} batches)",
+            report.ancilla_failure_shots,
+            100.0 * ancilla_rate,
+            report.ancilla_garbage_batches,
+        );
+        println!(
+            "  shots failing any channel: {} ({:.4}%)",
+            report.any_failure_shots,
+            100.0 * any_failure_rate,
+        );
+        println!(
+            "  overlap-counting channel sum: {:.4}%",
+            100.0 * overlap_counting_rate,
+        );
+        println!("\n=== coherent-window circuit metrics ===");
+        println!("  avg executed Toffoli  : {:.3}", report.avg_tof);
+        println!("  avg executed Clifford : {:.3}", report.avg_cliff);
+        println!("  emitted ops           : {}", ops.len());
+        println!("  qubits                : {total_qubits}");
+
+        if any_failure_rate > max_error_rate {
+            let reason = report.fail_reason.unwrap_or_else(|| {
+                format!(
+                    "observed error {:.6} exceeds allowed {:.6}",
+                    any_failure_rate, max_error_rate
+                )
+            });
+            fail_and_exit(&reason, &note, ops.len(), total_qubits);
+        }
+        append_results_row(
+            if report.ok { "OK" } else { "OK_APPROX" },
+            report.avg_tof,
+            report.avg_cliff,
+            total_qubits,
+            ops.len(),
+            &note,
+        );
+        write_score(report.avg_tof, total_qubits);
+        println!("\n=== coherent-window experiment OK ===");
+        return;
+    }
+
     if regs.len() != 4 {
         fail_and_exit(
             &format!("expected 4 registers, got {}", regs.len()),
@@ -505,6 +1386,94 @@ fn main() {
         if !matches!(q, QubitOrBit::Bit(_)) {
             fail_and_exit("register 3 must be bits", &note, ops.len(), total_qubits);
         }
+    }
+
+    if let Some(window_bits) = std::env::var("MIXED_WINDOW_BITS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        assert!((1..=16).contains(&window_bits));
+        let tests = std::env::var("EVAL_TESTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(NUM_TESTS);
+        let max_error_rate = std::env::var("EVAL_MAX_ERROR_RATE")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(1.0);
+        println!("  qubits      : {total_qubits}");
+        println!("  bits        : {num_bits}");
+        println!(
+            "\n-- mixed-add comparison on {window_bits}-bit table cases ({tests} shots) --"
+        );
+        let report = run_mixed_window_tests(
+            &ops,
+            &regs,
+            total_qubits,
+            num_bits,
+            evaluation_seed(&ops),
+            tests,
+            window_bits,
+        );
+        let denom = report.n_shots.max(1) as f64;
+        let classical_rate = report.classical_failures as f64 / denom;
+        let phase_rate = report.phase_failure_shots as f64 / denom;
+        let ancilla_rate = report.ancilla_failure_shots as f64 / denom;
+        let any_failure_rate = report.any_failure_shots as f64 / denom;
+        println!("  tested shots            : {}", report.n_shots);
+        println!(
+            "  identity-table rows     : {} ({:.4}%)",
+            report.identity_rows,
+            100.0 * report.identity_rows as f64 / denom,
+        );
+        println!(
+            "  classical mismatches    : {} ({:.4}%)",
+            report.classical_failures,
+            100.0 * classical_rate,
+        );
+        println!(
+            "  phase-failure shots     : {} ({:.4}%; {} batches)",
+            report.phase_failure_shots,
+            100.0 * phase_rate,
+            report.phase_garbage_batches,
+        );
+        println!(
+            "  ancilla-failure shots   : {} ({:.4}%; {} batches)",
+            report.ancilla_failure_shots,
+            100.0 * ancilla_rate,
+            report.ancilla_garbage_batches,
+        );
+        println!(
+            "  shots failing any channel: {} ({:.4}%)",
+            report.any_failure_shots,
+            100.0 * any_failure_rate,
+        );
+        println!("\n=== mixed-add comparison metrics ===");
+        println!("  avg executed Toffoli  : {:.3}", report.avg_tof);
+        println!("  avg executed Clifford : {:.3}", report.avg_cliff);
+        println!("  emitted ops           : {}", ops.len());
+        println!("  qubits                : {total_qubits}");
+        if any_failure_rate > max_error_rate {
+            fail_and_exit(
+                &format!(
+                    "observed error {:.6} exceeds allowed {:.6}",
+                    any_failure_rate, max_error_rate
+                ),
+                &note,
+                ops.len(),
+                total_qubits,
+            );
+        }
+        append_results_row(
+            if report.ok { "OK" } else { "OK_APPROX" },
+            report.avg_tof,
+            report.avg_cliff,
+            total_qubits,
+            ops.len(),
+            &note,
+        );
+        println!("\n=== mixed-add comparison OK ===");
+        return;
     }
 
     println!("  qubits      : {}", total_qubits);

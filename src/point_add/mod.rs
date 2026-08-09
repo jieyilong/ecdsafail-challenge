@@ -2370,7 +2370,14 @@ pub fn build() -> Vec<Op> {
     // census-time tuple occupancy, a self-check strictly stronger than gating on
     // baked_artifacts_valid(): it catches ANY ordinal-moving edit and discards only
     // the affected keys, loudly, instead of disabling the table.
-    let ops = if std::env::var("SUB4_APPLY_STRIP").ok().as_deref() == Some("0") {
+    // The identity keys were certified only for the original mixed-addition
+    // stream. A coherent QROM changes tuple occupancies and register labels, so
+    // even keys whose occupancy tripwire still happens to match are not covered
+    // by that certificate. Disable the strip until the windowed stream is
+    // independently re-censused.
+    let ops = if std::env::var_os("WINDOWED_MODE").is_some()
+        || std::env::var("SUB4_APPLY_STRIP").ok().as_deref() == Some("0")
+    {
         ops
     } else {
         apply_deep_strip_identity(ops)

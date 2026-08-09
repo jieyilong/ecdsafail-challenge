@@ -19,3 +19,4 @@ pub mod point_add;
 pub mod sim;
 #[allow(dead_code)]
 pub mod weierstrass_elliptic_curve;
+pub mod windowed_table;

@@ -8,6 +8,7 @@ mod fused;
 mod gcd;
 mod gidney;
 mod mcx;
+mod qrom;
 pub mod schedule;
 mod square;
 
@@ -454,20 +455,33 @@ pub fn build_trailmix_ludicrous_ops() -> Vec<Op> {
     install_q1153_submission_defaults();
     let mut circ = B::new();
     load_schedule();
+    qrom::reset_stats();
 
     let x2 = circ.alloc_qubits(N);
     let y2 = circ.alloc_qubits(N);
-    let ox = circ.alloc_bits(N);
-    let oy = circ.alloc_bits(N);
-
     let x2_init = x2.clone();
     let mut x2m = x2;
-    ec_add::ec_add(&mut circ, &mut x2m, &y2, &ox, &oy);
-
-    circ.declare_qubit_register(&x2_init);
-    circ.declare_qubit_register(&y2);
-    circ.declare_bit_register(&ox);
-    circ.declare_bit_register(&oy);
+    let windowed = std::env::var_os("WINDOWED_MODE").is_some();
+    let mut input_qubits = x2_init.clone();
+    input_qubits.extend_from_slice(&y2);
+    if windowed {
+        let window_bits = crate::windowed_table::window_bits_from_env();
+        let address = circ.alloc_qubits(window_bits);
+        let table = crate::windowed_table::WindowTable::new(window_bits);
+        ec_add::ec_add_windowed(&mut circ, &mut x2m, &y2, &address, &table);
+        circ.declare_qubit_register(&x2_init);
+        circ.declare_qubit_register(&y2);
+        circ.declare_qubit_register(&address);
+        input_qubits.extend_from_slice(&address);
+    } else {
+        let ox = circ.alloc_bits(N);
+        let oy = circ.alloc_bits(N);
+        ec_add::ec_add(&mut circ, &mut x2m, &y2, &ox, &oy);
+        circ.declare_qubit_register(&x2_init);
+        circ.declare_qubit_register(&y2);
+        circ.declare_bit_register(&ox);
+        circ.declare_bit_register(&oy);
+    }
 
     for (a, b) in route_swaps(&x2m, &x2_init) {
         circ.swap(a, b);
@@ -499,6 +513,13 @@ pub fn build_trailmix_ludicrous_ops() -> Vec<Op> {
         phases.sort_by(|left, right| right.1.cmp(left.1).then_with(|| left.0.cmp(right.0)));
         for (phase, active) in phases.into_iter().take(24) {
             eprintln!("TLM_PHASE active_max={active} phase={phase}");
+        }
+        if windowed {
+            let stats = qrom::stats();
+            eprintln!(
+                "WINDOW_QROM calls={} exact_toffoli={} payload_cx={}",
+                stats.calls, stats.toffolis, stats.payload_cx,
+            );
         }
     }
 
@@ -671,7 +692,5 @@ pub fn build_trailmix_ludicrous_ops() -> Vec<Op> {
     if std::env::var("CONSTPROP_DISABLE").ok().as_deref() == Some("1") {
         return ops;
     }
-    let mut input_qubits = x2_init.clone();
-    input_qubits.extend_from_slice(&y2);
     constprop::run(ops, &input_qubits)
 }

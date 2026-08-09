@@ -69,9 +69,17 @@ impl<'a, R: sha3::digest::XofReader> Simulator<'a, R> {
     }
 
     pub fn apply_iter<'b>(&mut self, ops: impl Iterator<Item = &'b Op>) {
+        self.apply_iter_masked(ops, u64::MAX);
+    }
+
+    pub fn apply_iter_masked<'b>(
+        &mut self,
+        ops: impl Iterator<Item = &'b Op>,
+        active_shots: u64,
+    ) {
 
         let mut condition_stack = Vec::new();
-        let mut current_base_condition = u64::MAX;
+        let mut current_base_condition = active_shots;
 
         for op in ops {
             let mut cond = current_base_condition;

@@ -1,13 +1,15 @@
-
 use super::arith::{
-    mod_add, mod_add_exact, mod_neg, mod_rsub_vented_loaded, mod_sub_classical_low3,
-    mod_sub_shifted_low, mod_sub_vented,
+    mod_add, mod_add_exact, mod_add_exact_lowpeak, mod_add_lowpeak, mod_neg,
+    mod_rsub_vented_loaded, mod_rsub_vented_loaded_lowpeak, mod_sub_classical_low3,
+    mod_sub_shifted_low, mod_sub_vented, mod_sub_vented_lowpeak,
 };
 use super::gcd::{mod_mul_inverse_in_place, Direction};
+use super::qrom;
 use super::square::mod_square_sub_pm_secp256k1_symmetric;
-use super::{B, BExt};
-use crate::point_add::{arith::mod_const_minus_reg_qb, SECP256K1_P};
+use super::{BExt, B};
 use crate::circuit::{BitId, QubitId};
+use crate::point_add::{arith::mod_const_minus_reg_qb, SECP256K1_P};
+use crate::windowed_table::WindowTable;
 
 const N: usize = 256;
 
@@ -111,7 +113,6 @@ fn classical_times3_mod_q(circ: &mut B, coord: &[BitId]) -> Vec<BitId> {
     }
     circ.bit_store0(tmp[N + 1]);
     {
-
         let cbits: Vec<BitId> = circ.alloc_bits(av_bits);
         classical_set_const(circ, &cbits, C);
         classical_add_into(circ, &tmp, &cbits);
@@ -165,7 +166,13 @@ fn classical_set_const(circ: &mut B, dst: &[BitId], k: u128) {
     }
 }
 
-fn classical_set_const_times_bit(circ: &mut B, dst: &[BitId], k: u128, gate: BitId, _accumulate: bool) {
+fn classical_set_const_times_bit(
+    circ: &mut B,
+    dst: &[BitId],
+    k: u128,
+    gate: BitId,
+    _accumulate: bool,
+) {
     for (i, &b) in dst.iter().enumerate() {
         circ.bit_store0(b);
         let bit = i < 128 && ((k >> i) & 1) == 1;
@@ -250,11 +257,7 @@ fn coord_rsub(circ: &mut B, x: &[QubitId], coord: &[BitId]) {
         }
         return;
     }
-    if std::env::var("TLM_FUSE_X_RESTORE")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
+    if std::env::var("TLM_FUSE_X_RESTORE").ok().as_deref() == Some("1") {
         mod_const_minus_reg_qb(circ, x, coord, SECP256K1_P);
         return;
     }
@@ -272,13 +275,7 @@ fn coord_rsub(circ: &mut B, x: &[QubitId], coord: &[BitId]) {
     mod_neg(circ, x);
 }
 
-pub fn ec_add(
-    circ: &mut B,
-    x2: &mut Vec<QubitId>,
-    y2: &[QubitId],
-    ox: &[BitId],
-    oy: &[BitId],
-) {
+pub fn ec_add(circ: &mut B, x2: &mut Vec<QubitId>, y2: &[QubitId], ox: &[BitId], oy: &[BitId]) {
     assert_eq!(x2.len(), N, "x2 is 256 bits");
     assert_eq!(y2.len(), N, "y2 is 256 bits");
     assert_eq!(ox.len(), N, "ox is 256 classical bits");
@@ -307,6 +304,157 @@ pub fn ec_add(
     coord_addsub(circ, &y2[..N], oy, true);
     circ.set_phase("tlm_coord_rsub_final");
     coord_rsub(circ, x2, ox);
+}
+
+fn qrom_coord_differences(
+    circ: &mut B,
+    address: &[QubitId],
+    x_table: &[alloy_primitives::U256],
+    y_table: &[alloy_primitives::U256],
+    x: &[QubitId],
+    y: &[QubitId],
+) {
+    let x_temp = circ.alloc_qubits(N);
+    let y_temp = circ.alloc_qubits(N);
+    let workspace = qrom::load_two_words(
+        circ,
+        address,
+        &x_temp,
+        x_table,
+        &y_temp,
+        y_table,
+        "window_qrom_xy_load_walk",
+        "window_qrom_xy_load_clear",
+    );
+    circ.set_phase("tlm_coord_x_sub");
+    mod_sub_vented_lowpeak(circ, &x_temp, x);
+    circ.set_phase("tlm_coord_y_sub");
+    mod_sub_vented_lowpeak(circ, &y_temp, y);
+    qrom::measurement_unload_two_words(
+        circ,
+        address,
+        &x_temp,
+        x_table,
+        &y_temp,
+        y_table,
+        workspace,
+        "window_qrom_xy_unload_measure",
+        "window_qrom_xy_unload_clear",
+    );
+}
+
+fn qrom_coord_add3x(
+    circ: &mut B,
+    address: &[QubitId],
+    table: &[alloy_primitives::U256],
+    dst: &[QubitId],
+) {
+    let temp = circ.alloc_qubits(N);
+    let workspace = qrom::load_word(
+        circ,
+        address,
+        &temp,
+        table,
+        "window_qrom_3x_load_walk",
+        "window_qrom_3x_load_clear",
+    );
+    circ.set_phase("tlm_coord_add3x");
+    if std::env::var("TLM_COORD_ADD3X_TRUNC").ok().as_deref() == Some("1") {
+        if workspace.retains_payload_bank() {
+            mod_add_lowpeak(circ, &temp, dst);
+        } else {
+            mod_add(circ, &temp, dst);
+        }
+    } else if workspace.retains_payload_bank() {
+        mod_add_exact_lowpeak(circ, &temp, dst);
+    } else {
+        mod_add_exact(circ, &temp, dst);
+    }
+    qrom::measurement_unload_word(
+        circ,
+        address,
+        &temp,
+        table,
+        workspace,
+        "window_qrom_3x_unload_walk",
+        "window_qrom_3x_unload_clear",
+    );
+}
+
+fn qrom_coord_recover(
+    circ: &mut B,
+    address: &[QubitId],
+    y_table: &[alloy_primitives::U256],
+    x_plus_one_table: &[alloy_primitives::U256],
+    y: &[QubitId],
+    x: &[QubitId],
+) {
+    let y_temp = circ.alloc_qubits(N);
+    let x_temp = circ.alloc_qubits(N);
+    let workspace = qrom::load_two_words(
+        circ,
+        address,
+        &y_temp,
+        y_table,
+        &x_temp,
+        x_plus_one_table,
+        "window_qrom_recover_load_walk",
+        "window_qrom_recover_load_clear",
+    );
+    circ.set_phase("tlm_coord_y_sub_final");
+    mod_sub_vented_lowpeak(circ, &y_temp, y);
+    circ.set_phase("tlm_coord_rsub_final");
+    mod_rsub_vented_loaded_lowpeak(circ, &x_temp, x);
+    qrom::measurement_unload_two_words(
+        circ,
+        address,
+        &y_temp,
+        y_table,
+        &x_temp,
+        x_plus_one_table,
+        workspace,
+        "window_qrom_recover_unload_measure",
+        "window_qrom_recover_unload_clear",
+    );
+}
+
+/// Coherent window-address variant of the 8e9c9a2 arithmetic pipeline.
+/// Coordinates are looked up and unlooked up serially, so no 512-qubit copy
+/// of the selected point is resident at an arithmetic peak.
+pub fn ec_add_windowed(
+    circ: &mut B,
+    x2: &mut Vec<QubitId>,
+    y2: &[QubitId],
+    address: &[QubitId],
+    table: &WindowTable,
+) {
+    assert_eq!(x2.len(), N, "x2 is 256 bits");
+    assert_eq!(y2.len(), N, "y2 is 256 bits");
+    assert_eq!(table.len(), 1usize << address.len());
+
+    qrom_coord_differences(circ, address, &table.x, &table.y, x2, &y2[..N]);
+
+    circ.set_phase("tlm_inverse");
+    let xv = std::mem::take(x2);
+    *x2 = mod_mul_inverse_in_place(circ, xv, y2, Direction::Inverse);
+
+    qrom_coord_add3x(circ, address, &table.three_x, x2);
+
+    circ.set_phase("tlm_square");
+    mod_square_sub_pm_secp256k1_symmetric(circ, &y2[..N], x2);
+
+    circ.set_phase("tlm_forward_multiply");
+    let xv = std::mem::take(x2);
+    *x2 = mod_mul_inverse_in_place(circ, xv, y2, Direction::Forward);
+
+    qrom_coord_recover(
+        circ,
+        address,
+        &table.y,
+        &table.x_plus_one,
+        &y2[..N],
+        x2,
+    );
 }
 
 pub fn build_times3_test() -> (Vec<crate::circuit::Op>, Vec<BitId>, Vec<BitId>) {
