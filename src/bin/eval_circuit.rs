@@ -129,8 +129,8 @@ fn load_ops(path: &str) -> Result<Vec<Op>, String> {
         dec.read_exact(&mut rec)
             .map_err(|e| format!("op {i}: short read from compressed body: {e}"))?;
         let kind_raw = u32::from_le_bytes(rec[0..4].try_into().unwrap());
-        let kind = op_kind_from_u32(kind_raw)
-            .ok_or_else(|| format!("op {i}: unknown kind {kind_raw}"))?;
+        let kind =
+            op_kind_from_u32(kind_raw).ok_or_else(|| format!("op {i}: unknown kind {kind_raw}"))?;
         // rec[4..8] are reserved padding for 8-byte alignment.
         let q_control2 = QubitId(read_u64(&rec, 8));
         let q_control1 = QubitId(read_u64(&rec, 16));
@@ -273,6 +273,28 @@ struct WindowCases {
     identity_rows: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum PairedWindowInterface {
+    RuntimeTable,
+    ClassicalAddend,
+}
+
+impl PairedWindowInterface {
+    fn label(self) -> &'static str {
+        match self {
+            Self::RuntimeTable => "runtime-table-windowed",
+            Self::ClassicalAddend => "baseline-classical-addend",
+        }
+    }
+
+    fn quantum_interface_registers(self) -> usize {
+        match self {
+            Self::RuntimeTable => 3,
+            Self::ClassicalAddend => 2,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct ParallelReport {
     toffoli_gates: u64,
@@ -371,7 +393,6 @@ impl CheckpointStore {
         if inputs.metadata()?.len() == 0 {
             inputs.write_all(Self::INPUT_HEADER.as_bytes())?;
             inputs.flush()?;
-            committed_input_end = inputs.metadata()?.len();
         } else {
             let minimum = Self::INPUT_HEADER.len() as u64;
             inputs.set_len(committed_input_end.max(minimum))?;
@@ -408,6 +429,7 @@ impl CheckpointStore {
     ) -> std::io::Result<()> {
         self.inputs.write_all(input_rows.as_bytes())?;
         self.inputs.flush()?;
+        self.inputs.sync_data()?;
         let input_end = self.inputs.metadata()?.len();
         writeln!(
             self.batches,
@@ -425,6 +447,7 @@ impl CheckpointStore {
             input_end,
         )?;
         self.batches.flush()?;
+        self.batches.sync_data()?;
         self.completed_batches.insert(batch);
         self.completed_shots += shots;
         self.aggregate.toffoli_gates += report.toffoli_gates;
@@ -436,6 +459,70 @@ impl CheckpointStore {
         self.aggregate.phase_garbage_batches += report.phase_garbage_batches;
         self.aggregate.ancilla_garbage_batches += report.ancilla_garbage_batches;
         Ok(())
+    }
+}
+
+fn ops_fingerprint(ops: &[Op]) -> String {
+    let mut hasher = Shake256::default();
+    hasher.update(b"quantum_ecc-checkpoint-ops-v1");
+    hasher.update(&(ops.len() as u64).to_le_bytes());
+    for op in ops {
+        hasher.update(&[op.kind as u8]);
+        hasher.update(&op.q_control2.0.to_le_bytes());
+        hasher.update(&op.q_control1.0.to_le_bytes());
+        hasher.update(&op.q_target.0.to_le_bytes());
+        hasher.update(&op.c_target.0.to_le_bytes());
+        hasher.update(&op.c_condition.0.to_le_bytes());
+        hasher.update(&op.r_target.0.to_le_bytes());
+    }
+    let mut reader = hasher.finalize_xof();
+    let mut digest = [0u8; 16];
+    XofReader::read(&mut reader, &mut digest);
+    let mut encoded = String::with_capacity(2 * digest.len());
+    for byte in digest {
+        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+fn verify_checkpoint_manifest(
+    root: &Path,
+    interface: PairedWindowInterface,
+    ops: &[Op],
+    total_qubits: u64,
+    target_shots: usize,
+    window_bits: usize,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(root)?;
+    let seed = std::env::var("EVAL_SHARED_SEED")
+        .unwrap_or_else(|_| "<circuit-derived-fiat-shamir>".to_string());
+    let body = format!(
+        "format\tpaired-window-checkpoint-v1\ninterface\t{}\nseed\t{}\nwindow_bits\t{}\ntarget_shots\t{}\nqubits\t{}\nops\t{}\nops_fingerprint\t{}\n",
+        interface.label(),
+        seed,
+        window_bits,
+        target_shots,
+        total_qubits,
+        ops.len(),
+        ops_fingerprint(ops),
+    );
+    let path = root.join("manifest.tsv");
+    match std::fs::read_to_string(&path) {
+        Ok(existing) if existing == body => Ok(()),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "checkpoint manifest {} does not match this experiment",
+                path.display()
+            ),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut file = File::create(path)?;
+            file.write_all(body.as_bytes())?;
+            file.flush()?;
+            file.sync_data()
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -471,8 +558,7 @@ fn generate_window_cases(
         for _ in 0..sequence_calls {
             let mut address_bytes = [0u8; 8];
             XofReader::read(xof, &mut address_bytes);
-            let address =
-                (u64::from_le_bytes(address_bytes) as usize) & (table.len() - 1);
+            let address = (u64::from_le_bytes(address_bytes) as usize) & (table.len() - 1);
             let addend = table.point(address);
             // The arithmetic kernel, like the cited generic-affine constructions,
             // excludes R = +/-A.  Equal x-coordinates identify both cases.
@@ -760,9 +846,7 @@ fn run_windowed_tests(
                 let got_address = sim.get_register(&layout_regs[2], shot);
                 let expected = cases.expected_sequences[index][call];
                 let address = cases.address_sequences[index][call];
-                if got_x != expected.0
-                    || got_y != expected.1
-                    || got_address != U256::from(address)
+                if got_x != expected.0 || got_y != expected.1 || got_address != U256::from(address)
                 {
                     classical_failure_mask |= 1u64 << shot;
                     if fail_reason.is_none() {
@@ -794,9 +878,8 @@ fn run_windowed_tests(
         classical_failures += classical_failure_mask.count_ones() as usize;
         phase_failure_shots += phase_failure_mask.count_ones() as usize;
         ancilla_failure_shots += ancilla_failure_mask.count_ones() as usize;
-        any_failure_shots +=
-            (classical_failure_mask | phase_failure_mask | ancilla_failure_mask)
-                .count_ones() as usize;
+        any_failure_shots += (classical_failure_mask | phase_failure_mask | ancilla_failure_mask)
+            .count_ones() as usize;
     }
 
     let operation_denom = (n * sequence_calls).max(1) as f64;
@@ -819,7 +902,7 @@ fn run_windowed_tests(
     }
 }
 
-fn run_windowed_tests_parallel(
+fn run_paired_window_tests_parallel(
     ops: &[Op],
     layout_regs: &[Vec<QubitOrBit>],
     total_qubits: u64,
@@ -827,6 +910,7 @@ fn run_windowed_tests_parallel(
     mut xof: sha3::Shake256Reader,
     target_shots: usize,
     window_bits: usize,
+    interface: PairedWindowInterface,
     requested_threads: usize,
 ) -> SeedReport {
     let cases = generate_window_cases(&mut xof, target_shots, window_bits, 1);
@@ -843,6 +927,15 @@ fn run_windowed_tests_parallel(
         .map(PathBuf::from)
         .map(|path| {
             println!("  checkpoint directory     : {}", path.display());
+            verify_checkpoint_manifest(
+                &path,
+                interface,
+                ops,
+                total_qubits,
+                target_shots,
+                window_bits,
+            )
+            .expect("checkpoint manifest does not match this evaluation");
             CheckpointStore::open(&path).expect("failed to open evaluation checkpoint")
         });
     let (previously_completed, prior_report, prior_shots) = checkpoint
@@ -862,6 +955,7 @@ fn run_windowed_tests_parallel(
     let next_progress = AtomicUsize::new(first_threshold);
 
     println!("  evaluator threads        : {threads}");
+    println!("  paired interface         : {}", interface.label());
     if prior_shots > 0 {
         println!(
             "  resumed progress         : {prior_shots}/{n} shots; {} failures observed",
@@ -900,18 +994,26 @@ fn run_windowed_tests_parallel(
                         num_bits as usize,
                         &mut batch_xof,
                     );
-                    set_window_table_inputs(&mut sim, layout_regs, &cases.table, cond_mask);
+                    if matches!(interface, PairedWindowInterface::RuntimeTable) {
+                        set_window_table_inputs(&mut sim, layout_regs, &cases.table, cond_mask);
+                    }
                     let mut classical_failure_mask = 0u64;
                     let mut got_values = Vec::with_capacity(bs);
                     for shot in 0..bs {
                         let index = batch * BATCH + shot;
                         sim.set_register(&layout_regs[0], cases.targets[index].0, shot);
                         sim.set_register(&layout_regs[1], cases.targets[index].1, shot);
-                        sim.set_register(
-                            &layout_regs[2],
-                            U256::from(cases.addresses[index]),
-                            shot,
-                        );
+                        match interface {
+                            PairedWindowInterface::RuntimeTable => sim.set_register(
+                                &layout_regs[2],
+                                U256::from(cases.addresses[index]),
+                                shot,
+                            ),
+                            PairedWindowInterface::ClassicalAddend => {
+                                sim.set_register(&layout_regs[2], cases.addends[index].0, shot);
+                                sim.set_register(&layout_regs[3], cases.addends[index].1, shot);
+                            }
+                        }
                     }
                     sim.apply_iter_masked(ops.iter(), cond_mask);
 
@@ -919,11 +1021,19 @@ fn run_windowed_tests_parallel(
                         let index = batch * BATCH + shot;
                         let got_x = sim.get_register(&layout_regs[0], shot);
                         let got_y = sim.get_register(&layout_regs[1], shot);
-                        let got_address = sim.get_register(&layout_regs[2], shot);
+                        let got_address = match interface {
+                            PairedWindowInterface::RuntimeTable => {
+                                sim.get_register(&layout_regs[2], shot)
+                            }
+                            PairedWindowInterface::ClassicalAddend => {
+                                U256::from(cases.addresses[index])
+                            }
+                        };
                         got_values.push((got_x, got_y, got_address));
                         if got_x != cases.expected[index].0
                             || got_y != cases.expected[index].1
-                            || got_address != U256::from(cases.addresses[index])
+                            || (matches!(interface, PairedWindowInterface::RuntimeTable)
+                                && got_address != U256::from(cases.addresses[index]))
                         {
                             classical_failure_mask |= 1u64 << shot;
                             if report.fail_reason.is_none() {
@@ -943,7 +1053,7 @@ fn run_windowed_tests_parallel(
                             Some(format!("PHASE GARBAGE: global_phase = {phase:#018x}"));
                     }
 
-                    for register in layout_regs {
+                    for register in &layout_regs[..interface.quantum_interface_registers()] {
                         for item in register {
                             if let QubitOrBit::Qubit(qubit) = *item {
                                 *sim.qubit_mut(qubit) = 0;
@@ -1387,7 +1497,7 @@ fn main() {
         );
         let xof = evaluation_seed(&ops);
         let report = if evaluator_threads > 1 && sequence_calls == 1 {
-            run_windowed_tests_parallel(
+            run_paired_window_tests_parallel(
                 &ops,
                 &regs,
                 total_qubits,
@@ -1395,6 +1505,7 @@ fn main() {
                 xof,
                 tests,
                 window_bits,
+                PairedWindowInterface::RuntimeTable,
                 evaluator_threads,
             )
         } else {
@@ -1413,10 +1524,10 @@ fn main() {
         let classical_rate = report.classical_failures as f64 / denom;
         let phase_rate = report.phase_failure_shots as f64 / denom;
         let ancilla_rate = report.ancilla_failure_shots as f64 / denom;
-        let overlap_counting_rate =
-            (report.classical_failures + report.phase_failure_shots + report.ancilla_failure_shots)
-                as f64
-                / denom;
+        let overlap_counting_rate = (report.classical_failures
+            + report.phase_failure_shots
+            + report.ancilla_failure_shots) as f64
+            / denom;
         let any_failure_rate = report.any_failure_shots as f64 / denom;
         println!("  tested shots            : {}", report.n_shots);
         println!("  calls per shot          : {sequence_calls}");
@@ -1531,20 +1642,36 @@ fn main() {
             .ok()
             .and_then(|value| value.parse::<f64>().ok())
             .unwrap_or(1.0);
+        let evaluator_threads = std::env::var("EVAL_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1);
         println!("  qubits      : {total_qubits}");
         println!("  bits        : {num_bits}");
-        println!(
-            "\n-- mixed-add comparison on {window_bits}-bit table cases ({tests} shots) --"
-        );
-        let report = run_mixed_window_tests(
-            &ops,
-            &regs,
-            total_qubits,
-            num_bits,
-            evaluation_seed(&ops),
-            tests,
-            window_bits,
-        );
+        println!("\n-- mixed-add comparison on {window_bits}-bit table cases ({tests} shots) --");
+        let report = if evaluator_threads > 1 || std::env::var_os("EVAL_CHECKPOINT_DIR").is_some() {
+            run_paired_window_tests_parallel(
+                &ops,
+                &regs,
+                total_qubits,
+                num_bits,
+                evaluation_seed(&ops),
+                tests,
+                window_bits,
+                PairedWindowInterface::ClassicalAddend,
+                evaluator_threads,
+            )
+        } else {
+            run_mixed_window_tests(
+                &ops,
+                &regs,
+                total_qubits,
+                num_bits,
+                evaluation_seed(&ops),
+                tests,
+                window_bits,
+            )
+        };
         let denom = report.n_shots.max(1) as f64;
         let classical_rate = report.classical_failures as f64 / denom;
         let phase_rate = report.phase_failure_shots as f64 / denom;
@@ -1602,6 +1729,7 @@ fn main() {
             ops.len(),
             &note,
         );
+        write_score(report.avg_tof, total_qubits);
         println!("\n=== mixed-add comparison OK ===");
         return;
     }
@@ -1617,7 +1745,10 @@ fn main() {
     println!("  phase-garbage batches   : {}", r.phase_garbage_batches);
     println!("  ancilla-garbage batches : {}", r.ancilla_garbage_batches);
     if !r.ok {
-        let reason = r.fail_reason.clone().unwrap_or_else(|| "(no detail)".into());
+        let reason = r
+            .fail_reason
+            .clone()
+            .unwrap_or_else(|| "(no detail)".into());
         println!("\n!! correctness FAILED: {reason}");
         let fail_note = format!("{note} | {reason}");
         append_results_row(
