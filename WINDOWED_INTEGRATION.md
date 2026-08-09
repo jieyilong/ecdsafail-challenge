@@ -1,61 +1,108 @@
-# Coherent Window Integration Experiment
+# Coherent Window Integration for `8e9c9a2`
 
 This branch adapts submission `8e9c9a2` from a classically specified mixed
-addend to a coherently selected window addend. Set `WINDOWED_MODE=1` to expose a
-quantum address register and select `A_j=[j]G` through a reversible QROM. The
-selected coordinates and derived constants are loaded, used, and uncomputed
-serially so that a complete 512-qubit copy of the addend is never resident at an
-arithmetic peak.
+addend to the coherent interface
 
-The default 16-bit implementation uses clean QROAM with block size `K=2`. A
-15-bit high address loads two adjacent 256-bit table words into a payload bank
-and a temporary bank; the remaining address bit selects the required word with
-bitwise controlled swaps. The arithmetic preserves the selected payload. The
-swaps are then reversed, both banks are measured in the X basis, and a
-phase-only traversal erases the lookup. This spends the available local width
-on one additional payload bank to approximately halve the nonlinear lookup
-cost. Set `WINDOWED_QROM_MODE=unary` to select the lower-workspace unary
-implementation for comparison.
+```text
+|J>|R>|0>_W -> |J>|R + T[J]>|0>_W.
+```
+
+The emitted ABI contains the quantum registers `X`, `Y`, and `J`, followed by
+`2 * 2^k` classical 256-bit registers containing the `x` and `y` columns of an
+arbitrary point table. The circuit no longer embeds a fixed `[j]G` table in its
+operations: every table-payload operation is conditioned on the corresponding
+runtime classical table bit.
+
+## Circuit construction
+
+The selected point is materialized only near each consumer:
+
+1. A shared QROM traversal loads `x_J` and `y_J`, forms the coordinate
+   differences, and is replayed to clear both payloads.
+2. A QROM lookup loads `x_J`; the circuit applies `x_J + 2*x_J` to the recycled
+   coordinate register, reverses the doubling, and replays the lookup. Thus
+   `3*x_J` is derived at runtime rather than supplied as another table.
+3. A shared traversal loads `y_J` and `x_J` for output recovery and is replayed
+   exactly after use.
+
+The default 16-bit single-column lookup uses `K=2` QROAM. A 15-bit high address
+loads adjacent rows into two 256-qubit banks, and the low address bit swaps the
+selected row into the arithmetic operand. These payload banks are real quantum
+storage; the construction saves width by releasing them before the dialog-GCD
+peak, not by pretending that the 16 address qubits hold the selected point.
+
+The default payload unload exactly replays the XOR lookup. It does not measure
+the payload banks; the unary-routing AND ancillas are removed with the circuit's
+standard measurement-based uncomputation and conditional phase correction. This
+leaves the QROM address, payload, routing workspace, and phase clean. The earlier
+measurement-based *payload* unload remains available for experiments through
+`WINDOWED_QROM_UNLOAD=measurement`, but it is not used for the reported circuit.
+
+Address zero is handled coherently. A predicate `nz = [J != 0]` disables the
+square-subtract and final modular negation that would otherwise make the affine
+pipeline incorrect for the identity row. For `J=0`, the remaining reversible
+division/multiplication pair cancels and the circuit returns `R` unchanged.
+As in Schrottenloher's generic-affine construction and the original challenge
+kernel, the exceptional cases `R = +/-T[J]` remain outside the interface domain.
 
 ## Commands
 
 ```sh
-cargo build --release --locked --offline --bins
-WINDOWED_MODE=1 WINDOW_BITS=16 TRACE_TLM_PROFILE=1 \
-  SINGLE_CCX_FANOUT_DISABLE=1 \
+cargo build --release --locked --offline --bin build_circuit --bin eval_circuit
+
+WINDOWED_MODE=1 WINDOW_BITS=16 SINGLE_CCX_FANOUT_DISABLE=1 \
   ./target/release/build_circuit
+
 WINDOWED_MODE=1 WINDOW_BITS=16 WINDOWED_TESTS=9024 \
-  WINDOWED_MAX_ERROR_RATE=0.003 \
-  ./target/release/eval_circuit --note qroam2-w16-full
+  WINDOWED_MAX_ERROR_RATE=1 EVAL_THREADS=8 \
+  EVAL_CHECKPOINT_DIR=/tmp/windowed-runtime-k16 \
+  ./target/release/eval_circuit --note runtime-table-k16-replay-unload
 ```
 
-`WINDOWED_QROM_COUNT_ONLY=1` models the lookup resources without emitting the
-large QROM payload. It is intended for width profiling, not correctness tests.
-`SINGLE_CCX_FANOUT_DISABLE=1` skips a legacy global rewrite that is prohibitively
-slow on the CNOT-heavy windowed stream and changed the trial circuit by only a
-few dozen operations.
+`WINDOWED_QROM_COUNT_ONLY=1` profiles lookup resources without emitting payload
+operations and is not a correctness test. `WINDOWED_SEQUENCE_CALLS=N` repeatedly
+applies one emitted kernel to the same accumulator with correlated random
+addresses; the evaluator checks output, preserved address, incremental phase,
+and all non-interface ancillas after every call.
 
-## Results
+## Measured 16-bit result
 
-The fully emitted 16-bit circuit contains 179,176,904 operations and uses 1,161
-logical qubits. Its three loads and three measurement-based unloads account for
-246,260 Toffolis and 41,952,586 payload CNOTs. A 9,024-input development run
-measured 1,595,255.204 average executed Toffolis, down 39.94% from
-2,656,280.233 for the initial serial binary-tree adapter at the same width. The
-optimized development run observed 17 classical failures, 14 phase-failure
-shots, no ancilla failures, and 21 shots failing at least one channel, for a
-union error of 21/9,024 = 0.2327%.
+The fully emitted runtime-table circuit has:
 
-The final comparison uses a deterministic common corpus of 100,000 inputs. The
-window-compatible circuit measured 1,593,217.836 average executed Toffolis and
-235 any-channel failures (0.235%). The original mixed-addition circuit measured
-1,299,442.073 average executed Toffolis and 219 any-channel failures (0.219%).
-Both had 184 classical mismatches and no ancilla failures; phase-failure shots
-were 144 and 127, respectively. Coherent window compatibility therefore adds
-10 logical qubits and 22.61% average executed Toffoli work on this corpus.
+- peak logical width `Q = 1,162`;
+- average executed Toffoli count `T = 1,684,156.770` over 9,024 cases;
+- `213,387,745` emitted operations;
+- `328,180` QROM Toffolis and `167,772,160` table-payload CNOTs;
+- 14 classical mismatches, 10 phase-failure shots, no ancilla failures, and
+  20 shots failing any channel (`0.2216%`).
 
-The evaluation writes one durable row per input and can resume from the last
-committed 64-shot batch. The row `j=0` represents the elliptic-curve identity,
-which the generic affine point-addition pipeline does not special-case. The
-100,000-input corpus deliberately retained one such row so that this limitation
-remains visible.
+The one identity selection in the 9,024-case corpus returned the input point,
+preserved `J=0`, and had no classical, phase, or ancilla failure. The sparse
+remaining errors arise from finite-support arithmetic approximations, including
+the inherited fixed-length dialog-GCD schedule and the window adapter's low-peak
+64-bit upper comparison, not from QROM cleanup. Relative to the reported
+`8e9c9a2` operating point
+(`Q = 1,151`, `T = 1,299,453`), coherent runtime-table selection adds 11 logical
+qubits and approximately 29.61% average Toffoli work. The supports are generated
+from their respective emitted streams, so this is a resource comparison rather
+than a paired statistical comparison.
+
+## Correlated small-window tests
+
+For each `k = 0,...,5`, the evaluator ran 256 correlated four-call sequences,
+or 1,024 calls per width. All 6,144 calls returned their non-interface ancillas
+to zero. The `k=0` test consists entirely of identity selections and had no
+failure, and the `k=1` emitter/unloader base case completed normally.
+
+| `k` | Identity selections | Shots failing any channel | Per-call average Toffoli |
+|---:|---:|---:|---:|
+| 0 | 1,024 / 1,024 | 0 / 256 | 1,312,343.476 |
+| 1 | 473 / 1,024 | 2 / 256 | 1,321,065.429 |
+| 2 | 253 / 1,024 | 0 / 256 | 1,322,636.318 |
+| 3 | 125 / 1,024 | 4 / 256 | 1,324,426.755 |
+| 4 | 63 / 1,024 | 0 / 256 | 1,326,497.064 |
+| 5 | 30 / 1,024 | 1 / 256 | 1,328,558.680 |
+
+These tests establish composability of the lookup/use/replay boundary on the
+stated generic-affine domain. They do not constitute an all-input correctness
+proof or a complete implementation of the full windowed Shor circuit.

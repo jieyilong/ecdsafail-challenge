@@ -256,16 +256,20 @@ struct SeedReport {
     ancilla_failure_shots: usize,
     any_failure_shots: usize,
     identity_rows: usize,
+    window_selections: usize,
     phase_garbage_batches: usize,
     ancilla_garbage_batches: usize,
     fail_reason: Option<String>,
 }
 
 struct WindowCases {
+    table: quantum_ecc::windowed_table::WindowTable,
     targets: Vec<(U256, U256)>,
     addresses: Vec<usize>,
     addends: Vec<(U256, U256)>,
     expected: Vec<(U256, U256)>,
+    address_sequences: Vec<Vec<usize>>,
+    expected_sequences: Vec<Vec<(U256, U256)>>,
     identity_rows: usize,
 }
 
@@ -439,47 +443,102 @@ fn generate_window_cases(
     xof: &mut sha3::Shake256Reader,
     target_shots: usize,
     window_bits: usize,
+    sequence_calls: usize,
 ) -> WindowCases {
+    assert!(sequence_calls > 0);
     let curve = secp256k1();
     let table = quantum_ecc::windowed_table::WindowTable::new(window_bits);
     let mut targets = Vec::with_capacity(target_shots);
     let mut addresses = Vec::with_capacity(target_shots);
     let mut addends = Vec::with_capacity(target_shots);
     let mut expected = Vec::with_capacity(target_shots);
+    let mut address_sequences = Vec::with_capacity(target_shots);
+    let mut expected_sequences = Vec::with_capacity(target_shots);
     let mut identity_rows = 0usize;
     while targets.len() < target_shots {
         let mut scalar_bytes = [0u8; 32];
-        let mut address_bytes = [0u8; 8];
         XofReader::read(xof, &mut scalar_bytes);
-        XofReader::read(xof, &mut address_bytes);
         let target = curve.mul(curve.gx, curve.gy, U256::from_le_bytes(scalar_bytes));
         if target.0.is_zero() && target.1.is_zero() {
             continue;
         }
-        let address = (u64::from_le_bytes(address_bytes) as usize) & (table.len() - 1);
-        let addend = table.point(address);
-        if address != 0 && target.0 == addend.0 {
+
+        let mut current = target;
+        let mut sequence = Vec::with_capacity(sequence_calls);
+        let mut sequence_expected = Vec::with_capacity(sequence_calls);
+        let mut sequence_identity_rows = 0usize;
+        let mut valid = true;
+        for _ in 0..sequence_calls {
+            let mut address_bytes = [0u8; 8];
+            XofReader::read(xof, &mut address_bytes);
+            let address =
+                (u64::from_le_bytes(address_bytes) as usize) & (table.len() - 1);
+            let addend = table.point(address);
+            // The arithmetic kernel, like the cited generic-affine constructions,
+            // excludes R = +/-A.  Equal x-coordinates identify both cases.
+            if address != 0 && current.0 == addend.0 {
+                valid = false;
+                break;
+            }
+            if address == 0 {
+                sequence_identity_rows += 1;
+            } else {
+                current = curve.add(current.0, current.1, addend.0, addend.1);
+            }
+            sequence.push(address);
+            sequence_expected.push(current);
+        }
+        if !valid {
             continue;
         }
-        if address == 0 {
-            identity_rows += 1;
-        }
-        let result = if address == 0 {
-            target
-        } else {
-            curve.add(target.0, target.1, addend.0, addend.1)
-        };
+
+        let address = sequence[0];
+        let addend = table.point(address);
         targets.push(target);
         addresses.push(address);
         addends.push(addend);
-        expected.push(result);
+        expected.push(sequence_expected[0]);
+        address_sequences.push(sequence);
+        expected_sequences.push(sequence_expected);
+        identity_rows += sequence_identity_rows;
     }
     WindowCases {
+        table,
         targets,
         addresses,
         addends,
         expected,
+        address_sequences,
+        expected_sequences,
         identity_rows,
+    }
+}
+
+fn set_register_mask<R: XofReader>(
+    sim: &mut Simulator<'_, R>,
+    register: &[QubitOrBit],
+    value: U256,
+    mask: u64,
+) {
+    for (bit, item) in register.iter().enumerate() {
+        let state = if value.bit(bit) { mask } else { 0 };
+        match *item {
+            QubitOrBit::Qubit(id) => *sim.qubit_mut(id) = state,
+            QubitOrBit::Bit(id) => *sim.bit_mut(id) = state,
+        }
+    }
+}
+
+fn set_window_table_inputs<R: XofReader>(
+    sim: &mut Simulator<'_, R>,
+    layout_regs: &[Vec<QubitOrBit>],
+    table: &quantum_ecc::windowed_table::WindowTable,
+    mask: u64,
+) {
+    assert_eq!(layout_regs.len(), 3 + 2 * table.len());
+    for row in 0..table.len() {
+        set_register_mask(sim, &layout_regs[3 + 2 * row], table.x[row], mask);
+        set_register_mask(sim, &layout_regs[4 + 2 * row], table.y[row], mask);
     }
 }
 
@@ -618,6 +677,7 @@ fn run_tests(
         ancilla_failure_shots: 0,
         any_failure_shots: classical_failures,
         identity_rows: 0,
+        window_selections: 0,
         phase_garbage_batches,
         ancilla_garbage_batches,
         fail_reason,
@@ -632,8 +692,9 @@ fn run_windowed_tests(
     mut xof: sha3::Shake256Reader,
     target_shots: usize,
     window_bits: usize,
+    sequence_calls: usize,
 ) -> SeedReport {
-    let cases = generate_window_cases(&mut xof, target_shots, window_bits);
+    let cases = generate_window_cases(&mut xof, target_shots, window_bits, sequence_calls);
     let n = cases.targets.len();
     let mut sim = Simulator::new(total_qubits as usize, num_bits as usize, &mut xof);
     let mut fail_reason = None;
@@ -644,76 +705,105 @@ fn run_windowed_tests(
     let mut phase_garbage_batches = 0usize;
     let mut ancilla_garbage_batches = 0usize;
 
+    let mut interface_qubits = vec![false; total_qubits as usize];
+    for register in &layout_regs[..3] {
+        for item in register {
+            if let QubitOrBit::Qubit(qubit) = *item {
+                interface_qubits[qubit.0 as usize] = true;
+            }
+        }
+    }
+
     const BATCH: usize = 64;
     let num_batches = (n + BATCH - 1) / BATCH;
     for batch in 0..num_batches {
         let bs = BATCH.min(n - batch * BATCH);
         let cond_mask = if bs == 64 { u64::MAX } else { (1u64 << bs) - 1 };
         sim.clear_for_shot();
+        set_window_table_inputs(&mut sim, layout_regs, &cases.table, cond_mask);
         let mut classical_failure_mask = 0u64;
+        let mut phase_failure_mask = 0u64;
+        let mut ancilla_failure_mask = 0u64;
         for shot in 0..bs {
             let index = batch * BATCH + shot;
             sim.set_register(&layout_regs[0], cases.targets[index].0, shot);
             sim.set_register(&layout_regs[1], cases.targets[index].1, shot);
-            sim.set_register(&layout_regs[2], U256::from(cases.addresses[index]), shot);
         }
-        sim.apply_iter_masked(ops.iter(), cond_mask);
 
-        for shot in 0..bs {
-            let index = batch * BATCH + shot;
-            let got_x = sim.get_register(&layout_regs[0], shot);
-            let got_y = sim.get_register(&layout_regs[1], shot);
-            let got_address = sim.get_register(&layout_regs[2], shot);
-            if got_x != cases.expected[index].0
-                || got_y != cases.expected[index].1
-                || got_address != U256::from(cases.addresses[index])
-            {
-                classical_failures += 1;
-                classical_failure_mask |= 1u64 << shot;
+        for call in 0..sequence_calls {
+            for shot in 0..bs {
+                let index = batch * BATCH + shot;
+                sim.set_register(
+                    &layout_regs[2],
+                    U256::from(cases.address_sequences[index][call]),
+                    shot,
+                );
+            }
+
+            let phase_before = sim.phase;
+            sim.apply_iter_masked(ops.iter(), cond_mask);
+            let call_phase = (sim.phase ^ phase_before) & cond_mask;
+            if call_phase != 0 {
+                phase_garbage_batches += 1;
+                phase_failure_mask |= call_phase;
                 if fail_reason.is_none() {
                     fail_reason = Some(format!(
-                        "CLASSICAL MISMATCH shot {index} address {}: got ({got_x:#x},{got_y:#x}) exp ({:#x},{:#x})",
-                        cases.addresses[index], cases.expected[index].0, cases.expected[index].1,
+                        "PHASE GARBAGE after sequence call {call}: delta = {call_phase:#018x}"
+                    ));
+                }
+            }
+
+            for shot in 0..bs {
+                let index = batch * BATCH + shot;
+                let got_x = sim.get_register(&layout_regs[0], shot);
+                let got_y = sim.get_register(&layout_regs[1], shot);
+                let got_address = sim.get_register(&layout_regs[2], shot);
+                let expected = cases.expected_sequences[index][call];
+                let address = cases.address_sequences[index][call];
+                if got_x != expected.0
+                    || got_y != expected.1
+                    || got_address != U256::from(address)
+                {
+                    classical_failure_mask |= 1u64 << shot;
+                    if fail_reason.is_none() {
+                        fail_reason = Some(format!(
+                            "CLASSICAL MISMATCH shot {index}, call {call}, address {address}: got ({got_x:#x},{got_y:#x}) exp ({:#x},{:#x})",
+                            expected.0, expected.1,
+                        ));
+                    }
+                }
+            }
+
+            let mut call_garbage = 0u64;
+            for q in 0..total_qubits as usize {
+                if !interface_qubits[q] {
+                    call_garbage |= sim.qubit(QubitId(q as u64)) & cond_mask;
+                }
+            }
+            if call_garbage != 0 {
+                ancilla_garbage_batches += 1;
+                ancilla_failure_mask |= call_garbage;
+                if fail_reason.is_none() {
+                    fail_reason = Some(format!(
+                        "ANCILLA GARBAGE after sequence call {call}: mask = {call_garbage:#018x}"
                     ));
                 }
             }
         }
 
-        let phase = sim.phase & cond_mask;
-        if phase != 0 {
-            phase_garbage_batches += 1;
-            phase_failure_shots += phase.count_ones() as usize;
-            if fail_reason.is_none() {
-                fail_reason = Some(format!("PHASE GARBAGE: global_phase = {phase:#018x}"));
-            }
-        }
-
-        for register in layout_regs {
-            for qb in register {
-                if let QubitOrBit::Qubit(qubit) = *qb {
-                    *sim.qubit_mut(qubit) = 0;
-                }
-            }
-        }
-        let mut garbage_mask = 0u64;
-        for q in 0..total_qubits {
-            garbage_mask |= sim.qubit(QubitId(q)) & cond_mask;
-        }
-        if garbage_mask != 0 {
-            ancilla_garbage_batches += 1;
-            ancilla_failure_shots += garbage_mask.count_ones() as usize;
-            if fail_reason.is_none() {
-                fail_reason = Some(format!("ANCILLA GARBAGE mask = {garbage_mask:#018x}"));
-            }
-        }
-        any_failure_shots += (classical_failure_mask | phase | garbage_mask).count_ones() as usize;
+        classical_failures += classical_failure_mask.count_ones() as usize;
+        phase_failure_shots += phase_failure_mask.count_ones() as usize;
+        ancilla_failure_shots += ancilla_failure_mask.count_ones() as usize;
+        any_failure_shots +=
+            (classical_failure_mask | phase_failure_mask | ancilla_failure_mask)
+                .count_ones() as usize;
     }
 
-    let denom = n.max(1) as f64;
+    let operation_denom = (n * sequence_calls).max(1) as f64;
     SeedReport {
         ok: classical_failures == 0 && phase_failure_shots == 0 && ancilla_failure_shots == 0,
-        avg_cliff: sim.stats.clifford_gates as f64 / denom,
-        avg_tof: sim.stats.toffoli_gates as f64 / denom,
+        avg_cliff: sim.stats.clifford_gates as f64 / operation_denom,
+        avg_tof: sim.stats.toffoli_gates as f64 / operation_denom,
         tot_tof: sim.stats.toffoli_gates,
         tot_cliff: sim.stats.clifford_gates,
         n_shots: n,
@@ -722,6 +812,7 @@ fn run_windowed_tests(
         ancilla_failure_shots,
         any_failure_shots,
         identity_rows: cases.identity_rows,
+        window_selections: n * sequence_calls,
         phase_garbage_batches,
         ancilla_garbage_batches,
         fail_reason,
@@ -738,7 +829,7 @@ fn run_windowed_tests_parallel(
     window_bits: usize,
     requested_threads: usize,
 ) -> SeedReport {
-    let cases = generate_window_cases(&mut xof, target_shots, window_bits);
+    let cases = generate_window_cases(&mut xof, target_shots, window_bits, 1);
     let n = cases.targets.len();
     const BATCH: usize = 64;
     let num_batches = (n + BATCH - 1) / BATCH;
@@ -809,6 +900,7 @@ fn run_windowed_tests_parallel(
                         num_bits as usize,
                         &mut batch_xof,
                     );
+                    set_window_table_inputs(&mut sim, layout_regs, &cases.table, cond_mask);
                     let mut classical_failure_mask = 0u64;
                     let mut got_values = Vec::with_capacity(bs);
                     for shot in 0..bs {
@@ -998,6 +1090,7 @@ fn run_windowed_tests_parallel(
         ancilla_failure_shots: merged.ancilla_failure_shots,
         any_failure_shots: merged.any_failure_shots,
         identity_rows: cases.identity_rows,
+        window_selections: n,
         phase_garbage_batches: merged.phase_garbage_batches,
         ancilla_garbage_batches: merged.ancilla_garbage_batches,
         fail_reason: merged.fail_reason,
@@ -1013,7 +1106,7 @@ fn run_mixed_window_tests(
     target_shots: usize,
     window_bits: usize,
 ) -> SeedReport {
-    let cases = generate_window_cases(&mut xof, target_shots, window_bits);
+    let cases = generate_window_cases(&mut xof, target_shots, window_bits, 1);
     let n = cases.targets.len();
     let mut sim = Simulator::new(total_qubits as usize, num_bits as usize, &mut xof);
     let mut fail_reason = None;
@@ -1099,6 +1192,7 @@ fn run_mixed_window_tests(
         ancilla_failure_shots,
         any_failure_shots,
         identity_rows: cases.identity_rows,
+        window_selections: n,
         phase_garbage_batches,
         ancilla_garbage_batches,
         fail_reason,
@@ -1206,9 +1300,14 @@ fn main() {
 
     if std::env::var_os("WINDOWED_MODE").is_some() {
         let window_bits = quantum_ecc::windowed_table::window_bits_from_env();
-        if regs.len() != 3 {
+        let rows = 1usize << window_bits;
+        let expected_registers = 3 + 2 * rows;
+        if regs.len() != expected_registers {
             fail_and_exit(
-                &format!("windowed mode expected 3 quantum registers, got {}", regs.len()),
+                &format!(
+                    "windowed mode expected {expected_registers} registers (X, Y, J, and {rows} classical point-table rows), got {}",
+                    regs.len()
+                ),
                 &note,
                 ops.len(),
                 total_qubits,
@@ -1238,6 +1337,30 @@ fn main() {
                 );
             }
         }
+        for index in 3..expected_registers {
+            if regs[index].len() != 256 {
+                fail_and_exit(
+                    &format!(
+                        "windowed table register {index} should be 256 bits wide, got {}",
+                        regs[index].len()
+                    ),
+                    &note,
+                    ops.len(),
+                    total_qubits,
+                );
+            }
+            if regs[index]
+                .iter()
+                .any(|item| !matches!(item, QubitOrBit::Bit(_)))
+            {
+                fail_and_exit(
+                    &format!("windowed table register {index} must contain only classical bits"),
+                    &note,
+                    ops.len(),
+                    total_qubits,
+                );
+            }
+        }
 
         let tests = std::env::var("WINDOWED_TESTS")
             .ok()
@@ -1251,14 +1374,19 @@ fn main() {
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(1);
+        let sequence_calls = std::env::var("WINDOWED_SEQUENCE_CALLS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1)
+            .max(1);
         println!("  qubits      : {total_qubits}");
         println!("  bits        : {num_bits}");
         println!(
-            "\n-- coherent {window_bits}-bit window tests ({tests} shots; allowed error {:.4}%) --",
+            "\n-- coherent {window_bits}-bit window tests ({tests} shots x {sequence_calls} correlated calls; allowed error {:.4}%) --",
             100.0 * max_error_rate,
         );
         let xof = evaluation_seed(&ops);
-        let report = if evaluator_threads > 1 {
+        let report = if evaluator_threads > 1 && sequence_calls == 1 {
             run_windowed_tests_parallel(
                 &ops,
                 &regs,
@@ -1278,6 +1406,7 @@ fn main() {
                 xof,
                 tests,
                 window_bits,
+                sequence_calls,
             )
         };
         let denom = report.n_shots.max(1) as f64;
@@ -1290,10 +1419,11 @@ fn main() {
                 / denom;
         let any_failure_rate = report.any_failure_shots as f64 / denom;
         println!("  tested shots            : {}", report.n_shots);
+        println!("  calls per shot          : {sequence_calls}");
         println!(
             "  identity-table rows     : {} ({:.4}%)",
             report.identity_rows,
-            100.0 * report.identity_rows as f64 / denom,
+            100.0 * report.identity_rows as f64 / report.window_selections.max(1) as f64,
         );
         println!(
             "  classical mismatches    : {} ({:.4}%)",

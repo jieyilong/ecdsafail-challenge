@@ -598,6 +598,17 @@ impl B {
         op.q_target = tgt;
         self.push_op(op);
     }
+    fn cx_if(&mut self, ctrl: QubitId, tgt: QubitId, cond: BitId) {
+        if ctrl == tgt {
+            panic!("invalid CX with aliased control/target {:?}", ctrl);
+        }
+        let mut op = Op::empty();
+        op.kind = OperationType::CX;
+        op.q_control1 = ctrl;
+        op.q_target = tgt;
+        op.c_condition = cond;
+        self.push_op(op);
+    }
     #[track_caller]
     fn ccx(&mut self, c1: QubitId, c2: QubitId, tgt: QubitId) {
         if c1 == c2 {

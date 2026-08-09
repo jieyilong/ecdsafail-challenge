@@ -1823,7 +1823,7 @@ fn apply_step_reverse(
     }
 }
 
-fn controlled_mod_sub_vented(circ: &mut B, ctrl: &QubitId, x: &[QubitId], y: &[QubitId], sched_k: Option<usize>) {
+pub(crate) fn controlled_mod_sub_vented(circ: &mut B, ctrl: &QubitId, x: &[QubitId], y: &[QubitId], sched_k: Option<usize>) {
     let n = x.len();
     assert_eq!(y.len(), n, "x,y equal width");
     let f_bytes = F_SECP256K1.to_le_bytes();

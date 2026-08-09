@@ -229,21 +229,60 @@ fn flipped(op: ShiftOp) -> ShiftOp {
     }
 }
 
-fn apply_full_width(circ: &mut B, operand: &[QubitId], output_reg: &[QubitId], op: ShiftOp) {
+fn apply_full_width(
+    circ: &mut B,
+    operand: &[QubitId],
+    output_reg: &[QubitId],
+    op: ShiftOp,
+    ctrl: Option<&QubitId>,
+) {
     assert_eq!(operand.len(), N, "full-width modular operand must be 256 bits");
-    match op {
-        ShiftOp::Add => mod_add_lowpeak(circ, operand, output_reg),
-        ShiftOp::Sub => mod_sub(circ, operand, output_reg),
+    let controlled_schedule = || {
+        Some(
+            std::env::var("WINDOWED_SQUARE_CTRL_K")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(200),
+        )
+    };
+    match (op, ctrl) {
+        (ShiftOp::Add, None) => mod_add_lowpeak(circ, operand, output_reg),
+        (ShiftOp::Sub, None) => mod_sub(circ, operand, output_reg),
+        (ShiftOp::Add, Some(ctrl)) => {
+            arith::controlled_mod_add_k(
+                circ,
+                ctrl,
+                operand,
+                output_reg,
+                controlled_schedule(),
+                None,
+            )
+        }
+        (ShiftOp::Sub, Some(ctrl)) => {
+            super::gcd::controlled_mod_sub_vented(
+                circ,
+                ctrl,
+                operand,
+                output_reg,
+                controlled_schedule(),
+            )
+        }
     }
 }
 
-fn apply_unshifted_value(circ: &mut B, value: &[QubitId], output_reg: &[QubitId], op: ShiftOp) {
+fn apply_unshifted_value(
+    circ: &mut B,
+    value: &[QubitId],
+    output_reg: &[QubitId],
+    op: ShiftOp,
+    ctrl: Option<&QubitId>,
+) {
     assert!(value.len() <= N, "unshifted value must fit in 256 bits");
     let pads = alloc_zeroes(circ, N - value.len());
     let mut operand = Vec::with_capacity(N);
     operand.extend_from_slice(value);
     operand.extend_from_slice(&pads);
-    apply_full_width(circ, &operand, output_reg, op);
+    apply_full_width(circ, &operand, output_reg, op, ctrl);
     free_zeroes(circ, pads);
 }
 
@@ -253,6 +292,7 @@ fn apply_shifted_value_direct(
     output_reg: &[QubitId],
     shift: usize,
     op: ShiftOp,
+    ctrl: Option<&QubitId>,
 ) {
     assert!(value.len() + shift <= N, "shifted value must fit in 256 bits");
     let low_pads = alloc_zeroes(circ, shift);
@@ -261,7 +301,7 @@ fn apply_shifted_value_direct(
     operand.extend_from_slice(&low_pads);
     operand.extend_from_slice(value);
     operand.extend_from_slice(&high_pads);
-    apply_full_width(circ, &operand, output_reg, op);
+    apply_full_width(circ, &operand, output_reg, op, ctrl);
     free_zeroes(circ, high_pads);
     free_zeroes(circ, low_pads);
 }
@@ -272,10 +312,11 @@ fn apply_shifted_value_low(
     output_reg: &[QubitId],
     shift: usize,
     op: ShiftOp,
+    ctrl: Option<&QubitId>,
 ) {
     assert!(value.len() + shift <= N, "shifted value must fit in 256 bits");
     if shift == 0 {
-        apply_unshifted_value(circ, value, output_reg, op);
+        apply_unshifted_value(circ, value, output_reg, op, ctrl);
         return;
     }
 
@@ -283,9 +324,19 @@ fn apply_shifted_value_low(
     let mut operand = Vec::with_capacity(N - shift);
     operand.extend_from_slice(value);
     operand.extend_from_slice(&high_pads);
-    match op {
-        ShiftOp::Add => mod_add_shifted_low(circ, &operand, output_reg, shift),
-        ShiftOp::Sub => mod_sub_shifted_low(circ, &operand, output_reg, shift),
+    match ctrl {
+        None => match op {
+            ShiftOp::Add => mod_add_shifted_low(circ, &operand, output_reg, shift),
+            ShiftOp::Sub => mod_sub_shifted_low(circ, &operand, output_reg, shift),
+        },
+        Some(ctrl) => {
+            let low_pads = alloc_zeroes(circ, shift);
+            let mut full_operand = Vec::with_capacity(N);
+            full_operand.extend_from_slice(&low_pads);
+            full_operand.extend_from_slice(&operand);
+            apply_full_width(circ, &full_operand, output_reg, op, Some(ctrl));
+            free_zeroes(circ, low_pads);
+        }
     }
     free_zeroes(circ, high_pads);
 }
@@ -297,7 +348,14 @@ fn env_tag_enabled(var: &str, tag: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn apply_f_times_value_tagged(circ: &mut B, value: &[QubitId], output_reg: &[QubitId], op: ShiftOp, tag: &str) {
+fn apply_f_times_value_tagged(
+    circ: &mut B,
+    value: &[QubitId],
+    output_reg: &[QubitId],
+    op: ShiftOp,
+    tag: &str,
+    ctrl: Option<&QubitId>,
+) {
     assert!(value.len() <= N, "f-fold value must fit in 256 bits");
     if value.len() + 32 <= N
         && (std::env::var("TLM_SQUARE_F_RAMP10_DIRECT32").ok().as_deref() == Some("1")
@@ -321,7 +379,7 @@ fn apply_f_times_value_tagged(circ: &mut B, value: &[QubitId], output_reg: &[Qub
                 arith::mod_double(circ, &ext);
                 shifted += 1;
             }
-            apply_full_width(circ, &ext[..N], output_reg, term_op);
+            apply_full_width(circ, &ext[..N], output_reg, term_op, ctrl);
         }
         while shifted > 0 {
             arith::mod_double_reverse(circ, &ext);
@@ -333,7 +391,7 @@ fn apply_f_times_value_tagged(circ: &mut B, value: &[QubitId], output_reg: &[Qub
             ShiftOp::Sub => ShiftOp::Sub,
             ShiftOp::Add => ShiftOp::Add,
         };
-        apply_shifted_value_direct(circ, value, output_reg, 32, term_op);
+        apply_shifted_value_direct(circ, value, output_reg, 32, term_op, ctrl);
         return;
     }
 
@@ -343,7 +401,7 @@ fn apply_f_times_value_tagged(circ: &mut B, value: &[QubitId], output_reg: &[Qub
                 ShiftOp::Sub => sub_f_op,
                 ShiftOp::Add => flipped(sub_f_op),
             };
-            apply_shifted_value_direct(circ, value, output_reg, shift, term_op);
+            apply_shifted_value_direct(circ, value, output_reg, shift, term_op, ctrl);
         }
         return;
     }
@@ -356,7 +414,7 @@ fn apply_f_times_value_tagged(circ: &mut B, value: &[QubitId], output_reg: &[Qub
                 ShiftOp::Sub => sub_f_op,
                 ShiftOp::Add => flipped(sub_f_op),
             };
-            apply_shifted_value_low(circ, value, output_reg, shift, term_op);
+            apply_shifted_value_low(circ, value, output_reg, shift, term_op, ctrl);
         }
         return;
     }
@@ -369,12 +427,12 @@ fn apply_f_times_value_tagged(circ: &mut B, value: &[QubitId], output_reg: &[Qub
                 ShiftOp::Sub => sub_f_op,
                 ShiftOp::Add => flipped(sub_f_op),
             };
-            apply_shifted_value_direct(circ, value, output_reg, shift, term_op);
+            apply_shifted_value_direct(circ, value, output_reg, shift, term_op, ctrl);
         }
         return;
     }
 
-    if value.len() == N {
+    if value.len() == N && ctrl.is_none() {
         for &(shift, sub_f_op) in &F_NAF_TERMS {
             let term_op = match op {
                 ShiftOp::Sub => sub_f_op,
@@ -400,7 +458,7 @@ fn apply_f_times_value_tagged(circ: &mut B, value: &[QubitId], output_reg: &[Qub
             ShiftOp::Sub => sub_f_op,
             ShiftOp::Add => flipped(sub_f_op),
         };
-        apply_full_width(circ, &ext[..N], output_reg, term_op);
+        apply_full_width(circ, &ext[..N], output_reg, term_op, ctrl);
     }
     while shifted > 0 {
         arith::mod_double_reverse(circ, &ext);
@@ -410,11 +468,24 @@ fn apply_f_times_value_tagged(circ: &mut B, value: &[QubitId], output_reg: &[Qub
     free_zeroes(circ, pads);
 }
 
-fn apply_f_times_value(circ: &mut B, value: &[QubitId], output_reg: &[QubitId], op: ShiftOp) {
-    apply_f_times_value_tagged(circ, value, output_reg, op, "generic");
+fn apply_f_times_value(
+    circ: &mut B,
+    value: &[QubitId],
+    output_reg: &[QubitId],
+    op: ShiftOp,
+    ctrl: Option<&QubitId>,
+) {
+    apply_f_times_value_tagged(circ, value, output_reg, op, "generic", ctrl);
 }
 
-fn apply_shifted_128_tagged(circ: &mut B, value: &[QubitId], output_reg: &[QubitId], op: ShiftOp, tag: &str) {
+fn apply_shifted_128_tagged(
+    circ: &mut B,
+    value: &[QubitId],
+    output_reg: &[QubitId],
+    op: ShiftOp,
+    tag: &str,
+    ctrl: Option<&QubitId>,
+) {
     assert!(value.len() <= N + 2, "128-shifted half product must be at most 258 bits");
     let low_len = value.len().min(128);
     let low_pads = alloc_zeroes(circ, 128);
@@ -423,17 +494,17 @@ fn apply_shifted_128_tagged(circ: &mut B, value: &[QubitId], output_reg: &[Qubit
     operand.extend_from_slice(&low_pads);
     operand.extend_from_slice(&value[..low_len]);
     operand.extend_from_slice(&high_pads);
-    apply_full_width(circ, &operand, output_reg, op);
+    apply_full_width(circ, &operand, output_reg, op, ctrl);
     free_zeroes(circ, high_pads);
     free_zeroes(circ, low_pads);
 
     if value.len() > 128 {
         if matches!(tag, "a" | "b" | "c") {
             arith::with_shifted_square_ffg_prefix_scope(|| {
-                apply_f_times_value_tagged(circ, &value[128..], output_reg, op, tag);
+                apply_f_times_value_tagged(circ, &value[128..], output_reg, op, tag, ctrl);
             });
         } else {
-            apply_f_times_value_tagged(circ, &value[128..], output_reg, op, tag);
+            apply_f_times_value_tagged(circ, &value[128..], output_reg, op, tag, ctrl);
         }
     }
 }
@@ -468,7 +539,12 @@ fn unbuild_sum_hi_lo(circ: &mut B, lambda: &[QubitId], sum: Vec<QubitId>) {
     free_zeroes(circ, sum);
 }
 
-pub fn mod_square_sub_pm_secp256k1_symmetric(circ: &mut B, lambda: &[QubitId], output_reg: &[QubitId]) {
+fn mod_square_sub_pm_secp256k1_symmetric_impl(
+    circ: &mut B,
+    lambda: &[QubitId],
+    output_reg: &[QubitId],
+    ctrl: Option<&QubitId>,
+) {
     let n = N;
     assert_eq!(lambda.len(), n, "lambda must be n=256 bits (< q)");
     assert_eq!(output_reg.len(), n, "output must be n=256 bits (< q)");
@@ -480,7 +556,7 @@ pub fn mod_square_sub_pm_secp256k1_symmetric(circ: &mut B, lambda: &[QubitId], o
     let mut c_prod: Vec<QubitId> = Vec::with_capacity(2 * sum.len());
     symmetric_square_into_prod(circ, &sum, &mut c_prod);
     circ.set_phase("square_c_sum_apply_shifted_128_sub");
-    apply_shifted_128_tagged(circ, &c_prod, output_reg, ShiftOp::Sub, "c");
+    apply_shifted_128_tagged(circ, &c_prod, output_reg, ShiftOp::Sub, "c", ctrl);
     circ.set_phase("square_c_sum_unbuild");
     symmetric_square_into_prod_reverse(circ, &sum, c_prod);
 
@@ -489,9 +565,9 @@ pub fn mod_square_sub_pm_secp256k1_symmetric(circ: &mut B, lambda: &[QubitId], o
     let mut a_prod: Vec<QubitId> = Vec::with_capacity(2 * lo.len());
     symmetric_square_into_prod(circ, lo, &mut a_prod);
     circ.set_phase("square_a_lo_apply_unshifted_sub");
-    apply_unshifted_value(circ, &a_prod, output_reg, ShiftOp::Sub);
+    apply_unshifted_value(circ, &a_prod, output_reg, ShiftOp::Sub, ctrl);
     circ.set_phase("square_a_lo_apply_shifted_128_add");
-    apply_shifted_128_tagged(circ, &a_prod, output_reg, ShiftOp::Add, "a");
+    apply_shifted_128_tagged(circ, &a_prod, output_reg, ShiftOp::Add, "a", ctrl);
     circ.set_phase("square_a_lo_unbuild");
     symmetric_square_into_prod_reverse(circ, lo, a_prod);
 
@@ -500,12 +576,29 @@ pub fn mod_square_sub_pm_secp256k1_symmetric(circ: &mut B, lambda: &[QubitId], o
     let mut b_prod: Vec<QubitId> = Vec::with_capacity(2 * hi.len());
     symmetric_square_into_prod(circ, hi, &mut b_prod);
     circ.set_phase("square_b_hi_apply_shifted_128_add");
-    apply_shifted_128_tagged(circ, &b_prod, output_reg, ShiftOp::Add, "b");
+    apply_shifted_128_tagged(circ, &b_prod, output_reg, ShiftOp::Add, "b", ctrl);
     circ.set_phase("square_b_hi_apply_f_times_sub");
-    apply_f_times_value(circ, &b_prod, output_reg, ShiftOp::Sub);
+    apply_f_times_value(circ, &b_prod, output_reg, ShiftOp::Sub, ctrl);
     circ.set_phase("square_b_hi_unbuild");
     symmetric_square_into_prod_reverse(circ, hi, b_prod);
 
     circ.set_phase("square_sum_hi_lo_unbuild");
     unbuild_sum_hi_lo(circ, lambda, sum);
+}
+
+pub fn mod_square_sub_pm_secp256k1_symmetric(
+    circ: &mut B,
+    lambda: &[QubitId],
+    output_reg: &[QubitId],
+) {
+    mod_square_sub_pm_secp256k1_symmetric_impl(circ, lambda, output_reg, None);
+}
+
+pub fn controlled_mod_square_sub_pm_secp256k1_symmetric(
+    circ: &mut B,
+    ctrl: &QubitId,
+    lambda: &[QubitId],
+    output_reg: &[QubitId],
+) {
+    mod_square_sub_pm_secp256k1_symmetric_impl(circ, lambda, output_reg, Some(ctrl));
 }

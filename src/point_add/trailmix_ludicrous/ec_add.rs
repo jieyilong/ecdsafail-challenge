@@ -1,15 +1,17 @@
 use super::arith::{
-    mod_add, mod_add_exact, mod_add_exact_lowpeak, mod_add_lowpeak, mod_neg,
-    mod_rsub_vented_loaded, mod_rsub_vented_loaded_lowpeak, mod_sub_classical_low3,
+    mod_add, mod_add_exact, mod_add_lowpeak, mod_add_windowed_lowpeak, mod_neg,
+    mod_rsub_vented_loaded, mod_sub_classical_low3,
     mod_sub_shifted_low, mod_sub_vented, mod_sub_vented_lowpeak,
 };
 use super::gcd::{mod_mul_inverse_in_place, Direction};
 use super::qrom;
-use super::square::mod_square_sub_pm_secp256k1_symmetric;
+use super::square::{
+    controlled_mod_square_sub_pm_secp256k1_symmetric,
+    mod_square_sub_pm_secp256k1_symmetric,
+};
 use super::{BExt, B};
 use crate::circuit::{BitId, QubitId};
 use crate::point_add::{arith::mod_const_minus_reg_qb, SECP256K1_P};
-use crate::windowed_table::WindowTable;
 
 const N: usize = 256;
 
@@ -309,8 +311,8 @@ pub fn ec_add(circ: &mut B, x2: &mut Vec<QubitId>, y2: &[QubitId], ox: &[BitId],
 fn qrom_coord_differences(
     circ: &mut B,
     address: &[QubitId],
-    x_table: &[alloy_primitives::U256],
-    y_table: &[alloy_primitives::U256],
+    x_table: &[Vec<BitId>],
+    y_table: &[Vec<BitId>],
     x: &[QubitId],
     y: &[QubitId],
 ) {
@@ -330,7 +332,7 @@ fn qrom_coord_differences(
     mod_sub_vented_lowpeak(circ, &x_temp, x);
     circ.set_phase("tlm_coord_y_sub");
     mod_sub_vented_lowpeak(circ, &y_temp, y);
-    qrom::measurement_unload_two_words(
+    qrom::unload_two_words(
         circ,
         address,
         &x_temp,
@@ -346,14 +348,14 @@ fn qrom_coord_differences(
 fn qrom_coord_add3x(
     circ: &mut B,
     address: &[QubitId],
-    table: &[alloy_primitives::U256],
+    table: &[Vec<BitId>],
     dst: &[QubitId],
 ) {
-    let temp = circ.alloc_qubits(N);
+    let temp = circ.alloc_qubits(N + 1);
     let workspace = qrom::load_word(
         circ,
         address,
-        &temp,
+        &temp[..N],
         table,
         "window_qrom_3x_load_walk",
         "window_qrom_3x_load_clear",
@@ -361,19 +363,33 @@ fn qrom_coord_add3x(
     circ.set_phase("tlm_coord_add3x");
     if std::env::var("TLM_COORD_ADD3X_TRUNC").ok().as_deref() == Some("1") {
         if workspace.retains_payload_bank() {
-            mod_add_lowpeak(circ, &temp, dst);
+            mod_add_lowpeak(circ, &temp[..N], dst);
         } else {
-            mod_add(circ, &temp, dst);
+            mod_add(circ, &temp[..N], dst);
         }
     } else if workspace.retains_payload_bank() {
-        mod_add_exact_lowpeak(circ, &temp, dst);
+        mod_add_windowed_lowpeak(circ, &temp[..N], dst);
     } else {
-        mod_add_exact(circ, &temp, dst);
+        mod_add_exact(circ, &temp[..N], dst);
     }
-    qrom::measurement_unload_word(
+    super::arith::mod_double(circ, &temp);
+    if std::env::var("TLM_COORD_ADD3X_TRUNC").ok().as_deref() == Some("1") {
+        if workspace.retains_payload_bank() {
+            mod_add_lowpeak(circ, &temp[..N], dst);
+        } else {
+            mod_add(circ, &temp[..N], dst);
+        }
+    } else if workspace.retains_payload_bank() {
+        mod_add_windowed_lowpeak(circ, &temp[..N], dst);
+    } else {
+        mod_add_exact(circ, &temp[..N], dst);
+    }
+    super::arith::mod_double_reverse(circ, &temp);
+    circ.zero_and_free(temp[N]);
+    qrom::unload_word(
         circ,
         address,
-        &temp,
+        &temp[..N],
         table,
         workspace,
         "window_qrom_3x_unload_walk",
@@ -384,10 +400,11 @@ fn qrom_coord_add3x(
 fn qrom_coord_recover(
     circ: &mut B,
     address: &[QubitId],
-    y_table: &[alloy_primitives::U256],
-    x_plus_one_table: &[alloy_primitives::U256],
+    y_table: &[Vec<BitId>],
+    x_table: &[Vec<BitId>],
     y: &[QubitId],
     x: &[QubitId],
+    nonzero: &QubitId,
 ) {
     let y_temp = circ.alloc_qubits(N);
     let x_temp = circ.alloc_qubits(N);
@@ -397,25 +414,42 @@ fn qrom_coord_recover(
         &y_temp,
         y_table,
         &x_temp,
-        x_plus_one_table,
+        x_table,
         "window_qrom_recover_load_walk",
         "window_qrom_recover_load_clear",
     );
     circ.set_phase("tlm_coord_y_sub_final");
     mod_sub_vented_lowpeak(circ, &y_temp, y);
-    circ.set_phase("tlm_coord_rsub_final");
-    mod_rsub_vented_loaded_lowpeak(circ, &x_temp, x);
-    qrom::measurement_unload_two_words(
+    circ.set_phase("window_recover_controlled_neg");
+    super::arith::controlled_mod_neg(circ, nonzero, x);
+    circ.set_phase("window_recover_x_add");
+    mod_add_windowed_lowpeak(circ, &x_temp, x);
+    qrom::unload_two_words(
         circ,
         address,
         &y_temp,
         y_table,
         &x_temp,
-        x_plus_one_table,
+        x_table,
         workspace,
         "window_qrom_recover_unload_measure",
         "window_qrom_recover_unload_clear",
     );
+}
+
+fn toggle_nonzero_address(circ: &mut B, address: &[QubitId], flag: &QubitId) {
+    if address.is_empty() {
+        return;
+    }
+    circ.x(*flag);
+    for &q in address {
+        circ.x(q);
+    }
+    let controls: Vec<&QubitId> = address.iter().collect();
+    super::mcx::mcx_clean_k(circ, &controls, flag);
+    for &q in address {
+        circ.x(q);
+    }
 }
 
 /// Coherent window-address variant of the 8e9c9a2 arithmetic pipeline.
@@ -426,22 +460,27 @@ pub fn ec_add_windowed(
     x2: &mut Vec<QubitId>,
     y2: &[QubitId],
     address: &[QubitId],
-    table: &WindowTable,
+    x_table: &[Vec<BitId>],
+    y_table: &[Vec<BitId>],
 ) {
     assert_eq!(x2.len(), N, "x2 is 256 bits");
     assert_eq!(y2.len(), N, "y2 is 256 bits");
-    assert_eq!(table.len(), 1usize << address.len());
+    assert_eq!(x_table.len(), 1usize << address.len());
+    assert_eq!(y_table.len(), x_table.len());
 
-    qrom_coord_differences(circ, address, &table.x, &table.y, x2, &y2[..N]);
+    let nonzero = circ.alloc_qubit();
+    toggle_nonzero_address(circ, address, &nonzero);
+
+    qrom_coord_differences(circ, address, x_table, y_table, x2, &y2[..N]);
 
     circ.set_phase("tlm_inverse");
     let xv = std::mem::take(x2);
     *x2 = mod_mul_inverse_in_place(circ, xv, y2, Direction::Inverse);
 
-    qrom_coord_add3x(circ, address, &table.three_x, x2);
+    qrom_coord_add3x(circ, address, x_table, x2);
 
     circ.set_phase("tlm_square");
-    mod_square_sub_pm_secp256k1_symmetric(circ, &y2[..N], x2);
+    controlled_mod_square_sub_pm_secp256k1_symmetric(circ, &nonzero, &y2[..N], x2);
 
     circ.set_phase("tlm_forward_multiply");
     let xv = std::mem::take(x2);
@@ -450,11 +489,14 @@ pub fn ec_add_windowed(
     qrom_coord_recover(
         circ,
         address,
-        &table.y,
-        &table.x_plus_one,
+        y_table,
+        x_table,
         &y2[..N],
         x2,
+        &nonzero,
     );
+    toggle_nonzero_address(circ, address, &nonzero);
+    circ.zero_and_free(nonzero);
 }
 
 pub fn build_times3_test() -> (Vec<crate::circuit::Op>, Vec<BitId>, Vec<BitId>) {

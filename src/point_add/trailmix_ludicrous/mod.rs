@@ -467,11 +467,24 @@ pub fn build_trailmix_ludicrous_ops() -> Vec<Op> {
     if windowed {
         let window_bits = crate::windowed_table::window_bits_from_env();
         let address = circ.alloc_qubits(window_bits);
-        let table = crate::windowed_table::WindowTable::new(window_bits);
-        ec_add::ec_add_windowed(&mut circ, &mut x2m, &y2, &address, &table);
+        let rows = 1usize << window_bits;
+        let x_table: Vec<Vec<BitId>> = (0..rows).map(|_| circ.alloc_bits(N)).collect();
+        let y_table: Vec<Vec<BitId>> = (0..rows).map(|_| circ.alloc_bits(N)).collect();
+        ec_add::ec_add_windowed(
+            &mut circ,
+            &mut x2m,
+            &y2,
+            &address,
+            &x_table,
+            &y_table,
+        );
         circ.declare_qubit_register(&x2_init);
         circ.declare_qubit_register(&y2);
         circ.declare_qubit_register(&address);
+        for row in 0..rows {
+            circ.declare_bit_register(&x_table[row]);
+            circ.declare_bit_register(&y_table[row]);
+        }
         input_qubits.extend_from_slice(&address);
     } else {
         let ox = circ.alloc_bits(N);

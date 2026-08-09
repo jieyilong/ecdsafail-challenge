@@ -8,8 +8,6 @@ pub const DEFAULT_WINDOW_BITS: usize = 16;
 pub struct WindowTable {
     pub x: Vec<U256>,
     pub y: Vec<U256>,
-    pub three_x: Vec<U256>,
-    pub x_plus_one: Vec<U256>,
 }
 
 pub fn window_bits_from_env() -> usize {
@@ -17,7 +15,7 @@ pub fn window_bits_from_env() -> usize {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(DEFAULT_WINDOW_BITS);
-    assert!((1..=16).contains(&width), "WINDOW_BITS must lie in 1..=16");
+    assert!(width <= 16, "WINDOW_BITS must lie in 0..=16");
     width
 }
 
@@ -49,11 +47,11 @@ pub fn secp256k1() -> WeierstrassEllipticCurve {
 }
 
 impl WindowTable {
-    /// Builds T[j] = [j]G. Row zero is the elliptic-curve identity and is
-    /// intentionally retained so the experimental evaluator measures the
-    /// generic mixed-adder's unsupported identity case instead of hiding it.
+    /// Builds T[j] = [j]G. Row zero is the elliptic-curve identity. The
+    /// windowed adapter handles it coherently by disabling the coordinate
+    /// updates that are defined only for nonidentity addends.
     pub fn new(window_bits: usize) -> Self {
-        assert!((1..=16).contains(&window_bits));
+        assert!(window_bits <= 16);
         let rows = 1usize << window_bits;
         let curve = secp256k1();
         let mut x = Vec::with_capacity(rows);
@@ -64,19 +62,7 @@ impl WindowTable {
             y.push(point.1);
             point = curve.add(point.0, point.1, curve.gx, curve.gy);
         }
-        let three = U256::from(3);
-        let one = U256::from(1);
-        let three_x = x
-            .iter()
-            .map(|value| value.mul_mod(three, curve.modulus))
-            .collect();
-        let x_plus_one = x.iter().map(|value| *value + one).collect();
-        Self {
-            x,
-            y,
-            three_x,
-            x_plus_one,
-        }
+        Self { x, y }
     }
 
     pub fn len(&self) -> usize {
