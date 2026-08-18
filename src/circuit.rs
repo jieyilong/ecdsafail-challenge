@@ -112,6 +112,21 @@ pub struct Op {
     pub r_target: RegisterId,
 }
 
+/// A simulation-time operation representation.
+///
+/// The trusted evaluator implements this trait for a compact, validated
+/// encoding so very large op streams need not retain a full [`Op`] per gate.
+pub trait OpView {
+    fn to_op(&self) -> Op;
+}
+
+impl OpView for Op {
+    #[inline(always)]
+    fn to_op(&self) -> Op {
+        *self
+    }
+}
+
 impl Op {
     pub fn empty() -> Self {
         Self {
@@ -385,5 +400,4 @@ pub fn analyze_ops<'b>(ops: impl Iterator<Item = &'b Op>) -> (u64, u64, u64, Vec
 
     (num_qubits, num_bits, num_registers, registers)
 }
-
 

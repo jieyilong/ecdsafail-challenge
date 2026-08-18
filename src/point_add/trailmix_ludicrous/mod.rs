@@ -470,6 +470,8 @@ pub fn build_trailmix_ludicrous_ops() -> Vec<Op> {
         let rows = 1usize << window_bits;
         let x_table: Vec<Vec<BitId>> = (0..rows).map(|_| circ.alloc_bits(N)).collect();
         let y_table: Vec<Vec<BitId>> = (0..rows).map(|_| circ.alloc_bits(N)).collect();
+        let three_x_table: Vec<Vec<BitId>> =
+            (0..rows).map(|_| circ.alloc_bits(N)).collect();
         ec_add::ec_add_windowed(
             &mut circ,
             &mut x2m,
@@ -477,6 +479,7 @@ pub fn build_trailmix_ludicrous_ops() -> Vec<Op> {
             &address,
             &x_table,
             &y_table,
+            &three_x_table,
         );
         circ.declare_qubit_register(&x2_init);
         circ.declare_qubit_register(&y2);
@@ -484,6 +487,7 @@ pub fn build_trailmix_ludicrous_ops() -> Vec<Op> {
         for row in 0..rows {
             circ.declare_bit_register(&x_table[row]);
             circ.declare_bit_register(&y_table[row]);
+            circ.declare_bit_register(&three_x_table[row]);
         }
         input_qubits.extend_from_slice(&address);
     } else {

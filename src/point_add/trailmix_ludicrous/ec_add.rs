@@ -345,17 +345,20 @@ fn qrom_coord_differences(
     );
 }
 
-fn qrom_coord_add3x(
+/// Adds a precomputed field value 3*x_j mod p selected by the coherent address.
+/// Keeping this as a separate classical table column removes the reversible
+/// double/add/uncompute sequence previously used to derive 3*x_j from x_j.
+fn qrom_coord_add_precomputed_3x(
     circ: &mut B,
     address: &[QubitId],
     table: &[Vec<BitId>],
     dst: &[QubitId],
 ) {
-    let temp = circ.alloc_qubits(N + 1);
+    let temp = circ.alloc_qubits(N);
     let workspace = qrom::load_word(
         circ,
         address,
-        &temp[..N],
+        &temp,
         table,
         "window_qrom_3x_load_walk",
         "window_qrom_3x_load_clear",
@@ -363,33 +366,19 @@ fn qrom_coord_add3x(
     circ.set_phase("tlm_coord_add3x");
     if std::env::var("TLM_COORD_ADD3X_TRUNC").ok().as_deref() == Some("1") {
         if workspace.retains_payload_bank() {
-            mod_add_lowpeak(circ, &temp[..N], dst);
+            mod_add_lowpeak(circ, &temp, dst);
         } else {
-            mod_add(circ, &temp[..N], dst);
+            mod_add(circ, &temp, dst);
         }
     } else if workspace.retains_payload_bank() {
-        mod_add_windowed_lowpeak(circ, &temp[..N], dst);
+        mod_add_windowed_lowpeak(circ, &temp, dst);
     } else {
-        mod_add_exact(circ, &temp[..N], dst);
+        mod_add_exact(circ, &temp, dst);
     }
-    super::arith::mod_double(circ, &temp);
-    if std::env::var("TLM_COORD_ADD3X_TRUNC").ok().as_deref() == Some("1") {
-        if workspace.retains_payload_bank() {
-            mod_add_lowpeak(circ, &temp[..N], dst);
-        } else {
-            mod_add(circ, &temp[..N], dst);
-        }
-    } else if workspace.retains_payload_bank() {
-        mod_add_windowed_lowpeak(circ, &temp[..N], dst);
-    } else {
-        mod_add_exact(circ, &temp[..N], dst);
-    }
-    super::arith::mod_double_reverse(circ, &temp);
-    circ.zero_and_free(temp[N]);
     qrom::unload_word(
         circ,
         address,
-        &temp[..N],
+        &temp,
         table,
         workspace,
         "window_qrom_3x_unload_walk",
@@ -462,11 +451,13 @@ pub fn ec_add_windowed(
     address: &[QubitId],
     x_table: &[Vec<BitId>],
     y_table: &[Vec<BitId>],
+    three_x_table: &[Vec<BitId>],
 ) {
     assert_eq!(x2.len(), N, "x2 is 256 bits");
     assert_eq!(y2.len(), N, "y2 is 256 bits");
     assert_eq!(x_table.len(), 1usize << address.len());
     assert_eq!(y_table.len(), x_table.len());
+    assert_eq!(three_x_table.len(), x_table.len());
 
     let nonzero = circ.alloc_qubit();
     toggle_nonzero_address(circ, address, &nonzero);
@@ -477,7 +468,7 @@ pub fn ec_add_windowed(
     let xv = std::mem::take(x2);
     *x2 = mod_mul_inverse_in_place(circ, xv, y2, Direction::Inverse);
 
-    qrom_coord_add3x(circ, address, x_table, x2);
+    qrom_coord_add_precomputed_3x(circ, address, three_x_table, x2);
 
     circ.set_phase("tlm_square");
     controlled_mod_square_sub_pm_secp256k1_symmetric(circ, &nonzero, &y2[..N], x2);

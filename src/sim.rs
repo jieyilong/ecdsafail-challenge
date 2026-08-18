@@ -1,7 +1,7 @@
 /// This file contains code for simulating kickmix circuits.
 
 
-use crate::circuit::{BitId, Op, OperationType, QubitId, NO_BIT};
+use crate::circuit::{BitId, OpView, OperationType, QubitId, NO_BIT};
 use ruint::aliases::U256;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,20 +68,21 @@ impl<'a, R: sha3::digest::XofReader> Simulator<'a, R> {
         self.phase = 0;
     }
 
-    pub fn apply_iter<'b>(&mut self, ops: impl Iterator<Item = &'b Op>) {
+    pub fn apply_iter<'b, O: OpView + 'b>(&mut self, ops: impl Iterator<Item = &'b O>) {
         self.apply_iter_masked(ops, u64::MAX);
     }
 
-    pub fn apply_iter_masked<'b>(
+    pub fn apply_iter_masked<'b, O: OpView + 'b>(
         &mut self,
-        ops: impl Iterator<Item = &'b Op>,
+        ops: impl Iterator<Item = &'b O>,
         active_shots: u64,
     ) {
 
         let mut condition_stack = Vec::new();
         let mut current_base_condition = active_shots;
 
-        for op in ops {
+        for encoded_op in ops {
+            let op = encoded_op.to_op();
             let mut cond = current_base_condition;
             if op.c_condition != NO_BIT {
                 cond &= self.bit(op.c_condition);

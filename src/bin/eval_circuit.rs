@@ -12,7 +12,8 @@
 
 use alloy_primitives::U256;
 use quantum_ecc::circuit::{
-    analyze_ops, BitId, Op, OperationType, QubitId, QubitOrBit, RegisterId,
+    analyze_ops, BitId, Op, OperationType, OpView, QubitId, QubitOrBit, RegisterId, NO_BIT,
+    NO_QUBIT, NO_REG,
 };
 use quantum_ecc::sim::Simulator;
 use quantum_ecc::weierstrass_elliptic_curve::WeierstrassEllipticCurve;
@@ -94,11 +95,105 @@ fn op_kind_from_u32(v: u32) -> Option<OperationType> {
     })
 }
 
+/// Validated executable-op encoding used only by the trusted evaluator.
+///
+/// Register metadata is analyzed while streaming `ops.bin` and is not retained
+/// here. The remaining circuit fits in 16 bytes per operation instead of the
+/// 56-byte native representation, without changing gate semantics or counts.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CompactOp {
+    c_target: u32,
+    c_condition: u32,
+    q_control2: u16,
+    q_control1: u16,
+    q_target: u16,
+    kind: u8,
+    _padding: u8,
+}
+
+impl CompactOp {
+    fn from_validated(op: Op, index: usize) -> Result<Self, String> {
+        fn encode_qubit(id: QubitId, index: usize, field: &str) -> Result<u16, String> {
+            if id == NO_QUBIT {
+                return Ok(u16::MAX);
+            }
+            let encoded = u16::try_from(id.0)
+                .map_err(|_| format!("op {index}: {field} q{} exceeds compact cap", id.0))?;
+            if encoded == u16::MAX {
+                return Err(format!("op {index}: {field} uses reserved compact sentinel"));
+            }
+            Ok(encoded)
+        }
+
+        fn encode_bit(id: BitId, index: usize, field: &str) -> Result<u32, String> {
+            if id == NO_BIT {
+                return Ok(u32::MAX);
+            }
+            let encoded = u32::try_from(id.0)
+                .map_err(|_| format!("op {index}: {field} b{} exceeds compact cap", id.0))?;
+            if encoded == u32::MAX {
+                return Err(format!("op {index}: {field} uses reserved compact sentinel"));
+            }
+            Ok(encoded)
+        }
+
+        debug_assert_eq!(op.r_target, NO_REG);
+        Ok(Self {
+            c_target: encode_bit(op.c_target, index, "c_target")?,
+            c_condition: encode_bit(op.c_condition, index, "c_condition")?,
+            q_control2: encode_qubit(op.q_control2, index, "q_control2")?,
+            q_control1: encode_qubit(op.q_control1, index, "q_control1")?,
+            q_target: encode_qubit(op.q_target, index, "q_target")?,
+            kind: op.kind as u8,
+            _padding: 0,
+        })
+    }
+}
+
+impl OpView for CompactOp {
+    #[inline(always)]
+    fn to_op(&self) -> Op {
+        let decode_qubit = |value: u16| {
+            if value == u16::MAX {
+                NO_QUBIT
+            } else {
+                QubitId(u64::from(value))
+            }
+        };
+        let decode_bit = |value: u32| {
+            if value == u32::MAX {
+                NO_BIT
+            } else {
+                BitId(u64::from(value))
+            }
+        };
+        Op {
+            kind: op_kind_from_u32(u32::from(self.kind)).expect("validated compact op kind"),
+            q_control2: decode_qubit(self.q_control2),
+            q_control1: decode_qubit(self.q_control1),
+            q_target: decode_qubit(self.q_target),
+            c_target: decode_bit(self.c_target),
+            c_condition: decode_bit(self.c_condition),
+            r_target: NO_REG,
+        }
+    }
+}
+
 fn read_u64(bytes: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap())
 }
 
-fn load_ops(path: &str) -> Result<Vec<Op>, String> {
+type OpAnalysis = (u64, u64, u64, Vec<Vec<QubitOrBit>>);
+
+struct LoadedOps {
+    ops: Vec<Op>,
+    compact_ops: Option<Vec<CompactOp>>,
+    emitted_ops: usize,
+    compact_analysis: Option<OpAnalysis>,
+}
+
+fn load_ops(path: &str) -> Result<LoadedOps, String> {
     let mut file = File::open(path).map_err(|e| format!("open {path}: {e}"))?;
 
     // Plaintext header: MAGIC + u64 op count. Read and validate before
@@ -114,6 +209,13 @@ fn load_ops(path: &str) -> Result<Vec<Op>, String> {
         return Err(format!("{path}: op count {n} exceeds cap {MAX_OPS}"));
     }
     let n = n as usize;
+    let compact_metadata = std::env::var_os("EVAL_COMPACT_METADATA").is_some();
+    if compact_metadata && std::env::var_os("EVAL_SHARED_SEED").is_none() {
+        return Err(
+            "EVAL_COMPACT_METADATA requires EVAL_SHARED_SEED so metadata removal cannot alter the evaluation corpus"
+                .to_string(),
+        );
+    }
 
     // Stream-decompress the record body. We read exactly n * OP_BYTES bytes
     // out of the decoder, so a forged frame cannot expand without bound; the
@@ -123,7 +225,24 @@ fn load_ops(path: &str) -> Result<Vec<Op>, String> {
     dec.window_log_max(ZSTD_WINDOW_LOG_MAX)
         .map_err(|e| format!("{path}: zstd window cap: {e}"))?;
 
-    let mut ops = Vec::with_capacity(n);
+    let executable_capacity = if compact_metadata {
+        let window_bits = quantum_ecc::windowed_table::window_bits_from_env();
+        let rows = 1usize << window_bits;
+        let register_metadata = (3 + 3 * rows) + (512 + window_bits + 3 * rows * 256);
+        n.saturating_sub(register_metadata)
+    } else {
+        n
+    };
+    let mut ops = if compact_metadata {
+        Vec::new()
+    } else {
+        Vec::with_capacity(executable_capacity)
+    };
+    let mut compact_ops = compact_metadata.then(|| Vec::with_capacity(executable_capacity));
+    let mut registers: Vec<Vec<QubitOrBit>> = Vec::new();
+    let mut num_qubits = 0u64;
+    let mut num_bits = 0u64;
+    let mut num_registers = 0u64;
     let mut rec = [0u8; OP_BYTES];
     for i in 0..n {
         dec.read_exact(&mut rec)
@@ -159,7 +278,49 @@ fn load_ops(path: &str) -> Result<Vec<Op>, String> {
                 .unwrap_or_else(|| "validation panic".to_string());
             return Err(format!("op {i}: {msg}"));
         }
-        ops.push(op);
+        if compact_metadata {
+            if op.q_control2 != NO_QUBIT {
+                num_qubits = num_qubits.max(op.q_control2.0 + 1);
+            }
+            if op.q_control1 != NO_QUBIT {
+                num_qubits = num_qubits.max(op.q_control1.0 + 1);
+            }
+            if op.q_target != NO_QUBIT {
+                num_qubits = num_qubits.max(op.q_target.0 + 1);
+            }
+            if op.c_target != NO_BIT {
+                num_bits = num_bits.max(op.c_target.0 + 1);
+            }
+            if op.c_condition != NO_BIT {
+                num_bits = num_bits.max(op.c_condition.0 + 1);
+            }
+            if op.r_target != NO_REG {
+                num_registers = num_registers.max(op.r_target.0 + 1);
+                while registers.len() <= op.r_target.0 as usize {
+                    registers.push(Vec::new());
+                }
+            }
+            if op.kind == OperationType::AppendToRegister {
+                if op.q_target != NO_QUBIT {
+                    registers[op.r_target.0 as usize].push(QubitOrBit::Qubit(op.q_target));
+                }
+                if op.c_target != NO_BIT {
+                    registers[op.r_target.0 as usize].push(QubitOrBit::Bit(op.c_target));
+                }
+            }
+        }
+        if !matches!(
+            op.kind,
+            OperationType::Register | OperationType::AppendToRegister | OperationType::DebugPrint
+        ) {
+            if let Some(compact_ops) = &mut compact_ops {
+                compact_ops.push(CompactOp::from_validated(op, i)?);
+            } else {
+                ops.push(op);
+            }
+        } else if !compact_metadata {
+            ops.push(op);
+        }
     }
 
     // Reject trailing data: exactly n records must decompress, no more.
@@ -169,7 +330,18 @@ fn load_ops(path: &str) -> Result<Vec<Op>, String> {
         Ok(_) => return Err(format!("{path}: trailing data after {n} ops")),
         Err(e) => return Err(format!("{path}: error checking for trailing data: {e}")),
     }
-    Ok(ops)
+    let compact_analysis = compact_metadata.then_some((
+        num_qubits,
+        num_bits,
+        num_registers,
+        registers,
+    ));
+    Ok(LoadedOps {
+        ops,
+        compact_ops,
+        emitted_ops: n,
+        compact_analysis,
+    })
 }
 
 // ─── secp256k1 parameters ──────────────────────────────────────────────────
@@ -462,11 +634,12 @@ impl CheckpointStore {
     }
 }
 
-fn ops_fingerprint(ops: &[Op]) -> String {
+fn ops_fingerprint<O: OpView>(ops: &[O]) -> String {
     let mut hasher = Shake256::default();
     hasher.update(b"quantum_ecc-checkpoint-ops-v1");
     hasher.update(&(ops.len() as u64).to_le_bytes());
-    for op in ops {
+    for encoded_op in ops {
+        let op = encoded_op.to_op();
         hasher.update(&[op.kind as u8]);
         hasher.update(&op.q_control2.0.to_le_bytes());
         hasher.update(&op.q_control1.0.to_le_bytes());
@@ -485,10 +658,11 @@ fn ops_fingerprint(ops: &[Op]) -> String {
     encoded
 }
 
-fn verify_checkpoint_manifest(
+fn verify_checkpoint_manifest<O: OpView>(
     root: &Path,
     interface: PairedWindowInterface,
-    ops: &[Op],
+    ops: &[O],
+    emitted_ops: usize,
     total_qubits: u64,
     target_shots: usize,
     window_bits: usize,
@@ -497,12 +671,13 @@ fn verify_checkpoint_manifest(
     let seed = std::env::var("EVAL_SHARED_SEED")
         .unwrap_or_else(|_| "<circuit-derived-fiat-shamir>".to_string());
     let body = format!(
-        "format\tpaired-window-checkpoint-v1\ninterface\t{}\nseed\t{}\nwindow_bits\t{}\ntarget_shots\t{}\nqubits\t{}\nops\t{}\nops_fingerprint\t{}\n",
+        "format\tpaired-window-checkpoint-v2\ninterface\t{}\nseed\t{}\nwindow_bits\t{}\ntarget_shots\t{}\nqubits\t{}\nemitted_ops\t{}\nexecutable_ops\t{}\nops_fingerprint\t{}\n",
         interface.label(),
         seed,
         window_bits,
         target_shots,
         total_qubits,
+        emitted_ops,
         ops.len(),
         ops_fingerprint(ops),
     );
@@ -621,10 +796,11 @@ fn set_window_table_inputs<R: XofReader>(
     table: &quantum_ecc::windowed_table::WindowTable,
     mask: u64,
 ) {
-    assert_eq!(layout_regs.len(), 3 + 2 * table.len());
+    assert_eq!(layout_regs.len(), 3 + 3 * table.len());
     for row in 0..table.len() {
-        set_register_mask(sim, &layout_regs[3 + 2 * row], table.x[row], mask);
-        set_register_mask(sim, &layout_regs[4 + 2 * row], table.y[row], mask);
+        set_register_mask(sim, &layout_regs[3 + 3 * row], table.x[row], mask);
+        set_register_mask(sim, &layout_regs[4 + 3 * row], table.y[row], mask);
+        set_register_mask(sim, &layout_regs[5 + 3 * row], table.three_x[row], mask);
     }
 }
 
@@ -902,8 +1078,9 @@ fn run_windowed_tests(
     }
 }
 
-fn run_paired_window_tests_parallel(
-    ops: &[Op],
+fn run_paired_window_tests_parallel<O: OpView + Sync>(
+    ops: &[O],
+    emitted_ops: usize,
     layout_regs: &[Vec<QubitOrBit>],
     total_qubits: u64,
     num_bits: u64,
@@ -931,6 +1108,7 @@ fn run_paired_window_tests_parallel(
                 &path,
                 interface,
                 ops,
+                emitted_ops,
                 total_qubits,
                 target_shots,
                 window_bits,
@@ -1185,7 +1363,28 @@ fn run_paired_window_tests_parallel(
         merged.fail_reason = Some("failure details are recorded in the resumed checkpoint".into());
     }
 
-    let denom = n.max(1) as f64;
+    let evaluated_shots = completed_shots.load(Ordering::Relaxed);
+    let completed_batch_ids = if let Some(checkpoint) = &checkpoint {
+        checkpoint
+            .lock()
+            .expect("evaluation checkpoint lock poisoned")
+            .completed_batches
+            .clone()
+    } else if let Some(batch) = only_batch {
+        HashSet::from([batch])
+    } else {
+        (0..num_batches).collect()
+    };
+    let identity_rows = completed_batch_ids
+        .iter()
+        .flat_map(|batch| {
+            let start = batch * BATCH;
+            let end = (start + BATCH).min(n);
+            start..end
+        })
+        .filter(|index| cases.addresses[*index] == 0)
+        .count();
+    let denom = evaluated_shots.max(1) as f64;
     SeedReport {
         ok: merged.classical_failures == 0
             && merged.phase_failure_shots == 0
@@ -1194,13 +1393,13 @@ fn run_paired_window_tests_parallel(
         avg_tof: merged.toffoli_gates as f64 / denom,
         tot_tof: merged.toffoli_gates,
         tot_cliff: merged.clifford_gates,
-        n_shots: n,
+        n_shots: evaluated_shots,
         classical_failures: merged.classical_failures,
         phase_failure_shots: merged.phase_failure_shots,
         ancilla_failure_shots: merged.ancilla_failure_shots,
         any_failure_shots: merged.any_failure_shots,
-        identity_rows: cases.identity_rows,
-        window_selections: n,
+        identity_rows,
+        window_selections: evaluated_shots,
         phase_garbage_batches: merged.phase_garbage_batches,
         ancilla_garbage_batches: merged.ancilla_garbage_batches,
         fail_reason: merged.fail_reason,
@@ -1396,7 +1595,7 @@ fn main() {
     let note = parse_note();
     println!("=== quantum_ecc: eval_circuit (trusted stage) ===\n");
 
-    let ops = match load_ops(OPS_PATH) {
+    let loaded = match load_ops(OPS_PATH) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("!! could not load {OPS_PATH}: {e}");
@@ -1404,22 +1603,35 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!("  loaded ops  : {}", ops.len());
+    let LoadedOps {
+        ops,
+        compact_ops,
+        emitted_ops,
+        compact_analysis,
+    } = loaded;
+    println!("  loaded ops  : {emitted_ops}");
 
-    let (total_qubits, num_bits, _num_regs, regs) = analyze_ops(ops.iter());
+    let (total_qubits, num_bits, _num_regs, regs) =
+        compact_analysis.unwrap_or_else(|| analyze_ops(ops.iter()));
+    if let Some(compact_ops) = &compact_ops {
+        println!(
+            "  compact executable ops after metadata analysis: {}",
+            compact_ops.len()
+        );
+    }
 
     if std::env::var_os("WINDOWED_MODE").is_some() {
         let window_bits = quantum_ecc::windowed_table::window_bits_from_env();
         let rows = 1usize << window_bits;
-        let expected_registers = 3 + 2 * rows;
+        let expected_registers = 3 + 3 * rows;
         if regs.len() != expected_registers {
             fail_and_exit(
                 &format!(
-                    "windowed mode expected {expected_registers} registers (X, Y, J, and {rows} classical point-table rows), got {}",
+                    "windowed mode expected {expected_registers} registers (X, Y, J, and {rows} classical x/y/3x table rows), got {}",
                     regs.len()
                 ),
                 &note,
-                ops.len(),
+                emitted_ops,
                 total_qubits,
             );
         }
@@ -1431,7 +1643,7 @@ fn main() {
                         regs[index].len()
                     ),
                     &note,
-                    ops.len(),
+                    emitted_ops,
                     total_qubits,
                 );
             }
@@ -1442,7 +1654,7 @@ fn main() {
                 fail_and_exit(
                     &format!("windowed register {index} must contain only qubits"),
                     &note,
-                    ops.len(),
+                    emitted_ops,
                     total_qubits,
                 );
             }
@@ -1455,7 +1667,7 @@ fn main() {
                         regs[index].len()
                     ),
                     &note,
-                    ops.len(),
+                    emitted_ops,
                     total_qubits,
                 );
             }
@@ -1466,7 +1678,7 @@ fn main() {
                 fail_and_exit(
                     &format!("windowed table register {index} must contain only classical bits"),
                     &note,
-                    ops.len(),
+                    emitted_ops,
                     total_qubits,
                 );
             }
@@ -1489,6 +1701,14 @@ fn main() {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(1)
             .max(1);
+        if compact_ops.is_some() && sequence_calls != 1 {
+            fail_and_exit(
+                "compact evaluation currently supports one windowed-addition call per shot",
+                &note,
+                emitted_ops,
+                total_qubits,
+            );
+        }
         println!("  qubits      : {total_qubits}");
         println!("  bits        : {num_bits}");
         println!(
@@ -1496,18 +1716,34 @@ fn main() {
             100.0 * max_error_rate,
         );
         let xof = evaluation_seed(&ops);
-        let report = if evaluator_threads > 1 && sequence_calls == 1 {
-            run_paired_window_tests_parallel(
-                &ops,
-                &regs,
-                total_qubits,
-                num_bits,
-                xof,
-                tests,
-                window_bits,
-                PairedWindowInterface::RuntimeTable,
-                evaluator_threads,
-            )
+        let report = if sequence_calls == 1 {
+            if let Some(compact_ops) = &compact_ops {
+                run_paired_window_tests_parallel(
+                    compact_ops,
+                    emitted_ops,
+                    &regs,
+                    total_qubits,
+                    num_bits,
+                    xof,
+                    tests,
+                    window_bits,
+                    PairedWindowInterface::RuntimeTable,
+                    evaluator_threads,
+                )
+            } else {
+                run_paired_window_tests_parallel(
+                    &ops,
+                    emitted_ops,
+                    &regs,
+                    total_qubits,
+                    num_bits,
+                    xof,
+                    tests,
+                    window_bits,
+                    PairedWindowInterface::RuntimeTable,
+                    evaluator_threads,
+                )
+            }
         } else {
             run_windowed_tests(
                 &ops,
@@ -1565,7 +1801,7 @@ fn main() {
         println!("\n=== coherent-window circuit metrics ===");
         println!("  avg executed Toffoli  : {:.3}", report.avg_tof);
         println!("  avg executed Clifford : {:.3}", report.avg_cliff);
-        println!("  emitted ops           : {}", ops.len());
+        println!("  emitted ops           : {emitted_ops}");
         println!("  qubits                : {total_qubits}");
 
         if any_failure_rate > max_error_rate {
@@ -1575,19 +1811,28 @@ fn main() {
                     any_failure_rate, max_error_rate
                 )
             });
-            fail_and_exit(&reason, &note, ops.len(), total_qubits);
+            fail_and_exit(&reason, &note, emitted_ops, total_qubits);
         }
         append_results_row(
             if report.ok { "OK" } else { "OK_APPROX" },
             report.avg_tof,
             report.avg_cliff,
             total_qubits,
-            ops.len(),
+            emitted_ops,
             &note,
         );
         write_score(report.avg_tof, total_qubits);
         println!("\n=== coherent-window experiment OK ===");
         return;
+    }
+
+    if compact_ops.is_some() {
+        fail_and_exit(
+            "EVAL_COMPACT_METADATA is supported only with WINDOWED_MODE",
+            &note,
+            emitted_ops,
+            total_qubits,
+        );
     }
 
     if regs.len() != 4 {
@@ -1652,6 +1897,7 @@ fn main() {
         let report = if evaluator_threads > 1 || std::env::var_os("EVAL_CHECKPOINT_DIR").is_some() {
             run_paired_window_tests_parallel(
                 &ops,
+                emitted_ops,
                 &regs,
                 total_qubits,
                 num_bits,

@@ -8,10 +8,10 @@ addend to the coherent interface
 ```
 
 The emitted ABI contains the quantum registers `X`, `Y`, and `J`, followed by
-`2 * 2^k` classical 256-bit registers containing the `x` and `y` columns of an
-arbitrary point table. The circuit no longer embeds a fixed `[j]G` table in its
-operations: every table-payload operation is conditioned on the corresponding
-runtime classical table bit.
+`3 * 2^w` classical 256-bit table columns containing `x_j`, `y_j`, and
+`3*x_j mod p` for an arbitrary point table. The circuit no longer embeds a
+fixed `[j]G` table in its operations: every table-payload operation is
+conditioned on the corresponding runtime classical table bit.
 
 ## Circuit construction
 
@@ -19,9 +19,9 @@ The selected point is materialized only near each consumer:
 
 1. A shared QROM traversal loads `x_J` and `y_J`, forms the coordinate
    differences, and is replayed to clear both payloads.
-2. A QROM lookup loads `x_J`; the circuit applies `x_J + 2*x_J` to the recycled
-   coordinate register, reverses the doubling, and replays the lookup. Thus
-   `3*x_J` is derived at runtime rather than supplied as another table.
+2. A QROM lookup loads the supplied field column `3*x_J mod p`; the circuit
+   applies one modular addition to the recycled coordinate register and replays
+   the lookup. This replaces the earlier prototype's runtime doubling path.
 3. A shared traversal loads `y_J` and `x_J` for output recovery and is replayed
    exactly after use.
 
@@ -70,38 +70,41 @@ and all non-interface ancillas after every call.
 The fully emitted runtime-table circuit has:
 
 - peak logical width `Q = 1,162`;
-- average executed Toffoli count `T = 1,684,156.770` over 9,024 cases;
-- `213,387,745` emitted operations;
-- `328,180` QROM Toffolis and `167,772,160` table-payload CNOTs;
-- 14 classical mismatches, 10 phase-failure shots, no ancilla failures, and
-  20 shots failing any channel (`0.2216%`).
+- average executed Toffoli count `T = 1,683,828.481` over 100,000 independently
+  seeded cases;
+- `230,225,799` serialized operations, of which `179,697,012` are executable
+  after dropping declaration metadata in the trusted evaluator;
+- `328,180` QROM Toffolis;
+- 151 classical mismatches, 109 phase-failure shots, no ancilla failures, and
+  195 shots failing any channel (`0.1950%`).
 
-The one identity selection in the 9,024-case corpus returned the input point,
-preserved `J=0`, and had no classical, phase, or ancilla failure. The sparse
+The two identity selections in the 100,000-input corpus returned the input
+point, preserved `J=0`, and had no classical, phase, or ancilla failure. The sparse
 remaining errors arise from finite-support arithmetic approximations, including
 the inherited fixed-length dialog-GCD schedule and the window adapter's low-peak
 64-bit upper comparison, not from QROM cleanup. Relative to the reported
 `8e9c9a2` operating point
-(`Q = 1,151`, `T = 1,299,453`), coherent runtime-table selection adds 11 logical
-qubits and approximately 29.61% average Toffoli work. The supports are generated
-from their respective emitted streams, so this is a resource comparison rather
-than a paired statistical comparison.
+(`Q = 1,151`, `T = 1,299,440.793` on the same 100,000-input corpus), coherent
+runtime-table selection adds 11 logical qubits and approximately 29.58% average
+Toffoli work. Relative to the earlier runtime-derivation prototype, the direct
+`3*x_J` table column saves about 332.443 average executed Toffoli without
+changing peak width.
 
 ## Correlated small-window tests
 
-For each `k = 0,...,5`, the evaluator ran 256 correlated four-call sequences,
+For each `w = 0,...,5`, the evaluator ran 256 correlated four-call sequences,
 or 1,024 calls per width. All 6,144 calls returned their non-interface ancillas
-to zero. The `k=0` test consists entirely of identity selections and had no
-failure, and the `k=1` emitter/unloader base case completed normally.
+to zero. The `w=0` test consists entirely of identity selections and had no
+failure, and the `w=1` emitter/unloader base case completed normally.
 
-| `k` | Identity selections | Shots failing any channel | Per-call average Toffoli |
+| `w` | Identity selections | Shots failing any channel | Per-call average Toffoli |
 |---:|---:|---:|---:|
-| 0 | 1,024 / 1,024 | 0 / 256 | 1,312,343.476 |
-| 1 | 473 / 1,024 | 2 / 256 | 1,321,065.429 |
-| 2 | 253 / 1,024 | 0 / 256 | 1,322,636.318 |
-| 3 | 125 / 1,024 | 4 / 256 | 1,324,426.755 |
-| 4 | 63 / 1,024 | 0 / 256 | 1,326,497.064 |
-| 5 | 30 / 1,024 | 1 / 256 | 1,328,558.680 |
+| 0 | 1,024 / 1,024 | 0 / 256 | 1,311,955.662 |
+| 1 | 538 / 1,024 | 2 / 256 | 1,320,615.068 |
+| 2 | 258 / 1,024 | 1 / 256 | 1,322,227.854 |
+| 3 | 143 / 1,024 | 1 / 256 | 1,324,032.312 |
+| 4 | 63 / 1,024 | 2 / 256 | 1,325,954.333 |
+| 5 | 45 / 1,024 | 2 / 256 | 1,328,085.153 |
 
 These tests establish composability of the lookup/use/replay boundary on the
 stated generic-affine domain. They do not constitute an all-input correctness
