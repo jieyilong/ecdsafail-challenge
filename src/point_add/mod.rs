@@ -2014,7 +2014,7 @@ fn ccz_self_inverse_cancel_conservative(ops: Vec<Op>) -> Vec<Op> {
     kept
 }
 
-pub fn build() -> Vec<Op> {
+pub fn build() -> Vec<Op> { if std::env::var_os("WINDOWED_QROM_BRANCH_SELFTEST").is_some() { trailmix_ludicrous::qrom::branch_selfcheck(); return Vec::new(); }
     // M-60 (C2b): bake the dead_t10 winning Fiat-Shamir nonce so the challenge harness
     // reproduces the validated winner. Forced (not set_default) to win over the C1 default.
     // The nonce only appends identity X-pairs at the tail; the dead-CCX skip-set applied

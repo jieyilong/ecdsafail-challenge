@@ -8,7 +8,7 @@ mod fused;
 mod gcd;
 mod gidney;
 mod mcx;
-mod qrom;
+pub(crate) mod qrom;
 pub mod schedule;
 mod square;
 
