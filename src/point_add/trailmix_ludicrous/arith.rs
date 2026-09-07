@@ -765,7 +765,7 @@ fn emit_chunked_capped(
     circ.zero_and_free(cin0);
 }
 
-fn hybrid_add_plain(circ: &mut B, a: &[QubitId], b: &[QubitId], vents_budget: usize) {
+pub(crate) fn hybrid_add_plain(circ: &mut B, a: &[QubitId], b: &[QubitId], vents_budget: usize) {
     let n = a.len();
     assert_eq!(b.len(), n, "hybrid_add: a,b width mismatch");
     if n == 0 {
@@ -1574,7 +1574,7 @@ pub fn mod_sub(circ: &mut B, x: &[QubitId], y: &[QubitId]) {
     circ.zero_and_free(anc);
 }
 
-fn add_cout_vented_unctrl(circ: &mut B, x: &[QubitId], y: &[QubitId], cout: &QubitId) {
+fn add_cout_vented_unctrl_with_budget(circ: &mut B, x: &[QubitId], y: &[QubitId], cout: &QubitId, vents_budget: usize) {
     let n = y.len();
     assert_eq!(x.len(), n, "add_cout_vented_unctrl: x,y width mismatch");
     let zpad = circ.alloc_qubit();
@@ -1582,11 +1582,15 @@ fn add_cout_vented_unctrl(circ: &mut B, x: &[QubitId], y: &[QubitId], cout: &Qub
     a.push(*cout);
     let mut b: Vec<QubitId> = x.to_vec();
     b.push(zpad);
-    hybrid_add_plain(circ, &a, &b, n);
+    hybrid_add_plain(circ, &a, &b, vents_budget);
     circ.zero_and_free(zpad);
 }
 
-pub fn mod_rsub_vented_loaded(circ: &mut B, t1: &[QubitId], y: &[QubitId]) {
+fn add_cout_vented_unctrl(circ: &mut B, x: &[QubitId], y: &[QubitId], cout: &QubitId) {
+    add_cout_vented_unctrl_with_budget(circ, x, y, cout, y.len());
+}
+
+fn mod_rsub_vented_loaded_with_budget(circ: &mut B, t1: &[QubitId], y: &[QubitId], vents_budget: usize) {
     let n = y.len();
     assert_eq!(t1.len(), n, "mod_rsub_vented_loaded: t1,y must both be n=256 bits");
     assert_eq!(n, 256, "secp256k1 mod_rsub_vented_loaded expects n=256");
@@ -1595,7 +1599,7 @@ pub fn mod_rsub_vented_loaded(circ: &mut B, t1: &[QubitId], y: &[QubitId]) {
     for q in y {
         circ.x(*q);
     }
-    add_cout_vented_unctrl(circ, t1, y, &anc);
+    add_cout_vented_unctrl_with_budget(circ, t1, y, &anc, vents_budget);
     circ.x(anc);
     for q in &y[..LSBS] {
         circ.x(*q);
@@ -1606,6 +1610,14 @@ pub fn mod_rsub_vented_loaded(circ: &mut B, t1: &[QubitId], y: &[QubitId]) {
     }
     circ.x(anc);
     controlled_lt_msbs_conditional(circ, None, &y[..n], &t1[..n], msbs(), anc);
+}
+
+pub fn mod_rsub_vented_loaded(circ: &mut B, t1: &[QubitId], y: &[QubitId]) {
+    mod_rsub_vented_loaded_with_budget(circ, t1, y, y.len());
+}
+
+pub fn mod_rsub_vented_loaded_lowpeak(circ: &mut B, t1: &[QubitId], y: &[QubitId]) {
+    mod_rsub_vented_loaded_with_budget(circ, t1, y, 0);
 }
 
 fn add_cout_vented_skip_dead(circ: &mut B, x: &[QubitId], y: &[QubitId], cout: &QubitId, call_index: usize) {
@@ -1716,16 +1728,39 @@ pub fn mod_add(circ: &mut B, x: &[QubitId], y: &[QubitId]) {
     controlled_lt_msbs_conditional(circ, None, &y[..n], &x[..n], msbs(), anc);
 }
 
-pub fn mod_add_exact(circ: &mut B, x: &[QubitId], y: &[QubitId]) {
+fn mod_add_exact_with_budget(
+    circ: &mut B,
+    x: &[QubitId],
+    y: &[QubitId],
+    vents_budget: usize,
+    compare_budget: usize,
+) {
     let n = x.len();
     assert_eq!(y.len(), n, "mod_add_exact: x,y must both be n=256 bits");
     assert_eq!(n, 256, "secp256k1 mod_add_exact expects n=256");
     let f_bytes = F_SECP256K1.to_le_bytes();
     let anc = circ.alloc_qubit();
-    add_cout_vented_unctrl(circ, x, y, &anc);
+    add_cout_vented_unctrl_with_budget(circ, x, y, &anc, vents_budget);
     add_f_window(circ, &anc, y, LSBS, &f_bytes, Some(LSBS - 1));
 
-    controlled_lt_msbs_conditional(circ, None, &y[..n], &x[..n], n, anc);
+    controlled_lt_msbs_conditional(
+        circ,
+        None,
+        &y[..n],
+        &x[..n],
+        compare_budget.min(n),
+        anc,
+    );
+}
+
+pub fn mod_add_exact(circ: &mut B, x: &[QubitId], y: &[QubitId]) {
+    mod_add_exact_with_budget(circ, x, y, y.len(), y.len());
+}
+
+pub fn mod_add_windowed_lowpeak(circ: &mut B, x: &[QubitId], y: &[QubitId]) {
+    // Window integration keeps only an upper comparator window to avoid
+    // overlapping the loaded payload with a full-width comparison workspace.
+    mod_add_exact_with_budget(circ, x, y, 0, 64);
 }
 
 pub fn mod_add_lowpeak(circ: &mut B, x: &[QubitId], y: &[QubitId]) {
@@ -1767,7 +1802,7 @@ pub fn mod_add_shifted_low(circ: &mut B, x: &[QubitId], y: &[QubitId], shift: us
     controlled_lt_msbs_conditional(circ, None, &y[n - msbs()..], &x[x.len() - msbs()..], msbs(), anc);
 }
 
-pub fn mod_sub_vented(circ: &mut B, x: &[QubitId], y: &[QubitId]) {
+fn mod_sub_vented_with_budget(circ: &mut B, x: &[QubitId], y: &[QubitId], vents_budget: usize) {
     let n = x.len();
     assert_eq!(y.len(), n, "mod_sub_vented: x,y must both be n=256 bits");
     assert_eq!(n, 256, "secp256k1 mod_sub_vented expects n=256");
@@ -1776,7 +1811,7 @@ pub fn mod_sub_vented(circ: &mut B, x: &[QubitId], y: &[QubitId]) {
     for q in y {
         circ.x(*q);
     }
-    add_cout_vented_unctrl(circ, x, y, &anc);
+    add_cout_vented_unctrl_with_budget(circ, x, y, &anc, vents_budget);
     for q in y {
         circ.x(*q);
     }
@@ -1790,6 +1825,14 @@ pub fn mod_sub_vented(circ: &mut B, x: &[QubitId], y: &[QubitId]) {
     }
     controlled_add_carry_msbs_conditional(circ, None, &y[..n], &x[..n], msbs(), &anc);
     circ.zero_and_free(anc);
+}
+
+pub fn mod_sub_vented(circ: &mut B, x: &[QubitId], y: &[QubitId]) {
+    mod_sub_vented_with_budget(circ, x, y, y.len());
+}
+
+pub fn mod_sub_vented_lowpeak(circ: &mut B, x: &[QubitId], y: &[QubitId]) {
+    mod_sub_vented_with_budget(circ, x, y, 0);
 }
 
 pub fn mod_sub_shifted_low(circ: &mut B, x: &[QubitId], y: &[QubitId], shift: usize) {
@@ -1980,6 +2023,26 @@ pub fn mod_neg(circ: &mut B, x: &[QubitId]) {
     add_const_window_clean(circ, x, n, &f_minus_1);
     for q in x {
         circ.x(*q);
+    }
+}
+
+pub fn controlled_mod_neg(circ: &mut B, ctrl: &QubitId, x: &[QubitId]) {
+    let n = x.len();
+    assert_eq!(n, 256, "secp256k1 controlled_mod_neg expects n=256");
+    let f_minus_1 = (F_SECP256K1 - 1).to_le_bytes();
+    let cin = circ.alloc_qubit();
+    controlled_add_const_chunked_graduated_off(
+        circ,
+        ctrl,
+        x,
+        &f_minus_1,
+        0,
+        &cin,
+        graduated_const_kmin(n),
+    );
+    circ.zero_and_free(cin);
+    for &q in x {
+        circ.cx(*ctrl, q);
     }
 }
 

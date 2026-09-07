@@ -544,6 +544,25 @@ pub(crate) fn product_register_selfcheck() {
     product_register::selfcheck();
 }
 
+/// Mask the preserved slope coherently so the identity-address branch squares zero.
+/// The CCX mask is reversed after the square, leaving no copy of the slope.
+pub fn controlled_mod_square_sub_pm_secp256k1_symmetric(
+    circ: &mut B,
+    ctrl: &QubitId,
+    lambda: &[QubitId],
+    output: &[QubitId],
+) {
+    let masked = circ.alloc_qubits(N);
+    for (&source, &target) in lambda.iter().zip(&masked) {
+        circ.ccx(*ctrl, source, target);
+    }
+    mod_square_sub_pm_secp256k1_symmetric(circ, &masked, output);
+    for (&source, &target) in lambda.iter().zip(&masked).rev() {
+        circ.ccx(*ctrl, source, target);
+    }
+    circ.free_vec(&masked);
+}
+
 pub fn shifted128_low_miter() -> Result<usize, String> {
     use crate::point_add::SECP256K1_P;
     use crate::sim::Simulator;

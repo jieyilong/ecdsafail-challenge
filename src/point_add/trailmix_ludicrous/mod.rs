@@ -10,6 +10,7 @@ mod gidney;
 mod mcx;
 pub mod schedule;
 mod square;
+pub(crate) mod qrom;
 
 pub(crate) fn product_register_square_selfcheck() {
     square::product_register_selfcheck();

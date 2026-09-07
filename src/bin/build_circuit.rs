@@ -27,7 +27,7 @@ mod point_add;
 // Root bindings backing the `crate::{circuit,sim,weierstrass_elliptic_curve}`
 // paths used inside `src/point_add/**` (see the note above).
 #[allow(unused_imports)]
-use quantum_ecc::{circuit, sim, weierstrass_elliptic_curve};
+use quantum_ecc::{circuit, sim, weierstrass_elliptic_curve, windowed_table};
 
 const OPS_PATH: &str = "ops.bin";
 // "Z" suffix marks the zstd-compressed framing (was "QECCOPS1", uncompressed).

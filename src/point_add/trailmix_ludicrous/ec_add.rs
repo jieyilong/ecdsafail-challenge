@@ -1,10 +1,12 @@
 
 use super::arith::{
     mod_add, mod_add_exact, mod_neg, mod_rsub_vented_loaded, mod_sub_classical_low3,
-    mod_sub_shifted_low, mod_sub_vented,
+    mod_sub_shifted_low, mod_sub_vented, mod_sub_vented_lowpeak,
+    mod_add_lowpeak, mod_add_windowed_lowpeak,
 };
 use super::gcd::{mod_mul_inverse_in_place, Direction};
-use super::square::mod_square_sub_pm_secp256k1_symmetric;
+use super::square::{mod_square_sub_pm_secp256k1_symmetric, controlled_mod_square_sub_pm_secp256k1_symmetric};
+use super::qrom;
 use super::{B, BExt};
 use crate::point_add::{arith::mod_const_minus_reg_qb, SECP256K1_P};
 use crate::circuit::{BitId, QubitId};
@@ -331,6 +333,198 @@ pub(crate) fn ec_add_with_division(
     coord_addsub(circ, &y2[..N], oy, true);
     circ.set_phase("tlm_coord_rsub_final");
     coord_rsub(circ, x2, ox);
+}
+
+fn qrom_coord_differences(
+    circ: &mut B,
+    address: &[QubitId],
+    x_table: &[Vec<BitId>],
+    y_table: &[Vec<BitId>],
+    x: &[QubitId],
+    y: &[QubitId],
+) {
+    let x_temp = circ.alloc_qubits(N);
+    let y_temp = circ.alloc_qubits(N);
+    let workspace = qrom::load_two_words(
+        circ,
+        address,
+        &x_temp,
+        x_table,
+        &y_temp,
+        y_table,
+        "window_qrom_xy_load_walk",
+        "window_qrom_xy_load_clear",
+    );
+    circ.set_phase("tlm_coord_x_sub");
+    mod_sub_vented_lowpeak(circ, &x_temp, x);
+    circ.set_phase("tlm_coord_y_sub");
+    mod_sub_vented_lowpeak(circ, &y_temp, y);
+    qrom::unload_two_words(
+        circ,
+        address,
+        &x_temp,
+        x_table,
+        &y_temp,
+        y_table,
+        workspace,
+        "window_qrom_xy_unload_measure",
+        "window_qrom_xy_unload_clear",
+    );
+}
+
+fn qrom_coord_add3x(
+    circ: &mut B,
+    address: &[QubitId],
+    table: &[Vec<BitId>],
+    dst: &[QubitId],
+) {
+    let temp = circ.alloc_qubits(N + 1);
+    let workspace = qrom::load_word(
+        circ,
+        address,
+        &temp[..N],
+        table,
+        "window_qrom_3x_load_walk",
+        "window_qrom_3x_load_clear",
+    );
+    circ.set_phase("tlm_coord_add3x");
+    if std::env::var("TLM_COORD_ADD3X_TRUNC").ok().as_deref() == Some("1") {
+        if workspace.retains_payload_bank() {
+            mod_add_lowpeak(circ, &temp[..N], dst);
+        } else {
+            mod_add(circ, &temp[..N], dst);
+        }
+    } else if workspace.retains_payload_bank() {
+        mod_add_windowed_lowpeak(circ, &temp[..N], dst);
+    } else {
+        mod_add_exact(circ, &temp[..N], dst);
+    }
+    super::arith::mod_double(circ, &temp);
+    if std::env::var("TLM_COORD_ADD3X_TRUNC").ok().as_deref() == Some("1") {
+        if workspace.retains_payload_bank() {
+            mod_add_lowpeak(circ, &temp[..N], dst);
+        } else {
+            mod_add(circ, &temp[..N], dst);
+        }
+    } else if workspace.retains_payload_bank() {
+        mod_add_windowed_lowpeak(circ, &temp[..N], dst);
+    } else {
+        mod_add_exact(circ, &temp[..N], dst);
+    }
+    super::arith::mod_double_reverse(circ, &temp);
+    circ.zero_and_free(temp[N]);
+    qrom::unload_word(
+        circ,
+        address,
+        &temp[..N],
+        table,
+        workspace,
+        "window_qrom_3x_unload_walk",
+        "window_qrom_3x_unload_clear",
+    );
+}
+
+fn qrom_coord_recover(
+    circ: &mut B,
+    address: &[QubitId],
+    y_table: &[Vec<BitId>],
+    x_table: &[Vec<BitId>],
+    y: &[QubitId],
+    x: &[QubitId],
+    nonzero: &QubitId,
+) {
+    let y_temp = circ.alloc_qubits(N);
+    let x_temp = circ.alloc_qubits(N);
+    let workspace = qrom::load_two_words(
+        circ,
+        address,
+        &y_temp,
+        y_table,
+        &x_temp,
+        x_table,
+        "window_qrom_recover_load_walk",
+        "window_qrom_recover_load_clear",
+    );
+    circ.set_phase("tlm_coord_y_sub_final");
+    mod_sub_vented_lowpeak(circ, &y_temp, y);
+    circ.set_phase("window_recover_controlled_neg");
+    super::arith::controlled_mod_neg(circ, nonzero, x);
+    circ.set_phase("window_recover_x_add");
+    mod_add_windowed_lowpeak(circ, &x_temp, x);
+    qrom::unload_two_words(
+        circ,
+        address,
+        &y_temp,
+        y_table,
+        &x_temp,
+        x_table,
+        workspace,
+        "window_qrom_recover_unload_measure",
+        "window_qrom_recover_unload_clear",
+    );
+}
+
+fn toggle_nonzero_address(circ: &mut B, address: &[QubitId], flag: &QubitId) {
+    if address.is_empty() {
+        return;
+    }
+    circ.x(*flag);
+    for &q in address {
+        circ.x(q);
+    }
+    let controls: Vec<&QubitId> = address.iter().collect();
+    super::mcx::mcx_clean_k(circ, &controls, flag);
+    for &q in address {
+        circ.x(q);
+    }
+}
+
+/// Coherent window-address variant of the 8e9c9a2 arithmetic pipeline.
+/// Coordinates are looked up and unlooked up serially, so no 512-qubit copy
+/// of the selected point is resident at an arithmetic peak.
+pub(crate) fn ec_add_windowed_with_division(
+    circ: &mut B,
+    x2: &mut Vec<QubitId>,
+    y2: &[QubitId],
+    address: &[QubitId],
+    x_table: &[Vec<BitId>],
+    y_table: &[Vec<BitId>],
+    mut divide: impl FnMut(&mut B, Vec<QubitId>, &[QubitId], bool) -> Vec<QubitId>,
+) {
+    assert_eq!(x2.len(), N, "x2 is 256 bits");
+    assert_eq!(y2.len(), N, "y2 is 256 bits");
+    assert_eq!(x_table.len(), 1usize << address.len());
+    assert_eq!(y_table.len(), x_table.len());
+
+    let nonzero = circ.alloc_qubit();
+    toggle_nonzero_address(circ, address, &nonzero);
+
+    qrom_coord_differences(circ, address, x_table, y_table, x2, &y2[..N]);
+
+    circ.set_phase("tlm_inverse");
+    let xv = std::mem::take(x2);
+    *x2 = divide(circ, xv, y2, true);
+
+    qrom_coord_add3x(circ, address, x_table, x2);
+
+    circ.set_phase("tlm_square");
+    controlled_mod_square_sub_pm_secp256k1_symmetric(circ, &nonzero, &y2[..N], x2);
+
+    circ.set_phase("tlm_forward_multiply");
+    let xv = std::mem::take(x2);
+    *x2 = divide(circ, xv, y2, false);
+
+    qrom_coord_recover(
+        circ,
+        address,
+        y_table,
+        x_table,
+        &y2[..N],
+        x2,
+        &nonzero,
+    );
+    toggle_nonzero_address(circ, address, &nonzero);
+    circ.zero_and_free(nonzero);
 }
 
 pub fn build_times3_test() -> (Vec<crate::circuit::Op>, Vec<BitId>, Vec<BitId>) {

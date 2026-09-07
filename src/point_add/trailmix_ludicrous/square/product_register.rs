@@ -22,7 +22,15 @@ const F_NAF: [(usize, bool); 5] = [
 
 fn add_full(circ: &mut B, addend: &[QubitId], acc: &[QubitId]) {
     assert_eq!(addend.len(), acc.len());
-    arith::hybrid_add_adaptive(circ, acc, addend, usize::MAX);
+    if std::env::var_os("WINDOWED_MODE").is_some() {
+        // The coherent slope mask shares the peak budget with carry ancillas.
+        // Unvented carries use the exact reverse Toffoli instead of a measurement.
+        let ceiling = 1321 + crate::windowed_table::window_bits_from_env() + 1;
+        let budget = ceiling.saturating_sub(circ.active_qubits as usize);
+        arith::hybrid_add_plain(circ, acc, addend, budget);
+    } else {
+        arith::hybrid_add_adaptive(circ, acc, addend, usize::MAX);
+    }
 }
 
 fn sub_full(circ: &mut B, addend: &[QubitId], acc: &[QubitId]) {

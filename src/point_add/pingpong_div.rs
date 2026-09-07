@@ -1173,6 +1173,9 @@ fn replay_doubling_inverse(b: &mut B, tape: &[QubitId], x: &[QubitId], y: &[Qubi
 /// TrailMix coordinate shell and symmetric in-place square verbatim.  Only
 /// the two division callbacks differ from the baseline construction.
 pub(crate) fn build_pingpong_point_add() -> Vec<Op> {
+    if std::env::var_os("WINDOWED_MODE").is_some() {
+        return build_windowed_pingpong_point_add();
+    }
     if mux_round0_correction_enabled() {
         set_default_env("DIALOG_GCD_FOLD_MAJ1", "1");
     }
@@ -1214,6 +1217,48 @@ pub(crate) fn build_pingpong_point_add() -> Vec<Op> {
     circ.declare_qubit_register(&y);
     circ.declare_bit_register(&ox);
     circ.declare_bit_register(&oy);
+    circ.b0_finalize();
+    circ.take_ops()
+}
+
+/// Runtime-table ABI matches the two-column windowed Jump-2 adapter.
+fn build_windowed_pingpong_point_add() -> Vec<Op> {
+    if mux_round0_correction_enabled() {
+        set_default_env("DIALOG_GCD_FOLD_MAJ1", "1");
+    }
+    trailmix_ludicrous::load_schedule();
+    trailmix_ludicrous::qrom::reset_stats();
+    let mut circ = B::new();
+    let x = circ.alloc_qubits(N);
+    let y = circ.alloc_qubits(N);
+    let address = circ.alloc_qubits(crate::windowed_table::window_bits_from_env());
+    let rows = 1usize << address.len();
+    let x_table: Vec<_> = (0..rows).map(|_| circ.alloc_bits(N)).collect();
+    let y_table: Vec<_> = (0..rows).map(|_| circ.alloc_bits(N)).collect();
+    let mut working_x = x.clone();
+    trailmix_ludicrous::ec_add::ec_add_windowed_with_division(
+        &mut circ, &mut working_x, &y, &address, &x_table, &y_table,
+        |circ, denominator, numerator, inverse| {
+            pingpong_mod_mul_div_in_place(
+                circ, &denominator, numerator,
+                if inverse { PingPongDirection::Divide } else { PingPongDirection::Multiply },
+            );
+            denominator
+        },
+    );
+    assert_eq!(working_x, x);
+    circ.declare_qubit_register(&x);
+    circ.declare_qubit_register(&y);
+    circ.declare_qubit_register(&address);
+    for row in 0..rows {
+        circ.declare_bit_register(&x_table[row]);
+        circ.declare_bit_register(&y_table[row]);
+    }
+    let stats = trailmix_ludicrous::qrom::stats();
+    eprintln!(
+        "windowed ping-pong: width={}, QROM calls={}, Toffolis={}, payload CX={}",
+        circ.peak_qubits, stats.calls, stats.toffolis, stats.payload_cx
+    );
     circ.b0_finalize();
     circ.take_ops()
 }

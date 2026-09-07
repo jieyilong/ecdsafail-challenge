@@ -594,6 +594,15 @@ impl B {
         op.q_target = q;
         self.push_op(op);
     }
+    fn cx_if(&mut self, ctrl: QubitId, tgt: QubitId, cond: BitId) {
+        assert_ne!(ctrl, tgt, "invalid CX with aliased control/target");
+        let mut op = Op::empty();
+        op.kind = OperationType::CX;
+        op.q_control1 = ctrl;
+        op.q_target = tgt;
+        op.c_condition = cond;
+        self.push_op(op);
+    }
     fn cx(&mut self, ctrl: QubitId, tgt: QubitId) {
         if ctrl == tgt {
             panic!("invalid CX with aliased control/target {:?}", ctrl);
@@ -2229,6 +2238,10 @@ fn ccz_self_inverse_cancel_conservative(ops: Vec<Op>) -> Vec<Op> {
 }
 
 pub fn build() -> Vec<Op> {
+    if std::env::var_os("WINDOWED_QROM_BRANCH_SELFTEST").is_some() {
+        trailmix_ludicrous::qrom::branch_selfcheck();
+        return Vec::new();
+    }
     // Reproduce the exact source parent used by the q1150 route.  These are
     // intentionally forced instead of defaults so the benchmark environment
     // cannot select a different geometry.
