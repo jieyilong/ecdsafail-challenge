@@ -1,0 +1,8 @@
+format	paired-window-checkpoint-v1
+interface	runtime-table-windowed
+seed	ecdsafail-windowed-independent-random-100k-v1
+window_bits	16
+target_shots	100000
+qubits	1338
+ops	216306123
+ops_fingerprint	6e20ed414d5a0e33a7cf0c312064a8ea

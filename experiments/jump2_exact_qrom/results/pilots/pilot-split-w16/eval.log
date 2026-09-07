@@ -1,0 +1,23 @@
+=== quantum_ecc: eval_circuit (trusted stage) ===
+
+  loaded ops  : 212090239
+  qubits      : 1162
+  bits        : 34243751
+
+-- coherent 16-bit window tests (128 shots x 1 correlated calls; allowed error 100.0000%) --
+  tested shots            : 128
+  calls per shot          : 1
+  identity-table rows     : 0 (0.0000%)
+  classical mismatches    : 0 (0.0000%)
+  phase-failure shots     : 0 (0.0000%; 0 batches)
+  ancilla-failure shots   : 0 (0.0000%; 0 batches)
+  shots failing any channel: 0 (0.0000%)
+  overlap-counting channel sum: 0.0000%
+
+=== coherent-window circuit metrics ===
+  avg executed Toffoli  : 1523218.336
+  avg executed Clifford : 69060558.078
+  emitted ops           : 212090239
+  qubits                : 1162
+
+=== coherent-window experiment OK ===

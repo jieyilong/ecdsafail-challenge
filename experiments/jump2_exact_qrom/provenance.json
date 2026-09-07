@@ -1,0 +1,43 @@
+{
+  "date": "2026-09-07",
+  "source_commit": "080452804328698214f36655d95c9883be6a3080",
+  "parent_commit": "15a29ac9b1e97fc21eb81b9a6f0f6d9c4dc7a92e",
+  "cleanup_donor_commit": "2e0187c99fef038f079aaf76b6d36f64cce7481e",
+  "cleanup_donor_release": "c6ad760",
+  "branch": "codex/windowed-8e9c9a2-exact-qrom",
+  "qubits": 1162,
+  "static_toffoli": 1593346,
+  "parent_static_toffoli": 1754382,
+  "raw_cleanup_saving": 161030,
+  "additional_existing_constprop_folds": 6,
+  "sha256": {
+    "split/ops.bin": "32ae39ca60ca95f66724cb0854133b05ecbfb6734848d11e599479403bb4dccd",
+    "replay/ops.bin": "cb820d2829750cc73814ae1ea2ceb908696462270b3f5a60ebbc7128f4c0e274",
+    "src/bin/eval_circuit.rs": "1b273b46098c5c782bfbcfda243f20279c934da2b15871e5957828af7d5bc766",
+    "src/sim.rs": "7ae27124632a9881301a2d1eca4b1be07d1c0b3498572144824965b16138415f",
+    "src/windowed_table.rs": "8226d5a016f61457fcbe6c25de6535c569506a2b0a184afcbe9c1e07ddf91315",
+    "src/point_add/trailmix_ludicrous/qrom.rs": "6e1f44602f3b67574315306033fff28b128af4e34f52ae72446a81e670c26d7f",
+    "src/point_add/trailmix_ludicrous/qrom_split_phase.rs": "f5590091aa00f6074197e69ce2d88217d6a5300676a55e5ad0b364e4d0c4ab10",
+    "src/point_add/trailmix_ludicrous/qrom_branch_tests.rs": "36907065750680b30952fbba4550e4ee5ab274f05309fcd800cf9c6114250863",
+    "Cargo.lock": "42ff16919e551891ad1b21821329b116d133194245a0e0734a33573dfe598e07",
+    "target/release/build_circuit": "c3424c29ef2afe6dbcdac91c0358a7aa3890df4b9c5867795c55e9c6499ced20",
+    "target/release/eval_circuit": "7b5b4e95cf52ce12d33faa5724fdde12b57cc4beed76c6703273593be8232a27"
+  },
+  "guard": "Only qrom.rs, qrom_split_phase.rs, qrom_branch_tests.rs, a module-visibility declaration, and a self-test hook differ under src. All arithmetic and trusted sources and dependency files are unchanged. Replay regeneration is byte-identical to the published artifact.",
+  "reference_ledgers": {
+    "jump2_replay": "Historical two-column 15a29ac evaluation. No new outcomes are generated for this reference.",
+    "pingpong_split": "Exact-cleanup ping-pong source 2e0187c, results release c6ad760. No new outcomes are generated for this reference.",
+    "corpus": "Shared immutable 100,000-input corpus, seed ecdsafail-windowed-independent-random-100k-v1. Input and expected-output columns must agree for every index."
+  },
+  "settings": {
+    "WINDOWED_MODE": "1",
+    "WINDOW_BITS": "16",
+    "WINDOWED_QROM_UNLOAD": "split",
+    "SINGLE_CCX_FANOUT_DISABLE": "1",
+    "WINDOWED_TESTS": "100000",
+    "WINDOWED_SEQUENCE_CALLS": "1",
+    "WINDOWED_MAX_ERROR_RATE": "1",
+    "EVAL_SHARED_SEED": "ecdsafail-windowed-independent-random-100k-v1",
+    "EVAL_THREADS": "8"
+  }
+}

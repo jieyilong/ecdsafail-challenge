@@ -1,0 +1,30 @@
+{
+  "feed_forward_rounds": null,
+  "note": "Static HMR/reset counts are not executed measurement counts or feed-forward depth.",
+  "operation_kind_counts": {
+    "AppendToRegister": 33554960,
+    "BitInvert": 0,
+    "BitStore0": 1536,
+    "BitStore1": 0,
+    "CCX": 1585747,
+    "CCZ": 7599,
+    "CX": 88569374,
+    "CZ": 84571474,
+    "DebugPrint": 0,
+    "Hmr": 689319,
+    "Neg": 1568,
+    "PopCondition": 644551,
+    "PushCondition": 644551,
+    "R": 667555,
+    "Register": 131075,
+    "Swap": 293021,
+    "X": 708646,
+    "Z": 19263
+  },
+  "ops_sha256": "32ae39ca60ca95f66724cb0854133b05ecbfb6734848d11e599479403bb4dccd",
+  "static_hmr": 689319,
+  "static_operations": 212090239,
+  "static_reset": 667555,
+  "static_toffoli": 1593346,
+  "toffoli_depth": null
+}

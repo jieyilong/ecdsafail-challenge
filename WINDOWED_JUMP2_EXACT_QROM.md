@@ -18,6 +18,8 @@ Each paired-column unload falls from 65,534 to 1,020 raw Toffolis. The K=2 singl
 
 The full 16-bit circuit has Q=1,162, unchanged. The decoder phase uses about 1,041 live qubits after the selected payload is released, below the original arithmetic peak. The full operation stream has 212,090,239 records, down from 213,387,745. These records include metadata and classical-control instructions, not just quantum gates.
 
+The completed 100,000-input evaluation measures mean T=1,523,120.32936 and Q*T=1,769,865,822.71632, a 9.5621% reduction at unchanged Q. There are 192 any-channel failures versus 191 for replay, with identical classical-failure sets, no ancilla failures, and both identity rows passing. The empirical pass fraction is 0.99808. The per-call Q*T/pass-fraction proxy is 1,773,270,502.08031. Full results and the matched-cleanup comparison with ping-pong are in [the experiment report](experiments/jump2_exact_qrom/EXPERIMENTS.md#windowed-8e9c9a2-exact-cleanup-follow-up).
+
 ## Reproduction
 
 ```sh
@@ -32,4 +34,4 @@ The runner uses the shared seed `ecdsafail-windowed-independent-random-100k-v1`,
 
 The tests cover all 144 HMR branches in three reduced layouts, arbitrary 256-bit payloads at small widths, and all 65,536 addresses in the three full-width routing layouts. The port adds only the QROM files and test access. The test hook is kept on the existing build-function opening line to preserve inherited call-site line numbers. The evaluator, simulator, and dependency files remain unchanged.
 
-The experiment will compare replay Jump-2, exact-cleanup Jump-2, and exact-cleanup ping-pong on identical input records. This closes the previous cleanup mismatch between the two backends. Results and data are recorded under `experiments/jump2_exact_qrom/` and in the paper workspace's shared experiment report.
+The experiment compares replay Jump-2, exact-cleanup Jump-2, and exact-cleanup ping-pong on identical input records. This closes the previous cleanup mismatch between the two backends. Results and data are recorded under `experiments/jump2_exact_qrom/` and in the paper workspace's shared experiment report.

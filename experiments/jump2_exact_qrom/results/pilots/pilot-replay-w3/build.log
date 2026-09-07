@@ -1,0 +1,11 @@
+=== quantum_ecc: build_circuit (untrusted stage) ===
+
+-- building circuit --
+CONSTPROP iter=1 ccx_total=1382805 dropped=505 folded_cx=23 folded_x=0 inverse_pairs=55 aff_drop=42 aff_fold=2 (this-iter toffoli removed = 682)
+CONSTPROP iter=2 ccx_total=1382123 dropped=96 folded_cx=0 folded_x=0 inverse_pairs=0 aff_drop=0 aff_fold=0 (this-iter toffoli removed = 96)
+CONSTPROP iter=3 ccx_total=1382027 dropped=0 folded_cx=0 folded_x=0 inverse_pairs=0 aff_drop=0 aff_fold=0 (this-iter toffoli removed = 0)
+CONSTPROP TOTAL iters=3 dropped=601 folded_cx=23 folded_x=0 inverse_pairs=55 aff_drop=42 aff_fold=2 (toffoli removed = 778)
+  emitted ops : 9249202
+  wrote       : ops.bin (31380254 bytes on disk, 517955328 uncompressed, 16.5x)
+
+=== build_circuit OK ===

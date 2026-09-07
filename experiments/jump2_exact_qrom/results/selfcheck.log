@@ -1,0 +1,17 @@
+=== quantum_ecc: build_circuit (untrusted stage) ===
+
+-- building circuit --
+Exhaustive split-phase check passed: all 144 HMR branches across three reduced lookup layouts, all address components, clean workspace and equal phase
+QROM coherent-branch checks passed: mode=replay, unary and K=2, w=0..6, four measurement records per layout; exact static Toffoli formula checked
+QROM coherent-branch checks passed: mode=measurement, unary and K=2, w=0..6, four measurement records per layout; exact static Toffoli formula checked
+QROM coherent-branch checks passed: mode=split, unary and K=2, w=0..6, four measurement records per layout; exact static Toffoli formula checked
+QROM address coverage passed: split=false, variant=0, 65,536 addresses, no address/phase/workspace failures
+QROM address coverage passed: split=false, variant=1, 65,536 addresses, no address/phase/workspace failures
+QROM address coverage passed: split=false, variant=2, 65,536 addresses, no address/phase/workspace failures
+QROM address coverage passed: split=true, variant=0, 65,536 addresses, no address/phase/workspace failures
+QROM address coverage passed: split=true, variant=1, 65,536 addresses, no address/phase/workspace failures
+QROM address coverage passed: split=true, variant=2, 65,536 addresses, no address/phase/workspace failures
+  emitted ops : 0
+  wrote       : ops.bin (25 bytes on disk, 16 uncompressed, 0.6x)
+
+=== build_circuit OK ===
