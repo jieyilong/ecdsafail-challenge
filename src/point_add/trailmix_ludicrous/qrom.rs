@@ -6,7 +6,12 @@ use crate::circuit::{BitId, OperationType, QubitId};
 #[path = "qrom_branch_tests.rs"]
 mod branch_tests;
 
+#[path = "qrom_split_phase.rs"]
+mod split_phase;
+
 pub(crate) fn branch_selfcheck() {
+    branch_tests::exhaustive_split_branches();
+    if std::env::var_os("WINDOWED_QROM_EXHAUSTIVE_ONLY").is_some() { return; }
     branch_tests::windowed_qrom_coherent_branches();
     branch_tests::windowed_qrom_all_addresses();
 }
@@ -1210,7 +1215,9 @@ pub fn unload_word(
     unload_phase: &'static str,
     clear_phase: &'static str,
 ) {
-    if std::env::var("WINDOWED_QROM_UNLOAD").ok().as_deref() == Some("measurement") {
+    if std::env::var("WINDOWED_QROM_UNLOAD").ok().as_deref() == Some("split") {
+        split_phase::unload_word(circ, address, target, table, workspace, unload_phase, clear_phase);
+    } else if std::env::var("WINDOWED_QROM_UNLOAD").ok().as_deref() == Some("measurement") {
         measurement_unload_word(
             circ,
             address,
@@ -1244,7 +1251,12 @@ pub fn unload_two_words(
     unload_phase: &'static str,
     clear_phase: &'static str,
 ) {
-    if std::env::var("WINDOWED_QROM_UNLOAD").ok().as_deref() == Some("measurement") {
+    if std::env::var("WINDOWED_QROM_UNLOAD").ok().as_deref() == Some("split") {
+        split_phase::unload_two_words(
+            circ, address, left_target, left_table, right_target, right_table,
+            workspace, unload_phase, clear_phase,
+        );
+    } else if std::env::var("WINDOWED_QROM_UNLOAD").ok().as_deref() == Some("measurement") {
         measurement_unload_two_words(
             circ,
             address,
