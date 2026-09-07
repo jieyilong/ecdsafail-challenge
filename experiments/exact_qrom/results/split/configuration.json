@@ -1,0 +1,13 @@
+{
+  "WINDOWED_MODE": "1",
+  "WINDOW_BITS": "16",
+  "WINDOWED_QROM_UNLOAD": "split",
+  "SINGLE_CCX_FANOUT_DISABLE": "1",
+  "WINDOWED_TESTS": "100000",
+  "WINDOWED_SEQUENCE_CALLS": "1",
+  "WINDOWED_MAX_ERROR_RATE": "1",
+  "EVAL_SHARED_SEED": "ecdsafail-windowed-independent-random-100k-v1",
+  "EVAL_THREADS": "8",
+  "EVAL_CHECKPOINT_DIR": "<paper-workspace>/outputs/ecdsafail-pingpong-exact-qrom-20260907/split/checkpoint",
+  "source_commit": "2e0187c99fef038f079aaf76b6d36f64cce7481e"
+}

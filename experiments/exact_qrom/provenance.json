@@ -1,0 +1,45 @@
+{
+  "date": "2026-09-07",
+  "source_commit": "2e0187c99fef038f079aaf76b6d36f64cce7481e",
+  "parent_commit": "7664bc2",
+  "branch": "codex/windowed-pingpong-exact-qrom",
+  "repository": "https://github.com/jieyilong/ecdsafail-challenge",
+  "qubits": 1338,
+  "static_toffoli": 1184131,
+  "static_toffoli_saving": 161030,
+  "qrom_toffoli": 167150,
+  "qrom_forward_toffoli": 164090,
+  "qrom_unload_toffoli": 3060,
+  "sha256": {
+    "ops.bin": "53add94db5d25ac11f1e86ed66248fb2d5d4d4767fa07de966ecc473cf2e0d89",
+    "src/bin/eval_circuit.rs": "1b273b46098c5c782bfbcfda243f20279c934da2b15871e5957828af7d5bc766",
+    "src/sim.rs": "7ae27124632a9881301a2d1eca4b1be07d1c0b3498572144824965b16138415f",
+    "src/windowed_table.rs": "8226d5a016f61457fcbe6c25de6535c569506a2b0a184afcbe9c1e07ddf91315",
+    "src/point_add/trailmix_ludicrous/qrom.rs": "6e1f44602f3b67574315306033fff28b128af4e34f52ae72446a81e670c26d7f",
+    "src/point_add/trailmix_ludicrous/qrom_split_phase.rs": "f5590091aa00f6074197e69ce2d88217d6a5300676a55e5ad0b364e4d0c4ab10",
+    "target/release/build_circuit": "7dd2db79ed5f40d51604942656c43b449041510c7b12239083d044a40a699f61",
+    "target/release/eval_circuit": "4d73c32b786cdb565e166d2933387ceeb28c6c50439a42ef14aeade191df93a5"
+  },
+  "source_guard": "git diff --exit-code 7664bc2 -- src :!src/point_add/trailmix_ludicrous/qrom.rs :!src/point_add/trailmix_ludicrous/qrom_branch_tests.rs :!src/point_add/trailmix_ludicrous/qrom_split_phase.rs Cargo.toml Cargo.lock",
+  "source_guard_result": "exit 0: all non-QROM source and dependency files unchanged",
+  "build": "cargo build --release --locked --offline --bin build_circuit --bin eval_circuit",
+  "compiler": "rustc 1.93.0, aarch64-apple-darwin",
+  "experiment_settings": {
+    "WINDOWED_MODE": "1",
+    "WINDOW_BITS": "16",
+    "WINDOWED_QROM_UNLOAD": "split",
+    "SINGLE_CCX_FANOUT_DISABLE": "1",
+    "WINDOWED_TESTS": "100000",
+    "WINDOWED_SEQUENCE_CALLS": "1",
+    "WINDOWED_MAX_ERROR_RATE": "1",
+    "EVAL_SHARED_SEED": "ecdsafail-windowed-independent-random-100k-v1",
+    "EVAL_THREADS": "8"
+  },
+  "notes": [
+    "The arithmetic remains approximate. The cleanup change introduces no additional arithmetic approximation under its restored-payload invariant.",
+    "The original replay mode remains the default. Split cleanup must be selected explicitly.",
+    "The source and protocol were committed before full-corpus outcomes were viewed.",
+    "The allowed-error setting collects every failure and is not an acceptance threshold.",
+    "Binary hashes are build-specific. The compressed operation artifact is pinned separately."
+  ]
+}

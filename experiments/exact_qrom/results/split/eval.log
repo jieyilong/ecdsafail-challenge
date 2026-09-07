@@ -1,0 +1,36 @@
+=== quantum_ecc: eval_circuit (trusted stage) ===
+
+  loaded ops  : 216306123
+  qubits      : 1338
+  bits        : 34724390
+
+-- coherent 16-bit window tests (100000 shots x 1 correlated calls; allowed error 100.0000%) --
+  checkpoint directory     : <paper-workspace>/outputs/ecdsafail-pingpong-exact-qrom-20260907/split/checkpoint
+  evaluator threads        : 8
+  paired interface         : runtime-table-windowed
+  progress                : 10048/100000 shots; 2 failures observed
+  progress                : 20032/100000 shots; 7 failures observed
+  progress                : 30016/100000 shots; 9 failures observed
+  progress                : 40000/100000 shots; 11 failures observed
+  progress                : 50048/100000 shots; 15 failures observed
+  progress                : 60032/100000 shots; 18 failures observed
+  progress                : 70016/100000 shots; 22 failures observed
+  progress                : 80000/100000 shots; 24 failures observed
+  progress                : 90048/100000 shots; 29 failures observed
+  progress                : 100000/100000 shots; 35 failures observed
+  tested shots            : 100000
+  calls per shot          : 1
+  identity-table rows     : 2 (0.0020%)
+  classical mismatches    : 33 (0.0330%)
+  phase-failure shots     : 15 (0.0150%; 15 batches)
+  ancilla-failure shots   : 0 (0.0000%; 0 batches)
+  shots failing any channel: 35 (0.0350%)
+  overlap-counting channel sum: 0.0480%
+
+=== coherent-window circuit metrics ===
+  avg executed Toffoli  : 1127527.255
+  avg executed Clifford : 74771627.270
+  emitted ops           : 216306123
+  qubits                : 1338
+
+=== coherent-window experiment OK ===
