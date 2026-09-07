@@ -1,0 +1,9 @@
+{
+  "EVAL_SHARED_SEED": "ecdsafail-windowed-independent-random-100k-v1",
+  "EVAL_THREADS": "8",
+  "MIXED_WINDOW_BITS": "16",
+  "EVAL_TESTS": "100000",
+  "EVAL_MAX_ERROR_RATE": "1",
+  "EVAL_CHECKPOINT_DIR": "<experiment-output>/mixed/checkpoint",
+  "source_commit": "897dda2b0cf267151ecd973252d2a5078cbf1b63"
+}

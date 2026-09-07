@@ -1,0 +1,43 @@
+{
+  "date": "2026-09-07",
+  "circuit_source_commit": "a1373a0582c9554d66633b13c76300d0ecdf81c4",
+  "mixed_pingpong_source_commit": "897dda2b0cf267151ecd973252d2a5078cbf1b63",
+  "mixed_pingpong_submission": "3616dbf2-f32d-41c8-9ea2-7a5bbe372fc0",
+  "windowed_jump2_source_commit": "15a29ac9b1e97fc21eb81b9a6f0f6d9c4dc7a92e",
+  "windowed_jump2_outcomes": "Historical August 9, 2026 paired ledger. Its fingerprint was checked against its frozen operation stream by stream_fingerprint.py. Not a fresh evaluation.",
+  "host_resources": "32 GiB RAM, 12 logical CPUs",
+  "mixed_jump2_source_commit": "60d61859fa6965eba53634f91877b1141a6f9dce",
+  "compiler": "rustc 1.93.0 (254b59607 2026-01-19), Homebrew, LLVM 21.1.8, aarch64-apple-darwin",
+  "build_command": "cargo build --release --locked --offline --bin build_circuit --bin eval_circuit",
+  "sha256": {
+    "Cargo.lock": "42ff16919e551891ad1b21821329b116d133194245a0e0734a33573dfe598e07",
+    "src/bin/eval_circuit.rs": "1b273b46098c5c782bfbcfda243f20279c934da2b15871e5957828af7d5bc766",
+    "src/sim.rs": "7ae27124632a9881301a2d1eca4b1be07d1c0b3498572144824965b16138415f",
+    "src/windowed_table.rs": "8226d5a016f61457fcbe6c25de6535c569506a2b0a184afcbe9c1e07ddf91315",
+    "target/release/build_circuit": "c937f6d9c49310338cb810ad4a2ee889b430cde2bfbf7e024d2ea0ad05781745",
+    "target/release/eval_circuit": "384a3bd68e61cc68ba7fed3e2ce624044c530f5ccde8e29c5ed4beb7f07494f2",
+    "mixed_pingpong/ops.bin": "8d135db0aa0123fd143fc78ee1dbbe5fe6b851af9003352fde0f2fcc90458b34",
+    "windowed_pingpong/ops.bin": "76c990d44ab6dc1959141ef873dccdaaeab8099da302606f6cde76a802a293c4",
+    "windowed_jump2/ops.bin": "cb820d2829750cc73814ae1ea2ceb908696462270b3f5a60ebbc7128f4c0e274"
+  },
+  "windowed_settings": {
+    "WINDOWED_MODE": "1",
+    "WINDOW_BITS": "16",
+    "SINGLE_CCX_FANOUT_DISABLE": "1",
+    "WINDOWED_TESTS": "100000",
+    "WINDOWED_SEQUENCE_CALLS": "1",
+    "WINDOWED_MAX_ERROR_RATE": "1",
+    "EVAL_SHARED_SEED": "ecdsafail-windowed-independent-random-100k-v1",
+    "EVAL_THREADS": "8",
+    "WINDOWED_QROM_MODE": "unset (default unary paired columns, K=2 single column)",
+    "WINDOWED_QROM_UNLOAD": "unset (default exact payload replay)"
+  },
+  "notes": [
+    "The allowed-error value collects every outcome and is not a success threshold.",
+    "Binary hashes describe this local build and need not reproduce on a different compiler or path.",
+    "The inherited identity-tail nonce is not used to select this corpus.",
+    "The corpus generator consumes 32 pseudorandom bytes as a little-endian 256-bit scalar, not an exactly uniform scalar obtained by rejection in Z_r.",
+    "The evaluator, simulator, and window-table source files are identical to the two-column Jump-2 donor.",
+    "An optional full-memory reference checkpoint check was stopped because it competed with the primary evaluation for RAM. The bounded-memory fingerprint check completed successfully instead. No primary outcomes were discarded or regenerated."
+  ]
+}

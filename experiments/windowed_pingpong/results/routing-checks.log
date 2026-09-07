@@ -1,0 +1,11 @@
+=== quantum_ecc: build_circuit (untrusted stage) ===
+
+-- building circuit --
+QROM coherent-branch checks passed: unary and K=2, w=0..5, four measurement records per layout
+QROM address coverage passed: variant=0, 65,536 addresses, no address/phase/workspace failures
+QROM address coverage passed: variant=1, 65,536 addresses, no address/phase/workspace failures
+QROM address coverage passed: variant=2, 65,536 addresses, no address/phase/workspace failures
+  emitted ops : 0
+  wrote       : ops.bin (25 bytes on disk, 16 uncompressed, 0.6x)
+
+=== build_circuit OK ===

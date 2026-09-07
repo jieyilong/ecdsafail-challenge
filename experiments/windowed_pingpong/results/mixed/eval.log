@@ -1,0 +1,34 @@
+=== quantum_ecc: eval_circuit (trusted stage) ===
+
+  loaded ops  : 13586833
+  qubits      : 1321
+  bits        : 1010987
+
+-- mixed-add comparison on 16-bit table cases (100000 shots) --
+  checkpoint directory     : <paper-workspace>/outputs/ecdsafail-pingpong-windowed-100k-20260907/mixed/checkpoint
+  evaluator threads        : 8
+  paired interface         : baseline-classical-addend
+  progress                : 10048/100000 shots; 4 failures observed
+  progress                : 20032/100000 shots; 9 failures observed
+  progress                : 30016/100000 shots; 13 failures observed
+  progress                : 40000/100000 shots; 15 failures observed
+  progress                : 50048/100000 shots; 21 failures observed
+  progress                : 60032/100000 shots; 25 failures observed
+  progress                : 70016/100000 shots; 29 failures observed
+  progress                : 80000/100000 shots; 30 failures observed
+  progress                : 90048/100000 shots; 36 failures observed
+  progress                : 100000/100000 shots; 42 failures observed
+  tested shots            : 100000
+  identity-table rows     : 2 (0.0020%)
+  classical mismatches    : 35 (0.0350%)
+  phase-failure shots     : 17 (0.0170%; 17 batches)
+  ancilla-failure shots   : 0 (0.0000%; 0 batches)
+  shots failing any channel: 42 (0.0420%)
+
+=== mixed-add comparison metrics ===
+  avg executed Toffoli  : 952719.423
+  avg executed Clifford : 11110772.133
+  emitted ops           : 13586833
+  qubits                : 1321
+
+=== mixed-add comparison OK ===

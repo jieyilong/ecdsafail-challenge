@@ -1,0 +1,12 @@
+{
+  "EVAL_SHARED_SEED": "ecdsafail-windowed-independent-random-100k-v1",
+  "EVAL_THREADS": "8",
+  "WINDOWED_MODE": "1",
+  "WINDOW_BITS": "16",
+  "SINGLE_CCX_FANOUT_DISABLE": "1",
+  "WINDOWED_TESTS": "100000",
+  "WINDOWED_SEQUENCE_CALLS": "1",
+  "WINDOWED_MAX_ERROR_RATE": "1",
+  "EVAL_CHECKPOINT_DIR": "<experiment-output>/windowed-pingpong/checkpoint",
+  "source_commit": "a1373a0582c9554d66633b13c76300d0ecdf81c4"
+}

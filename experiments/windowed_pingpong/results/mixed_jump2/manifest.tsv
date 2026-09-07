@@ -1,0 +1,8 @@
+format	paired-window-checkpoint-v1
+interface	baseline-classical-addend
+seed	ecdsafail-windowed-independent-random-100k-v1
+window_bits	16
+target_shots	100000
+qubits	1151
+ops	9133449
+ops_fingerprint	f12caf0fec5166219a1ae37ed155f603
