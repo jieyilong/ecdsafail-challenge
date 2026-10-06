@@ -73,6 +73,10 @@ fn fredkin(c: &mut Builder, ctrl: Q, a: Q, b: Q) {
     c.cx(b, a);
 }
 
+pub(crate) fn parity_source_carry() -> bool {
+    true
+}
+
 /// Two's-complement resize (`heo`): grow = sign-extend, trim = CX from the new top + free.
 pub fn resize_signed(c: &mut Builder, reg: &mut Vec<Q>, w: usize) {
     while reg.len() < w {
@@ -216,15 +220,21 @@ pub fn cof_fwd(
     for i in 1..e_prev {
         fredkin(c, isc, cof.s[i], cof.r[i]);
     }
-    c.cx(isc, cof.s[0]);
-    c.cx(isc, cof.r[0]);
     let n = w.ecof;
     let k = add_operand_len(w, e_prev);
     resize_unsigned(c, &mut cof.r, n);
     resize_unsigned(c, &mut cof.s, k);
     c.x(typ);
-    let plan = adder::add(c, Some(typ), &cof.s, &cof.r, None, cap);
+    let plan = adder::add(
+        c,
+        Some(typ),
+        &cof.s[1..],
+        &cof.r[1..],
+        Some(cof.s[0]),
+        cap,
+    );
     c.x(typ);
+    c.cx(isc, cof.s[0]);
     let z = c.alloc_qubit();
     cof.s.insert(0, z);
     plan
@@ -302,16 +312,22 @@ pub fn cof_rev(
         "cof_rev: s {} vs r {n}",
         cof.s.len()
     );
+    c.cx(isc, cof.s[0]);
     c.x(typ);
-    let plan = adder::sub(c, Some(typ), &cof.s, &cof.r, None, cap);
+    let plan = adder::sub(
+        c,
+        Some(typ),
+        &cof.s[1..],
+        &cof.r[1..],
+        Some(cof.s[0]),
+        cap,
+    );
     c.x(typ);
     resize_unsigned(c, &mut cof.r, e_prev);
     resize_unsigned(c, &mut cof.s, e_prev);
     for i in 1..e_prev {
         fredkin(c, isc, cof.s[i], cof.r[i]);
     }
-    c.cx(isc, cof.s[0]);
-    c.cx(isc, cof.r[0]);
     plan
 }
 

@@ -420,6 +420,16 @@ fn fold(c: &mut Builder, cof: &mut Cof, p: &WalkParams) {
     let rm = room(c, p.cap);
     if rm >= 12 {
         mm::cadd_k(c, &cof.s[..w], secp_c(), top, rm);
+    } else if tick::parity_source_carry() {
+        adder::sub(
+            c,
+            Some(top),
+            &cof.r[1..w],
+            &cof.s[1..w],
+            Some(cof.r[0]),
+            Some(p.cap),
+        );
+        c.cx(top, cof.s[0]);
     } else {
         // r == p whenever the top wire can be set (park tick and after): s -= top * (p mod 2^w)
         adder::sub(c, Some(top), &cof.r[..w], &cof.s[..w], None, Some(p.cap));
@@ -437,6 +447,16 @@ fn unfold(c: &mut Builder, cof: &mut Cof, p: &WalkParams) {
     let rm = room(c, p.cap);
     if rm >= 12 {
         mm::csub_k(c, &cof.s[..w], secp_c(), top, rm);
+    } else if tick::parity_source_carry() {
+        adder::add(
+            c,
+            Some(top),
+            &cof.r[1..w],
+            &cof.s[1..w],
+            Some(cof.r[0]),
+            Some(p.cap),
+        );
+        c.cx(top, cof.s[0]);
     } else {
         adder::add(c, Some(top), &cof.r[..w], &cof.s[..w], None, Some(p.cap));
     }
