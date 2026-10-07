@@ -55,7 +55,7 @@ fn knob_usize(name: &str, default: usize) -> usize {
 }
 
 /// Source defaults.
-pub const CAP: usize = 1057;
+pub const CAP: usize = 1049;
 pub const R: usize = 404;
 pub const PARK_J: usize = 14;
 pub const W_DEC: usize = 64;

@@ -105,14 +105,13 @@ impl Envelope {
                 std::fs::read_to_string(&path)
                     .unwrap_or_else(|e| panic!("read SKYCOF_MICROPHASE_TABLE={path}: {e}")),
             ),
-            None => Some(include_str!("micro_widths_c_margin2_1057.tsv").to_owned()),
+            None => Some(include_str!("micro_widths_q1049_selected_repair.tsv").to_owned()),
         };
         if let Some(table) = micro_table {
             assert_eq!(r, 404, "microphase table is frozen for R404");
-            assert_eq!(
-                super::pointadd::params().walk.cap,
-                1057,
-                "microphase table is frozen for cap 1057"
+            assert!(
+                (1040..=1057).contains(&super::pointadd::params().walk.cap),
+                "microphase table was fitted near cap 1057; wider cap changes its owner contract"
             );
             assert!(
                 super::pointadd::knob("SKYCOF_HISTORY_TABLE").is_none(),
@@ -383,6 +382,35 @@ fn ghost_odo_prime_xor(c: &mut Builder, p: &WalkParams, cof: &Cof, z: Q, typ: Q)
     c.release_clean(g);
 }
 
+fn knob_on_by_default(name: &str) -> bool {
+    super::pointadd::knob(name)
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(true)
+}
+
+/// Post-rail the two low bits have opposite parity.  During decoder/odometer
+/// work neither rail is read, so turn r2[0] into a clean temporary owner and
+/// restore the exact physical ID before rail execution resumes.
+fn with_rail_parity_loan<R>(c: &mut Builder, rails: &Rails, body: impl FnOnce(&mut Builder) -> R) -> R {
+    if !knob_on_by_default("SKYCOF_RAIL_PARITY_LOAN") {
+        return body(c);
+    }
+    let (a, q) = (rails.r1[0], rails.r2[0]);
+    assert_ne!(a, q);
+    assert_eq!(c.tracked_condition_depth(), Some(0));
+    let live = c.active_qubits();
+    c.cx(a, q);
+    c.x(q);
+    c.release_clean(q);
+    let out = body(c);
+    assert_eq!(c.active_qubits() + 1, live, "rail parity loan leaked a wire");
+    c.reacquire(q);
+    c.x(q);
+    c.cx(a, q);
+    assert_eq!(c.active_qubits(), live);
+    out
+}
+
 fn secp_c() -> u128 {
     mm::Field::secp().c
 }
@@ -512,6 +540,35 @@ fn erase_frozen(c: &mut Builder, w: Q, lits: &[Q]) {
     c.release_clean(w);
 }
 
+/// Toggle `target` by the AND of `controls`, borrowing arbitrary dirty wires
+/// and restoring them exactly.  The two sweeps cancel every contribution from
+/// the dirty initial values (Barenco-style dirty MCX).
+fn dirty_mcx(c: &mut Builder, controls: &[Q], target: Q, dirty: &[Q]) {
+    match controls.len() {
+        0 => c.x(target),
+        1 => c.cx(controls[0], target),
+        2 => c.ccx(controls[0], controls[1], target),
+        m => {
+            let d = &dirty[..m - 2];
+            for bottom in [true, false] {
+                if bottom {
+                    c.ccx(controls[0], controls[1], d[0]);
+                }
+                for i in 1..d.len() {
+                    c.ccx(d[i - 1], controls[i + 1], d[i]);
+                }
+                c.ccx(*d.last().unwrap(), *controls.last().unwrap(), target);
+                for i in (1..d.len()).rev() {
+                    c.ccx(d[i - 1], controls[i + 1], d[i]);
+                }
+                if bottom {
+                    c.ccx(controls[0], controls[1], d[0]);
+                }
+            }
+        }
+    }
+}
+
 /// Bits per part of the park test (each part's AND is a frozen wire; its tree is `PARK_PART - 1` wires).
 const PARK_PART: usize = 5;
 
@@ -523,22 +580,46 @@ const PARK_PART: usize = 5;
 pub struct ParkTest {
     pub z: Q,
     parts: Vec<Vec<Q>>,
+    dirty: Option<(Vec<Q>, Vec<Q>)>,
 }
 
 impl ParkTest {
-    pub fn compute(c: &mut Builder, r: &[Q], j: usize) -> Self {
+    pub fn compute(c: &mut Builder, r: &[Q], s: &[Q], j: usize) -> Self {
         assert_eq!(r.len(), CLAMP);
         assert!(j > PARK_PART && j <= CLAMP);
         let bits = &r[CLAMP - j..];
+        if knob_on_by_default("SKYCOF_DIRTY_PARK") {
+            assert!(s.len() >= j - 2);
+            let z = c.alloc_qubit();
+            let controls = bits.to_vec();
+            let dirty = s[..j - 2].to_vec();
+            assert!(!controls.contains(&z) && !dirty.contains(&z));
+            assert!(controls.iter().all(|q| !dirty.contains(q)));
+            dirty_mcx(c, &controls, z, &dirty);
+            return ParkTest {
+                z,
+                parts: Vec::new(),
+                dirty: Some((controls, dirty)),
+            };
+        }
         let parts: Vec<Vec<Q>> = bits.chunks(PARK_PART).map(|p| p.to_vec()).collect();
         let a: Vec<Q> = parts.iter().map(|p| and_frozen(c, p)).collect();
         let z = and_frozen(c, &a);
         for (ai, p) in a.iter().zip(&parts).rev() {
             erase_frozen(c, *ai, p);
         }
-        ParkTest { z, parts }
+        ParkTest {
+            z,
+            parts,
+            dirty: None,
+        }
     }
     pub fn uncompute(self, c: &mut Builder) {
+        if let Some((controls, dirty)) = self.dirty {
+            dirty_mcx(c, &controls, self.z, &dirty);
+            c.release_clean(self.z);
+            return;
+        }
         let m = c.alloc_bit();
         c.hmr(self.z, m);
         c.release_clean(self.z);
@@ -590,9 +671,46 @@ fn with_odo_r0_loan(
 }
 
 /// `g = z & typ; odo += g; typ ^= g; g ^= z & [odo != 0]` (g ends 0).
-fn odo_fwd(c: &mut Builder, z: Q, typ: Q, odo: &[Q], cap: usize) {
+fn odo_inc_dirty(c: &mut Builder, odo: &[Q], ctl: Q, dirty: &[Q]) {
+    for i in (1..odo.len()).rev() {
+        let mut controls = Vec::with_capacity(i + 1);
+        controls.push(ctl);
+        controls.extend_from_slice(&odo[..i]);
+        dirty_mcx(c, &controls, odo[i], dirty);
+    }
+    c.cx(ctl, odo[0]);
+}
+
+fn odo_dec_dirty(c: &mut Builder, odo: &[Q], ctl: Q, dirty: &[Q]) {
+    c.cx(ctl, odo[0]);
+    for i in 1..odo.len() {
+        let mut controls = Vec::with_capacity(i + 1);
+        controls.push(ctl);
+        controls.extend_from_slice(&odo[..i]);
+        dirty_mcx(c, &controls, odo[i], dirty);
+    }
+}
+
+fn odo_nonzero_dirty(c: &mut Builder, odo: &[Q], z: Q, target: Q, dirty: &[Q]) {
+    c.cx(z, target);
+    c.x_all(odo);
+    let mut controls = Vec::with_capacity(odo.len() + 1);
+    controls.push(z);
+    controls.extend_from_slice(odo);
+    dirty_mcx(c, &controls, target, dirty);
+    c.x_all(odo);
+}
+
+fn odo_fwd(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q], cap: usize) {
     let g = c.alloc_qubit();
     c.ccx(z, typ, g);
+    if knob_on_by_default("SKYCOF_DIRTY_ODO") {
+        odo_inc_dirty(c, odo, g, dirty);
+        c.cx(g, typ);
+        odo_nonzero_dirty(c, odo, z, g, dirty);
+        c.release_clean(g);
+        return;
+    }
     let rm = odo_room(c, cap);
     mm::odo_inc(c, odo, g, rm);
     c.cx(g, typ);
@@ -607,8 +725,16 @@ fn odo_fwd(c: &mut Builder, z: Q, typ: Q, odo: &[Q], cap: usize) {
 }
 
 /// Exact inverse of [`odo_fwd`].
-fn odo_rev(c: &mut Builder, z: Q, typ: Q, odo: &[Q], cap: usize) {
+fn odo_rev(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q], cap: usize) {
     let g = c.alloc_qubit();
+    if knob_on_by_default("SKYCOF_DIRTY_ODO") {
+        odo_nonzero_dirty(c, odo, z, g, dirty);
+        c.cx(g, typ);
+        odo_dec_dirty(c, odo, g, dirty);
+        c.ccx(z, typ, g);
+        c.release_clean(g);
+        return;
+    }
     let nz = c.alloc_qubit();
     let rm = odo_room(c, cap);
     mm::odo_nonzero_xor(c, odo, nz, rm);
@@ -698,37 +824,40 @@ fn dispose_fwd(
     env: &Envelope,
     t1: usize,
     typ: Q,
+    rails: &Rails,
     cof: &Cof,
     h: &mut Hreg,
     odo: &[Q],
 ) {
     h.grow_to(c, env.h[t1]);
     if t1 == 0 {
-        dec::first_tick(c, &cof.s, typ, None);
+        with_rail_parity_loan(c, rails, |c| dec::first_tick(c, &cof.s, typ, None));
     } else if env.cof[t1] == CLAMP {
         trace_step(c, "pre-park");
-        let zt = ParkTest::compute(c, &cof.r, p.park_j);
+        let zt = ParkTest::compute(c, &cof.r, &cof.s, p.park_j);
         trace_step(c, "parktest");
-        ghost_odo_prime_xor(c, p, cof, zt.z, typ);
-        let ov = odo_view(p, cof, odo);
-        with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
-            odo_fwd(c, zt.z, typ, ov, p.cap)
+        with_rail_parity_loan(c, rails, |c| {
+            ghost_odo_prime_xor(c, p, cof, zt.z, typ);
+            let ov = odo_view(p, cof, odo);
+            with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
+                odo_fwd(c, zt.z, typ, ov, &cof.s, p.cap)
+            });
+            trace_step(c, "odo");
+            c.x(zt.z);
+            let cfg = dec_cfg(c, p, env.cof[t1], true);
+            let io = TickIo {
+                s: &cof.s,
+                r: &cof.r,
+                e: env.cof[t1],
+                en: Some(zt.z),
+                typ,
+                cflag: None,
+                park: None,
+            };
+            dec::push(c, &io, h, cfg);
+            trace_step(c, "dec");
+            c.x(zt.z);
         });
-        trace_step(c, "odo");
-        c.x(zt.z);
-        let cfg = dec_cfg(c, p, env.cof[t1], true);
-        let io = TickIo {
-            s: &cof.s,
-            r: &cof.r,
-            e: env.cof[t1],
-            en: Some(zt.z),
-            typ,
-            cflag: None,
-            park: None,
-        };
-        dec::push(c, &io, h, cfg);
-        trace_step(c, "dec");
-        c.x(zt.z);
         zt.uncompute(c);
         trace_step(c, "unpark");
     } else {
@@ -742,7 +871,7 @@ fn dispose_fwd(
             cflag: None,
             park: None,
         };
-        dec::push(c, &io, h, cfg);
+        with_rail_parity_loan(c, rails, |c| dec::push(c, &io, h, cfg));
     }
     c.release_clean(typ);
 }
@@ -754,6 +883,7 @@ fn dispose_rev(
     p: &WalkParams,
     env: &Envelope,
     t1: usize,
+    rails: &Rails,
     cof: &Cof,
     h: &mut Hreg,
     odo: &[Q],
@@ -761,27 +891,29 @@ fn dispose_rev(
     h.shrink_to(c, env.h[t1]);
     let typ = c.alloc_qubit();
     if t1 == 0 {
-        dec::first_tick(c, &cof.s, typ, None);
+        with_rail_parity_loan(c, rails, |c| dec::first_tick(c, &cof.s, typ, None));
     } else if env.cof[t1] == CLAMP {
-        let zt = ParkTest::compute(c, &cof.r, p.park_j);
-        c.x(zt.z);
-        let cfg = dec_cfg(c, p, env.cof[t1], true);
-        let io = TickIo {
-            s: &cof.s,
-            r: &cof.r,
-            e: env.cof[t1],
-            en: Some(zt.z),
-            typ,
-            cflag: None,
-            park: None,
-        };
-        dec::pop(c, &io, h, cfg);
-        c.x(zt.z);
-        let ov = odo_view(p, cof, odo);
-        with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
-            odo_rev(c, zt.z, typ, ov, p.cap)
+        let zt = ParkTest::compute(c, &cof.r, &cof.s, p.park_j);
+        with_rail_parity_loan(c, rails, |c| {
+            c.x(zt.z);
+            let cfg = dec_cfg(c, p, env.cof[t1], true);
+            let io = TickIo {
+                s: &cof.s,
+                r: &cof.r,
+                e: env.cof[t1],
+                en: Some(zt.z),
+                typ,
+                cflag: None,
+                park: None,
+            };
+            dec::pop(c, &io, h, cfg);
+            c.x(zt.z);
+            let ov = odo_view(p, cof, odo);
+            with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
+                odo_rev(c, zt.z, typ, ov, &cof.s, p.cap)
+            });
+            ghost_odo_prime_xor(c, p, cof, zt.z, typ);
         });
-        ghost_odo_prime_xor(c, p, cof, zt.z, typ);
         zt.uncompute(c);
     } else {
         let cfg = dec_cfg(c, p, env.cof[t1], false);
@@ -794,7 +926,7 @@ fn dispose_rev(
             cflag: None,
             park: None,
         };
-        dec::pop(c, &io, h, cfg);
+        with_rail_parity_loan(c, rails, |c| dec::pop(c, &io, h, cfg));
     }
     typ
 }
@@ -916,7 +1048,7 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
         trace_step(c, "rail");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
         if let Some(tp) = st.typ {
-            dispose_fwd(c, p, env, t - 1, tp, &st.cof, &mut st.h, &st.odo);
+            dispose_fwd(c, p, env, t - 1, tp, &st.rails, &st.cof, &mut st.h, &st.odo);
         }
         trace_cost(c, "fwd", t, "decoder", t0);
         trace_step(c, "dispose");
@@ -995,7 +1127,7 @@ pub fn forward_from(c: &mut Builder, p: &WalkParams, env: &Envelope, mut st: Act
         tops,
         ..
     } = st;
-    dispose_fwd(c, p, env, r - 1, typ.unwrap(), &cof, &mut h, &odo);
+    dispose_fwd(c, p, env, r - 1, typ.unwrap(), &rails, &cof, &mut h, &odo);
     // parked rails (R1, R2) = (0, 1) and r = p: classical constants
     let (post_r1, post_r2) = env.post_widths(r - 1);
     assert_eq!(rails.r1.len(), post_r1);
@@ -1076,7 +1208,7 @@ pub fn backward_from_active(
         let isc = tick::isc_recompute(c, &cof, typ);
         tick::cof_rev_at(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
         let tprev = if t >= 1 {
-            Some(dispose_rev(c, p, env, t - 1, &cof, &mut h, &odo))
+            Some(dispose_rev(c, p, env, t - 1, &rails, &cof, &mut h, &odo))
         } else {
             None
         };
@@ -1147,7 +1279,7 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
         odo.clear();
     }
     let mut cof = Cof { s, r: rr };
-    let mut typ = dispose_rev(c, p, env, r - 1, &cof, &mut h, &odo);
+    let mut typ = dispose_rev(c, p, env, r - 1, &rails, &cof, &mut h, &odo);
     for t in (0..r).rev() {
         let w = env.widths(t);
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
@@ -1166,7 +1298,7 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
         trace_cost(c, "rev", t, "cofactor", t0);
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
         let tprev = if t >= 1 {
-            Some(dispose_rev(c, p, env, t - 1, &cof, &mut h, &odo))
+            Some(dispose_rev(c, p, env, t - 1, &rails, &cof, &mut h, &odo))
         } else {
             None
         };
