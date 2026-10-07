@@ -501,6 +501,153 @@ fn run_batches(b: &Built, g: &Geo, mode: Mode, inputs: &[Val], tag: &[u8]) -> us
     bad
 }
 
+struct BorrowBuilt {
+    ops: Vec<Op>,
+    nq: usize,
+    nb: usize,
+    io: Vec<Q>,
+    peak: u32,
+}
+
+fn build_borrow_diff(e: usize, room: usize, m: usize, mode: Mode, borrowed: bool) -> BorrowBuilt {
+    let mut c = Builder::new();
+    let s = c.alloc_qubits(e);
+    let r = c.alloc_qubits(e);
+    let en = c.alloc_qubit();
+    let typ = c.alloc_qubit();
+    let mut h = Hreg::new();
+    h.grow_to(&mut c, m);
+    let borrower = c.alloc_qubit();
+    let io = TickIo {
+        s: &s,
+        r: &r,
+        e,
+        en: Some(en),
+        typ,
+        cflag: None,
+        park: None,
+    };
+    let cfg = DecCfg { w: e, room };
+    let base = c.active_qubits();
+    let ((), peak) = c.r3_peak(|c| match (mode, borrowed) {
+        (Mode::Push, false) => dec::push(c, &io, &h, cfg),
+        (Mode::Pop, false) => dec::pop(c, &io, &h, cfg),
+        (Mode::PushPop, false) => {
+            dec::push(c, &io, &h, cfg);
+            dec::pop(c, &io, &h, cfg);
+        }
+        (Mode::Push, true) => dec::push_borrow_amb(c, &io, &h, cfg, borrower),
+        (Mode::Pop, true) => dec::pop_borrow_amb(c, &io, &h, cfg, borrower),
+        (Mode::PushPop, true) => {
+            dec::push_borrow_amb(c, &io, &h, cfg, borrower);
+            dec::pop_borrow_amb(c, &io, &h, cfg, borrower);
+        }
+        (Mode::First, _) => unreachable!(),
+    });
+    assert_eq!(c.active_qubits(), base, "borrowed decoder leaked owners");
+    let mut ios = s;
+    ios.extend(r);
+    ios.push(en);
+    ios.push(typ);
+    ios.extend(h.wires);
+    ios.push(borrower);
+    let (nq, nb) = c.i13_dims();
+    BorrowBuilt {
+        ops: c.take_ops(),
+        nq,
+        nb: nb + 1,
+        io: ios,
+        peak,
+    }
+}
+
+fn borrow_amb_exhaustive() -> bool {
+    // Borrowed-decoder integration asserts an empty tracked condition stack.
+    std::env::set_var("HEO_RESEARCH", "1");
+    std::env::set_var("HEO_PHASE_REPORT", "1");
+    let mut cases = 0u64;
+    let mut ok = true;
+    for e in 2usize..=6 {
+        let n = Window::new(e, e).n();
+        for room in [dec::min_room(true), dec::min_room(true) + n] {
+            let m = 3usize;
+            let nbits = 2 * e + 1 + 1 + m + 1;
+            let total = 1u64 << nbits;
+            cases += total * 3;
+            for mode in [Mode::Push, Mode::Pop, Mode::PushPop] {
+                let ordinary = build_borrow_diff(e, room, m, mode, false);
+                let borrowed = build_borrow_diff(e, room, m, mode, true);
+                assert_eq!(ordinary.io.len(), borrowed.io.len());
+                for lo in (0..total).step_by(64) {
+                    let hi = (lo + 64).min(total);
+                    let mut ro = xof(format!("borrow-ordinary-{e}-{room}-{mode:?}-{lo}").as_bytes());
+                    let mut rb = xof(format!("borrow-special-{e}-{room}-{mode:?}-{lo}").as_bytes());
+                    let mut so = Simulator::new(ordinary.nq, ordinary.nb, &mut ro);
+                    let mut sb = Simulator::new(borrowed.nq, borrowed.nb, &mut rb);
+                    for (bit, (&qo, &qb)) in ordinary.io.iter().zip(&borrowed.io).enumerate() {
+                        let mut word = 0u64;
+                        for case in lo..hi {
+                            if (case >> bit) & 1 == 1 {
+                                word |= 1u64 << (case - lo);
+                            }
+                        }
+                        *so.qubit_mut(qo) = word;
+                        *sb.qubit_mut(qb) = word;
+                    }
+                    so.apply_iter(ordinary.ops.iter());
+                    sb.apply_iter(borrowed.ops.iter());
+                    let live = if hi - lo == 64 {
+                        u64::MAX
+                    } else {
+                        (1u64 << (hi - lo)) - 1
+                    };
+                    let mut go = so.phase & live;
+                    let mut gb = sb.phase & live;
+                    for q in 0..ordinary.nq {
+                        if !ordinary.io.iter().any(|x| x.0 as usize == q) {
+                            go |= so.qubits[q] & live;
+                        }
+                    }
+                    for q in 0..borrowed.nq {
+                        if !borrowed.io.iter().any(|x| x.0 as usize == q) {
+                            gb |= sb.qubits[q] & live;
+                        }
+                    }
+                    if go != 0 || gb != 0 {
+                        eprintln!(
+                            "SKYCOF_DEC_BORROW garbage e={e} room={room} mode={mode:?} lo={lo} ordinary={go:#x} borrowed={gb:#x}"
+                        );
+                        ok = false;
+                        break;
+                    }
+                    for (&qo, &qb) in ordinary.io.iter().zip(&borrowed.io) {
+                        if (so.qubit(qo) ^ sb.qubit(qb)) & live != 0 {
+                            eprintln!(
+                                "SKYCOF_DEC_BORROW state mismatch e={e} room={room} mode={mode:?} lo={lo}"
+                            );
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                println!(
+                    "{{\"kind\":\"skycof-decoder-borrow-amb\",\"e\":{e},\"room\":{room},\"mode\":\"{mode:?}\",\"cases\":{total},\"ordinary_peak\":{},\"borrowed_peak\":{},\"result\":\"{}\"}}",
+                    ordinary.peak,
+                    borrowed.peak,
+                    if ok { "PASS" } else { "FAIL" }
+                );
+                if !ok {
+                    return false;
+                }
+            }
+        }
+    }
+    println!(
+        "{{\"kind\":\"skycof-decoder-borrow-amb-summary\",\"e_min\":2,\"e_max\":6,\"cases\":{cases},\"borrower_values\":2,\"result\":\"PASS\"}}"
+    );
+    true
+}
+
 // ─── 1. exhaustive ──────────────────────────────────────────────────────────────────────
 fn exhaustive() -> bool {
     let maxe = env_usize("SKYCOF_DEC_EXH_MAXE", 6);
@@ -1536,6 +1683,12 @@ fn cost_report() {
 
 pub fn run() {
     let which = env_str("SKYCOF_DEC_SELFTEST", "all");
+    if which == "borrow-amb" {
+        if !borrow_amb_exhaustive() {
+            std::process::exit(1);
+        }
+        return;
+    }
     let all = which == "1" || which == "all";
     let mut ok = true;
     if all || which.contains("exh") {

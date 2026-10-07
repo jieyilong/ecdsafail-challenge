@@ -105,7 +105,7 @@ impl Envelope {
                 std::fs::read_to_string(&path)
                     .unwrap_or_else(|e| panic!("read SKYCOF_MICROPHASE_TABLE={path}: {e}")),
             ),
-            None => Some(include_str!("micro_widths_q1049_selected_repair.tsv").to_owned()),
+            None => Some(include_str!("micro_widths_q1044_hcut4.tsv").to_owned()),
         };
         if let Some(table) = micro_table {
             assert_eq!(r, 404, "microphase table is frozen for R404");
@@ -860,6 +860,34 @@ fn dec_cfg(c: &Builder, p: &WalkParams, e: usize, en: bool) -> DecCfg {
     }
 }
 
+fn borrow_amb_disposal(t1: usize) -> bool {
+    super::pointadd::knob("SKYCOF_DEC_BORROW_AMB")
+        .unwrap_or_else(|| "320,321,322,323,331".to_owned())
+        .split(',')
+        .any(|x| x.trim().parse::<usize>() == Ok(t1))
+}
+
+fn recycle_cofzero_tick(t: usize) -> bool {
+    super::pointadd::knob("SKYCOF_REV_COFZERO")
+        .unwrap_or_else(|| "322".to_owned())
+        .split(',')
+        .any(|x| x.trim().parse::<usize>() == Ok(t))
+}
+
+fn assert_cofzero_disjoint(
+    q: Q,
+    typ: Q,
+    rails: &Rails,
+    cof: &Cof,
+    h: &Hreg,
+    odo: &[Q],
+) {
+    assert!(q != typ);
+    assert!(!rails.r1.contains(&q) && !rails.r2.contains(&q));
+    assert!(!cof.s.contains(&q) && !cof.r.contains(&q));
+    assert!(!h.wires.contains(&q) && !odo.contains(&q));
+}
+
 /// Forward: erase `typ` (letter of tick `t1`) against the cofactor post-state of tick `t1`;
 /// rails are post(t1 + 1).
 #[allow(clippy::too_many_arguments)]
@@ -873,6 +901,7 @@ fn dispose_fwd(
     cof: &Cof,
     h: &mut Hreg,
     odo: &[Q],
+    borrower: Option<Q>,
 ) {
     h.grow_to(c, env.h[t1]);
     if t1 == 0 {
@@ -899,7 +928,12 @@ fn dispose_fwd(
                 cflag: None,
                 park: None,
             };
-            dec::push(c, &io, h, cfg);
+            if borrow_amb_disposal(t1) {
+                let q = borrower.expect("binding decoder needs current-tick isc borrower");
+                dec::push_borrow_amb(c, &io, h, cfg, q);
+            } else {
+                dec::push(c, &io, h, cfg);
+            }
             trace_step(c, "dec");
             c.x(zt.z);
         });
@@ -934,6 +968,7 @@ fn dispose_rev(
     cof: &Cof,
     h: &mut Hreg,
     odo: &[Q],
+    borrower: Option<Q>,
 ) -> Q {
     h.shrink_to(c, env.h[t1]);
     let typ = c.alloc_qubit();
@@ -953,7 +988,12 @@ fn dispose_rev(
                 cflag: None,
                 park: None,
             };
-            dec::pop(c, &io, h, cfg);
+            if borrow_amb_disposal(t1) {
+                let q = borrower.expect("binding decoder needs current-tick isc borrower");
+                dec::pop_borrow_amb(c, &io, h, cfg, q);
+            } else {
+                dec::pop(c, &io, h, cfg);
+            }
             c.x(zt.z);
             let ov = odo_view(p, cof, odo);
             with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
@@ -1092,12 +1132,24 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
             &w,
             Some(p.cap),
             Some(st.cof.r[0]),
+            Some(t),
         );
         trace_cost(c, "fwd", t, "rail", t0);
         trace_step(c, "rail");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
         if let Some(tp) = st.typ {
-            dispose_fwd(c, p, env, t - 1, tp, &st.rails, &st.cof, &mut st.h, &st.odo);
+            dispose_fwd(
+                c,
+                p,
+                env,
+                t - 1,
+                tp,
+                &st.rails,
+                &st.cof,
+                &mut st.h,
+                &st.odo,
+                Some(isc),
+            );
         }
         trace_cost(c, "fwd", t, "decoder", t0);
         trace_step(c, "dispose");
@@ -1176,7 +1228,18 @@ pub fn forward_from(c: &mut Builder, p: &WalkParams, env: &Envelope, mut st: Act
         tops,
         ..
     } = st;
-    dispose_fwd(c, p, env, r - 1, typ.unwrap(), &rails, &cof, &mut h, &odo);
+    dispose_fwd(
+        c,
+        p,
+        env,
+        r - 1,
+        typ.unwrap(),
+        &rails,
+        &cof,
+        &mut h,
+        &odo,
+        None,
+    );
     // parked rails (R1, R2) = (0, 1) and r = p: classical constants
     let (post_r1, post_r2) = env.post_widths(r - 1);
     assert_eq!(rails.r1.len(), post_r1);
@@ -1254,13 +1317,36 @@ pub fn backward_from_active(
             }
             TopFate::None => {}
         }
-        let isc = tick::isc_recompute(c, &cof, typ);
-        tick::cof_rev_at(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+        trace_step(c, "rev-unfold");
+        let recycle_zero = recycle_cofzero_tick(t);
+        let isc = if recycle_zero {
+            tick::isc_recompute_from_zero_head(c, &mut cof, typ)
+        } else {
+            tick::isc_recompute(c, &cof, typ)
+        };
+        if recycle_zero {
+            assert_cofzero_disjoint(isc, typ, &rails, &cof, &h, &odo);
+            tick::cof_rev_at_zero_head(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+        } else {
+            tick::cof_rev_at(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+        }
+        trace_step(c, "rev-cof");
         let tprev = if t >= 1 {
-            Some(dispose_rev(c, p, env, t - 1, &rails, &cof, &mut h, &odo))
+            Some(dispose_rev(
+                c,
+                p,
+                env,
+                t - 1,
+                &rails,
+                &cof,
+                &mut h,
+                &odo,
+                Some(isc),
+            ))
         } else {
             None
         };
+        trace_step(c, "rev-dec");
         tick::rail_rev_micro(
             c,
             &mut rails,
@@ -1271,7 +1357,9 @@ pub fn backward_from_active(
             (prev[t].r1, prev[t].r2),
             Some(p.cap),
             Some(cof.r[0]),
+            Some(t),
         );
+        trace_step(c, "rev-rail");
         if let Some(tq) = tprev {
             typ = tq;
         }
@@ -1328,7 +1416,7 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
         odo.clear();
     }
     let mut cof = Cof { s, r: rr };
-    let mut typ = dispose_rev(c, p, env, r - 1, &rails, &cof, &mut h, &odo);
+    let mut typ = dispose_rev(c, p, env, r - 1, &rails, &cof, &mut h, &odo, None);
     for t in (0..r).rev() {
         let w = env.widths(t);
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
@@ -1341,17 +1429,40 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
             TopFate::None => {}
         }
         trace_cost(c, "rev", t, "unfold", t0);
+        trace_step(c, "rev-unfold");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
-        let isc = tick::isc_recompute(c, &cof, typ);
-        tick::cof_rev_at(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+        let recycle_zero = recycle_cofzero_tick(t);
+        let isc = if recycle_zero {
+            tick::isc_recompute_from_zero_head(c, &mut cof, typ)
+        } else {
+            tick::isc_recompute(c, &cof, typ)
+        };
+        if recycle_zero {
+            assert_cofzero_disjoint(isc, typ, &rails, &cof, &h, &odo);
+            tick::cof_rev_at_zero_head(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+        } else {
+            tick::cof_rev_at(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+        }
         trace_cost(c, "rev", t, "cofactor", t0);
+        trace_step(c, "rev-cof");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
         let tprev = if t >= 1 {
-            Some(dispose_rev(c, p, env, t - 1, &rails, &cof, &mut h, &odo))
+            Some(dispose_rev(
+                c,
+                p,
+                env,
+                t - 1,
+                &rails,
+                &cof,
+                &mut h,
+                &odo,
+                Some(isc),
+            ))
         } else {
             None
         };
         trace_cost(c, "rev", t, "decoder", t0);
+        trace_step(c, "rev-dec");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
         tick::rail_rev_micro(
             c,
@@ -1363,8 +1474,10 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
             (prev[t].r1, prev[t].r2),
             Some(p.cap),
             Some(cof.r[0]),
+            Some(t),
         );
         trace_cost(c, "rev", t, "rail", t0);
+        trace_step(c, "rev-rail");
         trace_tick(c, "rev", t);
         if let Some(tq) = tprev {
             typ = tq;

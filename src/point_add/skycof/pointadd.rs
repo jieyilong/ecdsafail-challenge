@@ -55,7 +55,7 @@ fn knob_usize(name: &str, default: usize) -> usize {
 }
 
 /// Source defaults.
-pub const CAP: usize = 1049;
+pub const CAP: usize = 1044;
 pub const R: usize = 404;
 pub const PARK_J: usize = 14;
 pub const W_DEC: usize = 64;
@@ -68,6 +68,38 @@ pub struct Params {
     pub walk: WalkParams,
     pub mm_guard: usize,
     pub mm_cmpw: usize,
+}
+
+/// Effective `(guard, compare)` windows for the four semantic field-product
+/// roles in call order: MM1 slope value, MM2 numerator debt, MM4 value
+/// product, MM5 slope debt.  Local analysis tools use this exported view so
+/// their necessary filters cannot silently drift from the emitted circuit.
+pub fn effective_mm_role_windows() -> [(usize, usize); 4] {
+    let p = params();
+    let targeted_repair = knob("SKYCOF_MM_TARGETED_REPAIR")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(true);
+    if !targeted_repair {
+        return [(p.mm_guard, p.mm_cmpw); 4];
+    }
+    [
+        (
+            knob_usize("SKYCOF_MM1_GUARD", 24),
+            knob_usize("SKYCOF_MM1_CMPW", 28),
+        ),
+        (
+            knob_usize("SKYCOF_MM2_GUARD", 25),
+            knob_usize("SKYCOF_MM2_CMPW", 24),
+        ),
+        (
+            knob_usize("SKYCOF_MM4_GUARD", 22),
+            knob_usize("SKYCOF_MM4_CMPW", 25),
+        ),
+        (
+            knob_usize("SKYCOF_MM5_GUARD", 24),
+            knob_usize("SKYCOF_MM5_CMPW", 28),
+        ),
+    ]
 }
 
 pub fn params() -> &'static Params {
@@ -170,33 +202,14 @@ fn mm_cfg(c: &Builder, extra_live: usize, role: MmRole) -> mm::Cfg {
         "skycof modmul: room {room} too small (live {})",
         c.active_qubits()
     );
-    let (mut guard, mut cmpw) = (p.mm_guard, p.mm_cmpw);
-    let targeted_repair = knob("SKYCOF_MM_TARGETED_REPAIR")
-        .map(|v| v != "0" && !v.is_empty())
-        .unwrap_or(true);
-    if targeted_repair {
-        // Role-specific fitted windows. Keep every semantic role independently
-        // tunable so a repair in one product does not widen all products.
-        (guard, cmpw) = match role {
-            MmRole::SlopeValue => (
-                knob_usize("SKYCOF_MM1_GUARD", 24),
-                knob_usize("SKYCOF_MM1_CMPW", 28),
-            ),
-            MmRole::NumeratorDebt => (
-                knob_usize("SKYCOF_MM2_GUARD", 25),
-                knob_usize("SKYCOF_MM2_CMPW", 24),
-            ),
-            MmRole::ValueProduct => (
-                knob_usize("SKYCOF_MM4_GUARD", 22),
-                knob_usize("SKYCOF_MM4_CMPW", 25),
-            ),
-            MmRole::SlopeDebt => (
-                knob_usize("SKYCOF_MM5_GUARD", 24),
-                knob_usize("SKYCOF_MM5_CMPW", 28),
-            ),
-            MmRole::Generic => (guard, cmpw),
-        };
-    }
+    let windows = effective_mm_role_windows();
+    let (guard, cmpw) = match role {
+        MmRole::SlopeValue => windows[0],
+        MmRole::NumeratorDebt => windows[1],
+        MmRole::ValueProduct => windows[2],
+        MmRole::SlopeDebt => windows[3],
+        MmRole::Generic => (p.mm_guard, p.mm_cmpw),
+    };
     mm::Cfg::windowed(mm::Field::secp(), guard, cmpw, room)
 }
 

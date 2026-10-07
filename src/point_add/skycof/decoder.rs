@@ -209,6 +209,168 @@ impl Scope {
     }
 }
 
+/// Compare scope for the binding enabled decoder with `amb = D & ge` kept
+/// virtual.  The caller supplies an arbitrary dirty borrower for each use of
+/// that predicate; the borrower is restored after every controlled action.
+pub struct BorrowScope {
+    win: Window,
+    j: usize,
+    pub d: Q,
+    pub ge: Q,
+    gid: Vec<Q>,
+    a: Vec<Q>,
+    bb: Vec<Q>,
+    r0: Q,
+}
+
+impl BorrowScope {
+    fn cin(&self, i: usize) -> Q {
+        if i == 0 {
+            self.r0
+        } else if i <= self.j {
+            self.gid[i - 1]
+        } else {
+            self.a[i - 1]
+        }
+    }
+}
+
+fn assert_borrow_disjoint(io: &TickIo, h: &Hreg, q: Q) {
+    assert_eq!(
+        io.en.is_some(),
+        true,
+        "borrowed ambiguity requires enabled decoder"
+    );
+    assert!(io.cflag.is_none(), "borrowed ambiguity cflag unsupported");
+    assert!(io.park.is_none(), "borrowed ambiguity park unsupported");
+    assert!(q != io.typ && io.en != Some(q));
+    assert!(!io.s.contains(&q) && !io.r.contains(&q));
+    assert!(!h.wires.contains(&q));
+}
+
+/// Compute D and the original compare core, but do not allocate/materialize
+/// `amb`.  Geometry and Gidney/Cuccaro selection intentionally match [`open`].
+fn open_borrow(c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg, q: Q) -> BorrowScope {
+    assert_borrow_disjoint(io, h, q);
+    assert_eq!(
+        c.tracked_condition_depth(),
+        Some(0),
+        "borrowed ambiguity requires an empty outer condition stack"
+    );
+    let win = Window::new(io.e, cfg.w);
+    assert!(io.s.len() >= io.e && io.r.len() >= io.e);
+    let n = win.n();
+    let j = gidney_bits(n, cfg.room, true);
+    let s1 = io.s[1];
+    let en = io.en.unwrap();
+    let d = c.alloc_qubit();
+    c.x(s1);
+    c.ccx(en, s1, d);
+    c.x(s1);
+    let a: Vec<Q> = (0..n).map(|i| io.r[win.lo + i]).collect();
+    let bb: Vec<Q> = (0..n)
+        .map(|i| {
+            if i + 1 < n {
+                io.s[win.lo + 1 + i]
+            } else {
+                io.s[0]
+            }
+        })
+        .collect();
+    c.x_all(&bb);
+    let mut sc = BorrowScope {
+        win,
+        j,
+        d,
+        ge: io.r[0],
+        gid: Vec::with_capacity(j),
+        a,
+        bb,
+        r0: io.r[0],
+    };
+    for i in 0..j {
+        let ci = sc.cin(i);
+        c.cx(ci, sc.a[i]);
+        c.cx(ci, sc.bb[i]);
+        let t = c.alloc_qubit();
+        c.ccx(sc.a[i], sc.bb[i], t);
+        c.cx(ci, t);
+        sc.gid.push(t);
+    }
+    for i in j..n {
+        let ci = sc.cin(i);
+        c.cx(sc.a[i], sc.bb[i]);
+        c.cx(sc.a[i], ci);
+        c.ccx(ci, sc.bb[i], sc.a[i]);
+    }
+    sc.ge = if j == n {
+        sc.gid[n - 1]
+    } else {
+        sc.a[n - 1]
+    };
+    assert!(q != sc.d && q != sc.ge);
+    sc
+}
+
+fn close_borrow(c: &mut Builder, io: &TickIo, sc: BorrowScope) {
+    let n = sc.win.n();
+    for i in (sc.j..n).rev() {
+        let ci = sc.cin(i);
+        c.ccx(ci, sc.bb[i], sc.a[i]);
+        c.cx(sc.a[i], ci);
+        c.cx(sc.a[i], sc.bb[i]);
+    }
+    for i in (0..sc.j).rev() {
+        let ci = sc.cin(i);
+        let t = sc.gid[i];
+        c.cx(ci, t);
+        meas_cz(c, t, sc.a[i], sc.bb[i]);
+        c.cx(ci, sc.a[i]);
+        c.cx(ci, sc.bb[i]);
+    }
+    c.x_all(&sc.bb);
+    let s1 = io.s[1];
+    let en = io.en.unwrap();
+    let m = c.alloc_bit();
+    c.hmr(sc.d, m);
+    c.x(s1);
+    c.cz_if(en, s1, m);
+    c.x(s1);
+    c.free_bit(m);
+    c.release_clean(sc.d);
+}
+
+/// Apply a Fredkin whose control is the virtual predicate `d & ge`, using an
+/// arbitrary dirty borrower `q`.  The two dirty echoes cancel q's unknown
+/// initial contribution and restore q exactly.
+fn fredkin_virtual_amb(c: &mut Builder, q: Q, d: Q, ge: Q, x: Q, y: Q) {
+    assert!(q != d && q != ge && q != x && q != y);
+    c.cx(y, x);
+    c.ccx(d, ge, q);
+    c.ccx(q, x, y);
+    c.ccx(d, ge, q);
+    c.ccx(q, x, y);
+    c.cx(y, x);
+}
+
+fn shift_in_borrow(c: &mut Builder, q: Q, d: Q, ge: Q, typ: Q, h: &[Q]) {
+    for i in (1..h.len()).rev() {
+        fredkin_virtual_amb(c, q, d, ge, h[i], h[i - 1]);
+    }
+    if let Some(&h0) = h.first() {
+        fredkin_virtual_amb(c, q, d, ge, h0, typ);
+    }
+}
+
+fn shift_out_borrow(c: &mut Builder, q: Q, d: Q, ge: Q, typ: Q, h: &[Q]) {
+    if let Some(&h0) = h.first() {
+        fredkin_virtual_amb(c, q, d, ge, h0, typ);
+    }
+    for i in 1..h.len() {
+        fredkin_virtual_amb(c, q, d, ge, h[i], h[i - 1]);
+    }
+}
+
 /// Compute `D`, the compare chain and `amb` (see the module doc). Pair with [`close`].
 pub fn open(c: &mut Builder, io: &TickIo, cfg: DecCfg) -> Scope {
     let win = Window::new(io.e, cfg.w);
@@ -388,6 +550,25 @@ pub fn pop(c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg) {
     if let Some((flag, bit)) = io.park {
         fredkin(c, flag, bit, io.typ);
     }
+}
+
+/// Binding enabled-decoder specialization with virtual `amb = D & ge`.
+/// `borrower` may hold an arbitrary quantum value and is restored exactly.
+pub fn push_borrow_amb(c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg, borrower: Q) {
+    let sc = open_borrow(c, io, h, cfg, borrower);
+    shift_in_borrow(c, borrower, sc.d, sc.ge, io.typ, &h.wires);
+    c.cx(sc.d, io.typ);
+    c.ccx(sc.d, sc.ge, io.typ);
+    close_borrow(c, io, sc);
+}
+
+/// Exact inverse of [`push_borrow_amb`].
+pub fn pop_borrow_amb(c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg, borrower: Q) {
+    let sc = open_borrow(c, io, h, cfg, borrower);
+    c.ccx(sc.d, sc.ge, io.typ);
+    c.cx(sc.d, io.typ);
+    shift_out_borrow(c, borrower, sc.d, sc.ge, io.typ, &h.wires);
+    close_borrow(c, io, sc);
 }
 
 /// Tick 0 (letters A or C only): `typ ^= !bit1(s)`, `cflag ^= bit1(s)`. Self-inverse, 0 CCX.

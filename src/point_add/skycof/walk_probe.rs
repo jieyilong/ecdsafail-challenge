@@ -360,6 +360,7 @@ pub fn classify(d: U512, p: U512) -> Vec<String> {
     let (mut r1, mut r2, mut s, mut rr, mut typ) = (d + p, d, U512::ZERO, U512::from(1u64), false);
     let mut out = Vec::new();
     let mut pushes = 0usize;
+    let mut hbits: Vec<bool> = Vec::new();
     let mut park: Option<usize> = None;
     let topj = (U512::from(1u64) << clamp) - (U512::from(1u64) << (clamp - pp.walk.park_j));
     for t in 0..r {
@@ -433,6 +434,11 @@ pub fn classify(d: U512, p: U512) -> Vec<String> {
         } else if parked_now {
             out.push(format!("t{t}:park_below_clamp"));
         }
+        // Decoder history has the public width even on the park/post-park
+        // branch; only non-parked ambiguous letters shift into it.
+        if t >= 1 {
+            hbits.resize(env.h[t], false);
+        }
         // decoder push (t >= 1, not parked)
         if t >= 1 && !parked_now {
             let sl = s.as_limbs();
@@ -440,9 +446,23 @@ pub fn classify(d: U512, p: U512) -> Vec<String> {
             let (_, amb) = decide(sl, rl, env.cof[t], pp.walk.w_dec, true);
             if amb {
                 pushes += 1;
+                let letter_a = typ;
+                if hbits.is_empty() {
+                    if letter_a {
+                        out.push(format!("t{t}:Hbit dropped=1 cap=0"));
+                    }
+                } else {
+                    if *hbits.last().unwrap() {
+                        out.push(format!("t{t}:Hbit dropped=1 cap={}", hbits.len()));
+                    }
+                    for i in (1..hbits.len()).rev() {
+                        hbits[i] = hbits[i - 1];
+                    }
+                    hbits[0] = letter_a;
+                }
             }
-            if pushes > env.h[t] && !super::pointadd::knob_flag("SKYCOF_CLASSIFY_EXACT_H") {
-                out.push(format!("t{t}:H {pushes}>{}", env.h[t]));
+            if pushes > env.h[t] && super::pointadd::knob_flag("SKYCOF_CLASSIFY_COUNT_H") {
+                out.push(format!("t{t}:Hcount {pushes}>{}", env.h[t]));
             }
             // letter consistency: decoder certain-A must be A, C iff bit1(s)
             let letter_a = typ;

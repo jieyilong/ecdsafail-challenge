@@ -1754,9 +1754,405 @@ fn test_heo_identity() {
     }
 }
 
+/// Exhaustive reduced-width differential for the source-sign-extension
+/// tau/isC host.  Compare the complete post-rail logical state, residual
+/// phase/garbage, then the explicit reverse and physical input restoration.
+fn test_signext_isc_host() {
+    struct Built {
+        ops: Vec<Op>,
+        fwd_end: usize,
+        nq: usize,
+        nb: usize,
+        input_r1: Vec<Q>,
+        input_r2: Vec<Q>,
+        typ_prev: Q,
+        r0: Q,
+        mid_r1: Vec<Q>,
+        mid_r2: Vec<Q>,
+        typ: Q,
+        isc: Q,
+        final_r1: Vec<Q>,
+        final_r2: Vec<Q>,
+        peak: u32,
+    }
+
+    fn build(n: usize, hosted: bool) -> Built {
+        let mut c = Builder::new();
+        let input_r1 = c.alloc_qubits(n);
+        let input_r2 = c.alloc_qubits(n);
+        let typ_prev = c.alloc_qubit();
+        let r0 = c.alloc_qubit();
+        c.x(r0);
+        let mut rails = Rails {
+            r1: input_r1.clone(),
+            r2: input_r2.clone(),
+        };
+        let (typ, isc, _) = if hosted {
+            rail_fwd_signext_host(
+                &mut c,
+                &mut rails,
+                Some(typ_prev),
+                n,
+                n,
+                None,
+                Some(r0),
+            )
+        } else {
+            rail_fwd(
+                &mut c,
+                &mut rails,
+                Some(typ_prev),
+                n,
+                n,
+                None,
+                Some(r0),
+            )
+        };
+        let mid_r1 = rails.r1.clone();
+        let mid_r2 = rails.r2.clone();
+        let fwd_end = c.op_count();
+        if hosted {
+            rail_rev_signext_host(
+                &mut c,
+                &mut rails,
+                typ,
+                isc,
+                Some(typ_prev),
+                n,
+                (n, n),
+                None,
+                Some(r0),
+            );
+        } else {
+            rail_rev(
+                &mut c,
+                &mut rails,
+                typ,
+                isc,
+                Some(typ_prev),
+                n,
+                (n, n),
+                None,
+                Some(r0),
+            );
+        }
+        assert_eq!(rails.r1.len(), n, "rail1 restored width at n={n}");
+        assert_eq!(rails.r2.len(), n, "rail2 restored width at n={n}");
+        let final_r1 = rails.r1;
+        let final_r2 = rails.r2;
+        let peak = c.peak_total();
+        let (nq, nb) = c.i13_dims();
+        Built {
+            ops: c.take_ops(),
+            fwd_end,
+            nq,
+            nb,
+            input_r1,
+            input_r2,
+            typ_prev,
+            r0,
+            mid_r1,
+            mid_r2,
+            typ,
+            isc,
+            final_r1,
+            final_r2,
+            peak,
+        }
+    }
+
+    // The invariant-one r0 loan checks condition depth through the phase
+    // reporter, so enable that observer before constructing either circuit.
+    std::env::set_var("HEO_RESEARCH", "1");
+    std::env::set_var("HEO_PHASE_REPORT", "1");
+    let mut total_cases = 0usize;
+    for n in 3usize..=8 {
+        let baseline = build(n, false);
+        let hosted = build(n, true);
+        assert_eq!(hosted.peak + 1, baseline.peak, "hosted peak delta n={n}");
+        let cases = 1usize << (2 * n + 1);
+        total_cases += cases;
+        for lo in (0..cases).step_by(64) {
+            let hi = (lo + 64).min(cases);
+            let mut sb = Sim::new(baseline.nq, baseline.nb, 0xB451_0000 + lo as u64);
+            let mut sh = Sim::new(hosted.nq, hosted.nb, 0xB451_0000 + lo as u64);
+            for case in lo..hi {
+                let lane = case - lo;
+                let bits = 1usize << n;
+                let r1 = U::from((case % bits) as u64);
+                let r2 = U::from(((case / bits) % bits) as u64);
+                let tp = ((case >> (2 * n)) & 1) != 0;
+                sb.set(&baseline.input_r1, r1, lane);
+                sb.set(&baseline.input_r2, r2, lane);
+                sh.set(&hosted.input_r1, r1, lane);
+                sh.set(&hosted.input_r2, r2, lane);
+                *sb.q.get_mut(baseline.r0.0 as usize).unwrap() |= 1u64 << lane;
+                *sh.q.get_mut(hosted.r0.0 as usize).unwrap() |= 1u64 << lane;
+                if tp {
+                    *sb.q.get_mut(baseline.typ_prev.0 as usize).unwrap() |= 1u64 << lane;
+                    *sh.q.get_mut(hosted.typ_prev.0 as usize).unwrap() |= 1u64 << lane;
+                }
+            }
+            sb.run(&baseline.ops[..baseline.fwd_end]);
+            sh.run(&hosted.ops[..hosted.fwd_end]);
+            let live_mask = mask(hi - lo);
+            assert_eq!(
+                sb.phase & live_mask,
+                sh.phase & live_mask,
+                "forward phase differential n={n} lo={lo}"
+            );
+            assert_eq!(sb.dirty & live_mask, 0, "baseline forward dirty n={n} lo={lo}");
+            assert_eq!(sh.dirty & live_mask, 0, "hosted forward dirty n={n} lo={lo}");
+            for lane in 0..hi - lo {
+                assert_eq!(
+                    sb.get(&baseline.mid_r1[..n - 1], lane),
+                    sh.get(&hosted.mid_r1, lane),
+                    "forward r1 n={n} case={}",
+                    lo + lane
+                );
+                assert_eq!(
+                    sb.get(&baseline.mid_r2, lane),
+                    sh.get(&hosted.mid_r2, lane),
+                    "forward r2 n={n} case={}",
+                    lo + lane
+                );
+                assert_eq!(
+                    sb.wire(baseline.typ, lane),
+                    sh.wire(hosted.typ, lane),
+                    "forward typ n={n} case={}",
+                    lo + lane
+                );
+                assert_eq!(
+                    sb.wire(baseline.isc, lane),
+                    sh.wire(hosted.isc, lane),
+                    "forward isc n={n} case={}",
+                    lo + lane
+                );
+            }
+            let keep_b: Vec<Q> = baseline
+                .mid_r1
+                .iter()
+                .chain(&baseline.mid_r2)
+                .copied()
+                .chain([baseline.typ, baseline.isc, baseline.typ_prev, baseline.r0])
+                .collect();
+            let keep_h: Vec<Q> = hosted
+                .mid_r1
+                .iter()
+                .chain(&hosted.mid_r2)
+                .copied()
+                .chain([hosted.typ, hosted.isc, hosted.typ_prev, hosted.r0])
+                .collect();
+            assert_eq!(sb.residue(&keep_b) & live_mask, 0, "baseline fwd residue n={n}");
+            assert_eq!(sh.residue(&keep_h) & live_mask, 0, "hosted fwd residue n={n}");
+
+            sb.run(&baseline.ops[baseline.fwd_end..]);
+            sh.run(&hosted.ops[hosted.fwd_end..]);
+            for lane in 0..hi - lo {
+                assert_eq!(
+                    sb.get(&baseline.final_r1, lane),
+                    sh.get(&hosted.final_r1, lane),
+                    "reverse r1 differential n={n} case={}",
+                    lo + lane
+                );
+                assert_eq!(
+                    sb.get(&baseline.final_r2, lane),
+                    sh.get(&hosted.final_r2, lane),
+                    "reverse r2 differential n={n} case={}",
+                    lo + lane
+                );
+            }
+            assert_eq!(
+                sb.phase & live_mask,
+                sh.phase & live_mask,
+                "reverse phase differential n={n} lo={lo}"
+            );
+            assert_eq!(
+                sb.dirty & live_mask,
+                sh.dirty & live_mask,
+                "reverse dirty differential n={n} lo={lo}"
+            );
+            let keep_b: Vec<Q> = baseline
+                .final_r1
+                .iter()
+                .chain(&baseline.final_r2)
+                .copied()
+                .chain([baseline.typ_prev, baseline.r0])
+                .collect();
+            let keep_h: Vec<Q> = hosted
+                .final_r1
+                .iter()
+                .chain(&hosted.final_r2)
+                .copied()
+                .chain([hosted.typ_prev, hosted.r0])
+                .collect();
+            assert_eq!(sb.residue(&keep_b) & live_mask, 0, "baseline reverse residue n={n}");
+            assert_eq!(sh.residue(&keep_h) & live_mask, 0, "hosted reverse residue n={n}");
+        }
+        println!(
+            "{{\"kind\":\"skycof-signext-isc-host\",\"n\":{n},\"cases\":{cases},\"baseline_peak\":{},\"hosted_peak\":{},\"forward\":\"equal\",\"reverse\":\"exact\",\"phase\":\"clean\",\"garbage\":\"clean\"}}",
+            baseline.peak, hosted.peak
+        );
+    }
+    println!(
+        "{{\"kind\":\"skycof-signext-isc-host-summary\",\"n_min\":3,\"n_max\":8,\"cases\":{total_cases},\"result\":\"PASS\"}}"
+    );
+}
+
+/// Exhaustive differential for rotating the forward-inserted zero cofactor
+/// head into the reverse `isC` owner.  The low odd R invariant is fixed to 1;
+/// every other cofactor bit, typ, and high-tail shape is exhaustive.
+fn test_cofzero_isc_recycle() {
+    struct Built {
+        ops: Vec<Op>,
+        nq: usize,
+        nb: usize,
+        input_s: Vec<Q>,
+        input_r: Vec<Q>,
+        typ: Q,
+        output_s: Vec<Q>,
+        output_r: Vec<Q>,
+        isc: Q,
+        peak: u32,
+    }
+
+    fn build(n: usize, recycled: bool) -> Built {
+        let mut c = Builder::new();
+        let zero_head = c.alloc_qubit();
+        let input_s = c.alloc_qubits(n);
+        let input_r = c.alloc_qubits(n);
+        let typ = c.alloc_qubit();
+        let mut cof = Cof {
+            s: std::iter::once(zero_head)
+                .chain(input_s.iter().copied())
+                .collect(),
+            r: input_r.clone(),
+        };
+        let base = c.active_qubits();
+        let (isc, peak) = if recycled {
+            let (isc, peak) = c.r3_peak(|c| {
+                let isc = isc_recompute_from_zero_head(c, &mut cof, typ);
+                cof_rev_at_zero_head(c, &mut cof, typ, isc, n, None, 100);
+                isc
+            });
+            (isc, peak)
+        } else {
+            let (isc, peak) = c.r3_peak(|c| {
+                let isc = isc_recompute(c, &cof, typ);
+                cof_rev_at(c, &mut cof, typ, isc, n, None, 100);
+                isc
+            });
+            (isc, peak)
+        };
+        assert_eq!(c.active_qubits(), base, "cofzero rotation changed live count");
+        assert_eq!(cof.s.len(), n);
+        assert_eq!(cof.r.len(), n);
+        let (nq, nb) = c.i13_dims();
+        Built {
+            ops: c.take_ops(),
+            nq,
+            nb: nb + 1,
+            input_s,
+            input_r,
+            typ,
+            output_s: cof.s,
+            output_r: cof.r,
+            isc,
+            peak,
+        }
+    }
+
+    std::env::set_var("HEO_RESEARCH", "1");
+    std::env::set_var("HEO_PHASE_REPORT", "1");
+    let mut total_cases = 0usize;
+    for n in 2usize..=8 {
+        let ordinary = build(n, false);
+        let recycled = build(n, true);
+        assert!(
+            recycled.peak <= ordinary.peak,
+            "cofzero rotation raised peak at n={n}"
+        );
+        let cases = 1usize << (2 * n);
+        total_cases += cases;
+        for lo in (0..cases).step_by(64) {
+            let hi = (lo + 64).min(cases);
+            let mut so = Sim::new(ordinary.nq, ordinary.nb, 0xC0F0_0000 + lo as u64);
+            let mut sr = Sim::new(recycled.nq, recycled.nb, 0xC0F0_0000 + lo as u64);
+            for case in lo..hi {
+                let lane = case - lo;
+                let sm = (1usize << n) - 1;
+                let s = U::from((case & sm) as u64);
+                let rhi = (case >> n) & ((1usize << (n - 1)) - 1);
+                let r = U::from(((rhi << 1) | 1) as u64);
+                let typ = (case >> (2 * n - 1)) & 1 != 0;
+                so.set(&ordinary.input_s, s, lane);
+                so.set(&ordinary.input_r, r, lane);
+                sr.set(&recycled.input_s, s, lane);
+                sr.set(&recycled.input_r, r, lane);
+                if typ {
+                    *so.q.get_mut(ordinary.typ.0 as usize).unwrap() |= 1u64 << lane;
+                    *sr.q.get_mut(recycled.typ.0 as usize).unwrap() |= 1u64 << lane;
+                }
+            }
+            so.run(&ordinary.ops);
+            sr.run(&recycled.ops);
+            let live = mask(hi - lo);
+            assert_eq!(so.phase & live, sr.phase & live, "cofzero phase n={n} lo={lo}");
+            assert_eq!(so.dirty & live, sr.dirty & live, "cofzero dirty n={n} lo={lo}");
+            for lane in 0..hi - lo {
+                assert_eq!(
+                    so.get(&ordinary.output_s, lane),
+                    sr.get(&recycled.output_s, lane),
+                    "cofzero s n={n} case={}",
+                    lo + lane
+                );
+                assert_eq!(
+                    so.get(&ordinary.output_r, lane),
+                    sr.get(&recycled.output_r, lane),
+                    "cofzero r n={n} case={}",
+                    lo + lane
+                );
+                assert_eq!(so.wire(ordinary.typ, lane), sr.wire(recycled.typ, lane));
+                assert_eq!(so.wire(ordinary.isc, lane), sr.wire(recycled.isc, lane));
+            }
+            let keep_o: Vec<Q> = ordinary
+                .output_s
+                .iter()
+                .chain(&ordinary.output_r)
+                .copied()
+                .chain([ordinary.typ, ordinary.isc])
+                .collect();
+            let keep_r: Vec<Q> = recycled
+                .output_s
+                .iter()
+                .chain(&recycled.output_r)
+                .copied()
+                .chain([recycled.typ, recycled.isc])
+                .collect();
+            assert_eq!(so.residue(&keep_o) & live, 0, "ordinary cofzero residue n={n}");
+            assert_eq!(sr.residue(&keep_r) & live, 0, "recycled cofzero residue n={n}");
+        }
+        println!(
+            "{{\"kind\":\"skycof-cofzero-isc-recycle\",\"n\":{n},\"cases\":{cases},\"ordinary_peak\":{},\"recycled_peak\":{},\"state\":\"equal\",\"phase\":\"equal\",\"garbage\":\"clean\"}}",
+            ordinary.peak, recycled.peak
+        );
+    }
+    println!(
+        "{{\"kind\":\"skycof-cofzero-isc-recycle-summary\",\"n_min\":2,\"n_max\":8,\"cases\":{total_cases},\"result\":\"PASS\"}}"
+    );
+}
+
 pub fn run() {
     let mode = std::env::var("SKYCOF_TICK_SELFTEST").unwrap_or_default();
     let t0 = std::time::Instant::now();
+    if mode.trim() == "signext-host" {
+        test_signext_isc_host();
+        return;
+    }
+    if mode.trim() == "cofzero" {
+        test_cofzero_isc_recycle();
+        return;
+    }
     if mode.trim() == "cost" {
         cost_report();
         rev_cost_exact();

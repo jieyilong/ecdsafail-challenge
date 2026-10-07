@@ -191,6 +191,88 @@ pub fn rail_fwd(
     (ctl, tau, plan)
 }
 
+/// Exact low-width rail kernel that hosts `tau`/`isC` on the doomed top
+/// sign-extension wire of the source bank.  The source enters the add at
+/// width `n - 1`, the target at width `n`, and the hosted wire is returned as
+/// `isC` instead of being released by the post-rail contraction.
+///
+/// This is only valid when the source was sign-extended from `wsw - 1` to
+/// `wad` and the public schedule discards that extension immediately after
+/// the kernel.  Callers enforce those public-width conditions.
+pub(crate) fn rail_fwd_signext_host(
+    c: &mut Builder,
+    rails: &mut Rails,
+    typ_prev: Option<Q>,
+    wsw: usize,
+    wad: usize,
+    cap: Option<usize>,
+    r0_loan: Option<Q>,
+) -> (Q, Q, Plan) {
+    assert!(wsw >= 3 && wad >= 3, "hosted rail widths {wsw}/{wad}");
+    assert!(
+        wad >= wsw,
+        "hosted rail needs a fresh source sign extension: {wsw}/{wad}"
+    );
+    resize_signed(c, &mut rails.r1, wsw);
+    resize_signed(c, &mut rails.r2, wsw);
+    let (r1, r2) = (&rails.r1, &rails.r2);
+    let ctl = r1[0];
+    for i in 1..wsw {
+        fredkin(c, ctl, r1[i], r2[i]);
+    }
+    c.cx(ctl, r2[0]);
+
+    let mut e2 = r1[1..].to_vec();
+    resize_signed(c, &mut e2, wad);
+    resize_signed(c, &mut rails.r2, wad);
+    let r2 = &rails.r2;
+    let host = e2.pop().expect("hosted rail source top");
+    let sign = *e2.last().expect("hosted rail retained source sign");
+    let target_top = *r2.last().expect("hosted rail target top");
+    assert!(!e2.contains(&host));
+    assert!(!r2.contains(&host));
+    assert!(r0_loan != Some(host));
+
+    // h initially equals the source sign.  h ^= target_sign; h ^= 1
+    // therefore materializes the same tau as the ordinary fresh-zero path.
+    c.cx(target_top, host);
+    c.x(host);
+    c.cx_all(host, &e2);
+    let plan = with_r0_loan(c, r0_loan, None, &e2, r2, Some(host), |c| {
+        adder::add(c, None, &e2, r2, Some(host), cap)
+    });
+    // Restore the omitted transformed top source contribution while tau's
+    // complement frame is still active.
+    // `sign` is currently the transformed top bit (original sign XOR tau).
+    c.cx(sign, target_top);
+    c.cx_all(host, &e2);
+    // The ordinary post-add conversion from tau to isC, using the retained
+    // sign copy because the hosted top is no longer an operand wire.
+    c.x(host);
+    c.cx(sign, host);
+    c.cx(target_top, host);
+    if let Some(tp) = typ_prev {
+        c.cx(tp, ctl);
+    }
+    rails.r1 = e2;
+    (ctl, host, plan)
+}
+
+fn signext_host_tick(t: Option<usize>, w: &TickWidths) -> bool {
+    let Some(t) = t else { return false };
+    let selected = super::pointadd::knob("SKYCOF_SIGNEXT_ISC_HOST")
+        .unwrap_or_else(|| "321,323,324,329,330,331".to_owned())
+        .split(',')
+        .any(|x| x.trim().parse::<usize>() == Ok(t));
+    if selected {
+        assert!(
+            w.wad >= w.wsw && w.post_r1 < w.wad,
+            "SKYCOF_SIGNEXT_ISC_HOST tick {t} needs a doomed source sign extension"
+        );
+    }
+    selected
+}
+
 /// Forward rail kernel followed by the two independently fitted public
 /// contractions.  Tau/sign repair and the type update are complete before a
 /// sign-extension owner is released.
@@ -201,9 +283,14 @@ pub fn rail_fwd_micro(
     w: &TickWidths,
     cap: Option<usize>,
     r0_loan: Option<Q>,
+    tick: Option<usize>,
 ) -> (Q, Q, Plan) {
     assert!(w.post_r1 <= w.wad && w.post_r2 <= w.wad);
-    let out = rail_fwd(c, rails, typ_prev, w.wsw, w.wad, cap, r0_loan);
+    let out = if signext_host_tick(tick, w) {
+        rail_fwd_signext_host(c, rails, typ_prev, w.wsw, w.wad, cap, r0_loan)
+    } else {
+        rail_fwd(c, rails, typ_prev, w.wsw, w.wad, cap, r0_loan)
+    };
     resize_signed(c, &mut rails.r1, w.post_r1);
     resize_signed(c, &mut rails.r2, w.post_r2);
     out
@@ -258,6 +345,72 @@ pub fn rail_rev(
     plan
 }
 
+/// Exact inverse of [`rail_fwd_signext_host`].  `isc` is the physical source
+/// sign-extension owner borrowed by the forward kernel.  It is restored to
+/// the source sign, appended as the regrown top source bit, and is therefore
+/// deliberately not freed here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rail_rev_signext_host(
+    c: &mut Builder,
+    rails: &mut Rails,
+    typ: Q,
+    isc: Q,
+    typ_prev: Option<Q>,
+    wsw: usize,
+    prev: (usize, usize),
+    cap: Option<usize>,
+    r0_loan: Option<Q>,
+) -> Plan {
+    let n = rails.r2.len();
+    assert_eq!(rails.r1.len() + 1, n, "hosted reverse source width");
+    let host = isc;
+    let sign = *rails.r1.last().expect("hosted reverse retained sign");
+    let target_top = *rails.r2.last().expect("hosted reverse target top");
+    assert!(!rails.r1.contains(&host));
+    assert!(!rails.r2.contains(&host));
+    assert!(r0_loan != Some(host));
+
+    // Recover tau from the post-add sign frame.
+    c.cx(sign, host);
+    c.cx(target_top, host);
+    c.x(host);
+    c.cx_all(host, &rails.r1);
+    let plan = with_r0_loan(
+        c,
+        r0_loan,
+        None,
+        &rails.r1,
+        &rails.r2,
+        Some(host),
+        |c| adder::sub(c, None, &rails.r1, &rails.r2, Some(host), cap),
+    );
+    // `sign` is still in the transformed frame here.
+    c.cx(sign, target_top);
+    c.cx_all(host, &rails.r1);
+    // Undo the ordinary pre-sign frame, then restore the exact source sign
+    // copy into the same physical owner used by the forward kernel.
+    c.x(host);
+    c.cx(sign, host);
+    c.cx(target_top, host);
+    c.cx(sign, host);
+    rails.r1.push(host);
+
+    let ctl = typ;
+    if let Some(tp) = typ_prev {
+        c.cx(tp, ctl);
+    }
+    resize_signed(c, &mut rails.r1, wsw - 1);
+    resize_signed(c, &mut rails.r2, wsw);
+    rails.r1.insert(0, ctl);
+    c.cx(ctl, rails.r2[0]);
+    for i in 1..wsw {
+        fredkin(c, ctl, rails.r1[i], rails.r2[i]);
+    }
+    resize_signed(c, &mut rails.r1, prev.0);
+    resize_signed(c, &mut rails.r2, prev.1);
+    plan
+}
+
 /// Exact reverse seam for [`rail_fwd_micro`].  Decoder and cofactor reverse
 /// execute while the banks are still contracted; only the rail kernel grows
 /// them back to its common arithmetic width.
@@ -272,12 +425,18 @@ pub fn rail_rev_micro(
     prev: (usize, usize),
     cap: Option<usize>,
     r0_loan: Option<Q>,
+    tick: Option<usize>,
 ) -> Plan {
     assert_eq!(rails.r1.len(), w.post_r1);
     assert_eq!(rails.r2.len(), w.post_r2);
-    resize_signed(c, &mut rails.r1, w.wad);
+    let hosted = signext_host_tick(tick, w);
+    resize_signed(c, &mut rails.r1, w.wad - usize::from(hosted));
     resize_signed(c, &mut rails.r2, w.wad);
-    rail_rev(c, rails, typ, isc, typ_prev, w.wsw, prev, cap, r0_loan)
+    if hosted {
+        rail_rev_signext_host(c, rails, typ, isc, typ_prev, w.wsw, prev, cap, r0_loan)
+    } else {
+        rail_rev(c, rails, typ, isc, typ_prev, w.wsw, prev, cap, r0_loan)
+    }
 }
 
 /// Operand length of the cofactor add (`s` before the relabel).
@@ -401,7 +560,7 @@ pub fn fwd_tick_open(
         cof: cof.s.len(),
     };
     let (typ, isc, rail) =
-        rail_fwd_micro(c, rails, typ_prev, w, cap, Some(cof.r[0]));
+        rail_fwd_micro(c, rails, typ_prev, w, cap, Some(cof.r[0]), None);
     let cofp = cof_fwd(c, cof, typ, isc, w, cap);
     (typ, isc, prev, TickPlans { rail, cof: cofp })
 }
@@ -430,6 +589,20 @@ pub fn isc_recompute(c: &mut Builder, cof: &Cof, typ: Q) -> Q {
     isc
 }
 
+/// Recompute `isC` into the exact zero head inserted by [`cof_fwd_impl`].
+/// The head is removed from `cof.s` but remains live as the returned wire; the
+/// paired cofactor reverse must use [`cof_rev_at_zero_head`] so it does not
+/// remove/free a second owner.
+pub(crate) fn isc_recompute_from_zero_head(c: &mut Builder, cof: &mut Cof, typ: Q) -> Q {
+    assert!(cof.s.len() >= 2, "cofactor zero-head reuse needs s[1]");
+    let isc = cof.s.remove(0);
+    assert!(isc != typ && !cof.s.contains(&isc) && !cof.r.contains(&isc));
+    c.x(typ);
+    c.ccx(typ, cof.s[0], isc);
+    c.x(typ);
+    isc
+}
+
 /// Reverse cofactor update given the recomputed `isC` (see [`isc_recompute`]).
 pub fn cof_rev(
     c: &mut Builder,
@@ -439,7 +612,7 @@ pub fn cof_rev(
     e_prev: usize,
     cap: Option<usize>,
 ) -> Plan {
-    cof_rev_impl(c, cof, typ, isc, e_prev, cap, None)
+    cof_rev_impl(c, cof, typ, isc, e_prev, cap, None, None)
 }
 
 /// Reverse of [`cof_fwd_at`] with the same public clock and full owner layout.
@@ -456,7 +629,27 @@ pub fn cof_rev_at(
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(true);
     let bound = (t <= 50 && enabled).then_some(t);
-    cof_rev_impl(c, cof, typ, isc, e_prev, cap, bound)
+    cof_rev_impl(c, cof, typ, isc, e_prev, cap, bound, None)
+}
+
+/// Reverse a public-clock cofactor cell after
+/// [`isc_recompute_from_zero_head`] has already removed the inserted zero
+/// head and rotated that physical owner into `isc`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cof_rev_at_zero_head(
+    c: &mut Builder,
+    cof: &mut Cof,
+    typ: Q,
+    isc: Q,
+    e_prev: usize,
+    cap: Option<usize>,
+    t: usize,
+) -> Plan {
+    let enabled = super::pointadd::knob("SKYCOF_EARLY_COF_BOUND")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(true);
+    let bound = (t <= 50 && enabled).then_some(t);
+    cof_rev_impl(c, cof, typ, isc, e_prev, cap, bound, Some(isc))
 }
 
 fn cof_rev_impl(
@@ -467,10 +660,16 @@ fn cof_rev_impl(
     e_prev: usize,
     cap: Option<usize>,
     bound: Option<usize>,
+    retained_zero_head: Option<Q>,
 ) -> Plan {
     let n = cof.r.len();
-    let z = cof.s.remove(0);
-    c.free(z);
+    if let Some(z) = retained_zero_head {
+        assert!(!cof.s.contains(&z) && !cof.r.contains(&z));
+        assert_eq!(z, isc, "retained zero head must be the live isc owner");
+    } else {
+        let z = cof.s.remove(0);
+        c.free(z);
+    }
     assert!(
         cof.s.len() == n || cof.s.len() + 1 == n,
         "cof_rev: s {} vs r {n}",
@@ -529,6 +728,7 @@ pub fn rev_tick_with_isc(
         (prev.r1, prev.r2),
         cap,
         Some(cof.r[0]),
+        None,
     );
     TickPlans { rail, cof: cofp }
 }
