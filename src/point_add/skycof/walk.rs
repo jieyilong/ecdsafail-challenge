@@ -540,30 +540,53 @@ fn erase_frozen(c: &mut Builder, w: Q, lits: &[Q]) {
     c.release_clean(w);
 }
 
-/// Toggle `target` by the AND of `controls`, borrowing arbitrary dirty wires
-/// and restoring them exactly.  The two sweeps cancel every contribution from
-/// the dirty initial values (Barenco-style dirty MCX).
-fn dirty_mcx(c: &mut Builder, controls: &[Q], target: Q, dirty: &[Q]) {
+/// Toggle `target` by the AND of `controls`, using every clean lane still
+/// available below `cap` before falling back to arbitrary dirty wires.  A
+/// clean prefix of length `k` collapses the first `k + 1` controls, saving
+/// exactly two Toffolis per clean lane versus the all-dirty Barenco ladder;
+/// all borrowed wires are restored exactly.
+fn dirty_mcx(c: &mut Builder, controls: &[Q], target: Q, dirty: &[Q], cap: usize) {
     match controls.len() {
         0 => c.x(target),
         1 => c.cx(controls[0], target),
         2 => c.ccx(controls[0], controls[1], target),
         m => {
-            let d = &dirty[..m - 2];
-            for bottom in [true, false] {
-                if bottom {
-                    c.ccx(controls[0], controls[1], d[0]);
+            let k = room(c, cap).min(m - 2);
+            let clean = c.alloc_qubits(k);
+            for i in 0..k {
+                let a = if i == 0 { controls[0] } else { clean[i - 1] };
+                c.ccx(a, controls[i + 1], clean[i]);
+            }
+
+            let mut reduced = Vec::with_capacity(m - k);
+            reduced.push(if k == 0 { controls[0] } else { clean[k - 1] });
+            reduced.extend_from_slice(&controls[k + 1..]);
+            if reduced.len() == 2 {
+                c.ccx(reduced[0], reduced[1], target);
+            } else {
+                let d = &dirty[..reduced.len() - 2];
+                for bottom in [true, false] {
+                    if bottom {
+                        c.ccx(reduced[0], reduced[1], d[0]);
+                    }
+                    for i in 1..d.len() {
+                        c.ccx(d[i - 1], reduced[i + 1], d[i]);
+                    }
+                    c.ccx(*d.last().unwrap(), *reduced.last().unwrap(), target);
+                    for i in (1..d.len()).rev() {
+                        c.ccx(d[i - 1], reduced[i + 1], d[i]);
+                    }
+                    if bottom {
+                        c.ccx(reduced[0], reduced[1], d[0]);
+                    }
                 }
-                for i in 1..d.len() {
-                    c.ccx(d[i - 1], controls[i + 1], d[i]);
-                }
-                c.ccx(*d.last().unwrap(), *controls.last().unwrap(), target);
-                for i in (1..d.len()).rev() {
-                    c.ccx(d[i - 1], controls[i + 1], d[i]);
-                }
-                if bottom {
-                    c.ccx(controls[0], controls[1], d[0]);
-                }
+            }
+            for i in (0..k).rev() {
+                let a = if i == 0 { controls[0] } else { clean[i - 1] };
+                c.ccx(a, controls[i + 1], clean[i]);
+            }
+            for q in clean {
+                c.release_clean(q);
             }
         }
     }
@@ -580,26 +603,31 @@ const PARK_PART: usize = 5;
 pub struct ParkTest {
     pub z: Q,
     parts: Vec<Vec<Q>>,
-    dirty: Option<(Vec<Q>, Vec<Q>)>,
+    dirty: Option<(Vec<Q>, Vec<Q>, usize)>,
 }
 
 impl ParkTest {
-    pub fn compute(c: &mut Builder, r: &[Q], s: &[Q], j: usize) -> Self {
+    pub fn compute(c: &mut Builder, r: &[Q], s: &[Q], j: usize, cap: usize) -> Self {
         assert_eq!(r.len(), CLAMP);
         assert!(j > PARK_PART && j <= CLAMP);
         let bits = &r[CLAMP - j..];
-        if knob_on_by_default("SKYCOF_DIRTY_PARK") {
+        let dirty = match super::pointadd::knob("SKYCOF_DIRTY_PARK").as_deref() {
+            Some("1" | "always") => true,
+            Some("0" | "never") => false,
+            _ => room(c, cap) < 6,
+        };
+        if dirty {
             assert!(s.len() >= j - 2);
             let z = c.alloc_qubit();
             let controls = bits.to_vec();
             let dirty = s[..j - 2].to_vec();
             assert!(!controls.contains(&z) && !dirty.contains(&z));
             assert!(controls.iter().all(|q| !dirty.contains(q)));
-            dirty_mcx(c, &controls, z, &dirty);
+            dirty_mcx(c, &controls, z, &dirty, cap);
             return ParkTest {
                 z,
                 parts: Vec::new(),
-                dirty: Some((controls, dirty)),
+                dirty: Some((controls, dirty, cap)),
             };
         }
         let parts: Vec<Vec<Q>> = bits.chunks(PARK_PART).map(|p| p.to_vec()).collect();
@@ -615,8 +643,8 @@ impl ParkTest {
         }
     }
     pub fn uncompute(self, c: &mut Builder) {
-        if let Some((controls, dirty)) = self.dirty {
-            dirty_mcx(c, &controls, self.z, &dirty);
+        if let Some((controls, dirty, cap)) = self.dirty {
+            dirty_mcx(c, &controls, self.z, &dirty, cap);
             c.release_clean(self.z);
             return;
         }
@@ -671,43 +699,55 @@ fn with_odo_r0_loan(
 }
 
 /// `g = z & typ; odo += g; typ ^= g; g ^= z & [odo != 0]` (g ends 0).
-fn odo_inc_dirty(c: &mut Builder, odo: &[Q], ctl: Q, dirty: &[Q]) {
+fn odo_inc_dirty(c: &mut Builder, odo: &[Q], ctl: Q, dirty: &[Q], cap: usize) {
     for i in (1..odo.len()).rev() {
         let mut controls = Vec::with_capacity(i + 1);
         controls.push(ctl);
         controls.extend_from_slice(&odo[..i]);
-        dirty_mcx(c, &controls, odo[i], dirty);
+        dirty_mcx(c, &controls, odo[i], dirty, cap);
     }
     c.cx(ctl, odo[0]);
 }
 
-fn odo_dec_dirty(c: &mut Builder, odo: &[Q], ctl: Q, dirty: &[Q]) {
+fn odo_dec_dirty(c: &mut Builder, odo: &[Q], ctl: Q, dirty: &[Q], cap: usize) {
     c.cx(ctl, odo[0]);
     for i in 1..odo.len() {
         let mut controls = Vec::with_capacity(i + 1);
         controls.push(ctl);
         controls.extend_from_slice(&odo[..i]);
-        dirty_mcx(c, &controls, odo[i], dirty);
+        dirty_mcx(c, &controls, odo[i], dirty, cap);
     }
 }
 
-fn odo_nonzero_dirty(c: &mut Builder, odo: &[Q], z: Q, target: Q, dirty: &[Q]) {
+fn odo_nonzero_dirty(
+    c: &mut Builder,
+    odo: &[Q],
+    z: Q,
+    target: Q,
+    dirty: &[Q],
+    cap: usize,
+) {
     c.cx(z, target);
     c.x_all(odo);
     let mut controls = Vec::with_capacity(odo.len() + 1);
     controls.push(z);
     controls.extend_from_slice(odo);
-    dirty_mcx(c, &controls, target, dirty);
+    dirty_mcx(c, &controls, target, dirty, cap);
     c.x_all(odo);
 }
 
 fn odo_fwd(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q], cap: usize) {
+    let dirty_mode = match super::pointadd::knob("SKYCOF_DIRTY_ODO").as_deref() {
+        Some("1" | "always") => true,
+        Some("0" | "never") => false,
+        _ => room(c, cap) < 6,
+    };
     let g = c.alloc_qubit();
     c.ccx(z, typ, g);
-    if knob_on_by_default("SKYCOF_DIRTY_ODO") {
-        odo_inc_dirty(c, odo, g, dirty);
+    if dirty_mode {
+        odo_inc_dirty(c, odo, g, dirty, cap);
         c.cx(g, typ);
-        odo_nonzero_dirty(c, odo, z, g, dirty);
+        odo_nonzero_dirty(c, odo, z, g, dirty, cap);
         c.release_clean(g);
         return;
     }
@@ -726,11 +766,16 @@ fn odo_fwd(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q], cap: usize) {
 
 /// Exact inverse of [`odo_fwd`].
 fn odo_rev(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q], cap: usize) {
+    let dirty_mode = match super::pointadd::knob("SKYCOF_DIRTY_ODO").as_deref() {
+        Some("1" | "always") => true,
+        Some("0" | "never") => false,
+        _ => room(c, cap) < 6,
+    };
     let g = c.alloc_qubit();
-    if knob_on_by_default("SKYCOF_DIRTY_ODO") {
-        odo_nonzero_dirty(c, odo, z, g, dirty);
+    if dirty_mode {
+        odo_nonzero_dirty(c, odo, z, g, dirty, cap);
         c.cx(g, typ);
-        odo_dec_dirty(c, odo, g, dirty);
+        odo_dec_dirty(c, odo, g, dirty, cap);
         c.ccx(z, typ, g);
         c.release_clean(g);
         return;
@@ -834,7 +879,7 @@ fn dispose_fwd(
         with_rail_parity_loan(c, rails, |c| dec::first_tick(c, &cof.s, typ, None));
     } else if env.cof[t1] == CLAMP {
         trace_step(c, "pre-park");
-        let zt = ParkTest::compute(c, &cof.r, &cof.s, p.park_j);
+        let zt = ParkTest::compute(c, &cof.r, &cof.s, p.park_j, p.cap);
         trace_step(c, "parktest");
         with_rail_parity_loan(c, rails, |c| {
             ghost_odo_prime_xor(c, p, cof, zt.z, typ);
@@ -861,7 +906,6 @@ fn dispose_fwd(
         zt.uncompute(c);
         trace_step(c, "unpark");
     } else {
-        let cfg = dec_cfg(c, p, env.cof[t1], false);
         let io = TickIo {
             s: &cof.s,
             r: &cof.r,
@@ -871,7 +915,10 @@ fn dispose_fwd(
             cflag: None,
             park: None,
         };
-        with_rail_parity_loan(c, rails, |c| dec::push(c, &io, h, cfg));
+        with_rail_parity_loan(c, rails, |c| {
+            let cfg = dec_cfg(c, p, env.cof[t1], false);
+            dec::push(c, &io, h, cfg)
+        });
     }
     c.release_clean(typ);
 }
@@ -893,7 +940,7 @@ fn dispose_rev(
     if t1 == 0 {
         with_rail_parity_loan(c, rails, |c| dec::first_tick(c, &cof.s, typ, None));
     } else if env.cof[t1] == CLAMP {
-        let zt = ParkTest::compute(c, &cof.r, &cof.s, p.park_j);
+        let zt = ParkTest::compute(c, &cof.r, &cof.s, p.park_j, p.cap);
         with_rail_parity_loan(c, rails, |c| {
             c.x(zt.z);
             let cfg = dec_cfg(c, p, env.cof[t1], true);
@@ -916,7 +963,6 @@ fn dispose_rev(
         });
         zt.uncompute(c);
     } else {
-        let cfg = dec_cfg(c, p, env.cof[t1], false);
         let io = TickIo {
             s: &cof.s,
             r: &cof.r,
@@ -926,7 +972,10 @@ fn dispose_rev(
             cflag: None,
             park: None,
         };
-        with_rail_parity_loan(c, rails, |c| dec::pop(c, &io, h, cfg));
+        with_rail_parity_loan(c, rails, |c| {
+            let cfg = dec_cfg(c, p, env.cof[t1], false);
+            dec::pop(c, &io, h, cfg)
+        });
     }
     typ
 }

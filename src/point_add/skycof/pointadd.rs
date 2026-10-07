@@ -187,8 +187,8 @@ fn mm_cfg(c: &Builder, extra_live: usize, role: MmRole) -> mm::Cfg {
                 knob_usize("SKYCOF_MM2_CMPW", 24),
             ),
             MmRole::ValueProduct => (
-                knob_usize("SKYCOF_MM4_GUARD", 21),
-                knob_usize("SKYCOF_MM4_CMPW", 27),
+                knob_usize("SKYCOF_MM4_GUARD", 22),
+                knob_usize("SKYCOF_MM4_CMPW", 25),
             ),
             MmRole::SlopeDebt => (
                 knob_usize("SKYCOF_MM5_GUARD", 24),
