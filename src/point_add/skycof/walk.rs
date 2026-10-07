@@ -50,6 +50,18 @@ pub struct Envelope {
     pub rail: Vec<usize>,
     pub cof: Vec<usize>,
     pub h: Vec<usize>,
+    pub micro: Option<RailMicroEnvelope>,
+}
+
+/// Absolute per-tick rail widths for a fitted microphase schedule.  The
+/// common arithmetic width is kept separate from the two post-tick banks so
+/// reverse execution can grow them only after decoder/cofactor cleanup.
+#[derive(Clone)]
+pub struct RailMicroEnvelope {
+    pub swap: Vec<usize>,
+    pub add: Vec<usize>,
+    pub post_r1: Vec<usize>,
+    pub post_r2: Vec<usize>,
 }
 
 impl Envelope {
@@ -85,6 +97,130 @@ impl Envelope {
             h[t] = h[t].max(h[t - 1]);
             cof[t] = cof[t].max(cof[t - 1]).min(CLAMP);
         }
+        let baseline_h = h.clone();
+        let mut micro = None;
+        let micro_table = match super::pointadd::knob("SKYCOF_MICROPHASE_TABLE") {
+            Some(v) if v == "legacy" => None,
+            Some(path) => Some(
+                std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("read SKYCOF_MICROPHASE_TABLE={path}: {e}")),
+            ),
+            None => Some(include_str!("micro_widths_c_margin2_1057.tsv").to_owned()),
+        };
+        if let Some(table) = micro_table {
+            assert_eq!(r, 404, "microphase table is frozen for R404");
+            assert_eq!(
+                super::pointadd::params().walk.cap,
+                1057,
+                "microphase table is frozen for cap 1057"
+            );
+            assert!(
+                super::pointadd::knob("SKYCOF_HISTORY_TABLE").is_none(),
+                "microphase table already owns the history schedule"
+            );
+            assert!(
+                super::pointadd::knob("SKYCOF_ENVELOPE_EXTRA").is_none(),
+                "microphase table is incompatible with envelope extra"
+            );
+            if let Some(trim) = super::pointadd::knob("SKYCOF_RAIL_TRIM") {
+                assert_eq!(
+                    trim, "2",
+                    "microphase table may only name its railtrim2 reference recipe"
+                );
+            }
+            let mut rows = table.lines();
+            assert_eq!(
+                rows.next(),
+                Some("t\twsw\twadd\tpost_r1\tpost_r2\tH"),
+                "unexpected microphase-table header"
+            );
+            let (mut swap, mut add, mut post_r1, mut post_r2, mut mh) = (
+                Vec::with_capacity(r),
+                Vec::with_capacity(r),
+                Vec::with_capacity(r),
+                Vec::with_capacity(r),
+                Vec::with_capacity(r),
+            );
+            for (t, line) in rows.enumerate() {
+                assert!(t < r, "microphase table has more than {r} rows");
+                let fields: Vec<usize> = line
+                    .split('\t')
+                    .map(|x| x.parse().expect("microphase table integer"))
+                    .collect();
+                assert_eq!(fields.len(), 6, "microphase table row {t} field count");
+                assert_eq!(fields[0], t, "microphase table row index");
+                let (wsw, wad, p1, p2, hh) =
+                    (fields[1], fields[2], fields[3], fields[4], fields[5]);
+                assert!((3..=SEED_W).contains(&wsw));
+                assert!((3..=SEED_W).contains(&wad));
+                assert!((3..=SEED_W).contains(&p1));
+                assert!((3..=SEED_W).contains(&p2));
+                assert!(p1 <= wad && p2 <= wad, "post width exceeds add at {t}");
+                if t == 0 {
+                    assert_eq!(wsw, SEED_W);
+                } else {
+                    assert!(
+                        wsw >= post_r1[t - 1] && wsw >= post_r2[t - 1],
+                        "swap width misses prior post bank at {t}"
+                    );
+                    assert!(hh >= mh[t - 1], "history schedule decreases at {t}");
+                }
+                if t < 160 {
+                    assert_eq!(hh, baseline_h[t], "early history changed at {t}");
+                }
+                swap.push(wsw);
+                add.push(wad);
+                post_r1.push(p1);
+                post_r2.push(p2);
+                mh.push(hh);
+            }
+            assert_eq!(swap.len(), r, "microphase table must have exactly {r} rows");
+            h = mh;
+            micro = Some(RailMicroEnvelope {
+                swap,
+                add,
+                post_r1,
+                post_r2,
+            });
+        }
+        // Research-only public history schedule. The frozen table carries the
+        // original H width and a replacement in its fifth column. Check every
+        // baseline row so a table from another recipe cannot be applied.
+        if let Some(path) = super::pointadd::knob("SKYCOF_HISTORY_TABLE") {
+            assert_eq!(r, 404, "history table is frozen for R404");
+            assert!(
+                super::pointadd::knob("SKYCOF_ENVELOPE_EXTRA").is_none(),
+                "history table is incompatible with envelope extra"
+            );
+            let table = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read SKYCOF_HISTORY_TABLE={path}: {e}"));
+            let mut rows = table.lines();
+            assert_eq!(
+                rows.next(),
+                Some("t\tHbaseline\tHlate4\tHpeak4\tHcombo"),
+                "unexpected history-table header"
+            );
+            let mut replacement = Vec::with_capacity(r);
+            for (t, line) in rows.enumerate() {
+                assert!(t < r, "history table has more than {r} rows");
+                let fields: Vec<usize> = line
+                    .split('\t')
+                    .map(|x| x.parse().expect("history table integer"))
+                    .collect();
+                assert_eq!(fields.len(), 5, "history table row {t} field count");
+                assert_eq!(fields[0], t, "history table row index");
+                assert_eq!(fields[1], h[t], "history table baseline mismatch at {t}");
+                replacement.push(fields[4]);
+            }
+            assert_eq!(
+                replacement.len(),
+                r,
+                "history table must have exactly {r} rows"
+            );
+            assert!(replacement.iter().all(|&x| x > 0));
+            assert!(replacement.windows(2).all(|x| x[0] <= x[1]));
+            h = replacement;
+        }
         // GCD-only research builds have substantially more room than the
         // embedded point-addition walk.  Let the probe spend that room on a
         // wider public envelope instead of relying on a nonce-selected tail.
@@ -103,7 +239,7 @@ impl Envelope {
         }
         // Bounded resource/accuracy experiment. This is an explicit narrowing
         // of the inherited fitted support, not an exact representation change.
-        {
+        if micro.is_none() {
             let trim: usize = super::pointadd::knob("SKYCOF_RAIL_TRIM")
                 .map(|raw| raw.parse().expect("SKYCOF_RAIL_TRIM integer"))
                 .unwrap_or(2);
@@ -112,15 +248,40 @@ impl Envelope {
                 *width = width.saturating_sub(trim).max(3);
             }
         }
-        Envelope { rail, cof, h }
+        Envelope {
+            rail,
+            cof,
+            h,
+            micro,
+        }
     }
     pub fn widths(&self, t: usize) -> TickWidths {
+        let (wsw, wad, post_r1, post_r2) = self.micro.as_ref().map_or_else(
+            || {
+                let wad = self.rail[t];
+                (
+                    if t == 0 { SEED_W } else { self.rail[t - 1] },
+                    wad,
+                    wad,
+                    wad,
+                )
+            },
+            |m| (m.swap[t], m.add[t], m.post_r1[t], m.post_r2[t]),
+        );
         TickWidths {
-            wsw: if t == 0 { SEED_W } else { self.rail[t - 1] },
-            wad: self.rail[t],
+            wsw,
+            wad,
+            post_r1,
+            post_r2,
             ecof: self.cof[t],
             clamp: CLAMP,
         }
+    }
+    pub fn post_widths(&self, t: usize) -> (usize, usize) {
+        self.micro.as_ref().map_or(
+            (self.rail[t], self.rail[t]),
+            |m| (m.post_r1[t], m.post_r2[t]),
+        )
     }
 }
 
@@ -159,17 +320,29 @@ fn check_ghost_odo(p: &WalkParams, env: &Envelope) {
     }
     let end = GHOST_ODO_START + p.odo_bits;
     assert!(p.odo_bits > 0 && end < CLAMP);
-    assert!(dec::Window::new(CLAMP, p.w_dec).lo >= end,
-        "embedded counter overlaps decoder field reads");
-    assert!(p.fold_w <= GHOST_ODO_START,
-        "embedded counter overlaps the folded constant window");
-    assert!(CLAMP - p.park_j >= end,
-        "embedded counter overlaps the park predicate");
-    let first_clamp = env.cof.iter().position(|&e| e == CLAMP)
+    assert!(
+        dec::Window::new(CLAMP, p.w_dec).lo >= end,
+        "embedded counter overlaps decoder field reads"
+    );
+    assert!(
+        p.fold_w <= GHOST_ODO_START,
+        "embedded counter overlaps the folded constant window"
+    );
+    assert!(
+        CLAMP - p.park_j >= end,
+        "embedded counter overlaps the park predicate"
+    );
+    let first_clamp = env
+        .cof
+        .iter()
+        .position(|&e| e == CLAMP)
         .expect("embedded counter needs a clamped endpoint");
-    assert!(p.r - first_clamp < (1usize << p.odo_bits),
-        "embedded counter can overflow the public parked horizon");
-    assert!(env.rail[p.r - 1] > 0);
+    assert!(
+        p.r - first_clamp < (1usize << p.odo_bits),
+        "embedded counter can overflow the public parked horizon"
+    );
+    let (r1, r2) = env.post_widths(p.r - 1);
+    assert!(r1 > 0 && r2 > 0);
 }
 
 /// At clamp the middle R bits are ordinary cofactor data before park and the
@@ -386,6 +559,36 @@ fn odo_room(c: &Builder, cap: usize) -> usize {
     room(c, cap).max(4)
 }
 
+/// Lend the invariant cofactor bit `r[0]=1` only across one closed odometer
+/// update.  ParkTest's root, the type bit and the aliased odometer slice all
+/// remain owned and are explicitly disjoint from the lender.
+fn with_odo_r0_loan(
+    c: &mut Builder,
+    r0: Q,
+    z: Q,
+    typ: Q,
+    odo: &[Q],
+    body: impl FnOnce(&mut Builder),
+) {
+    let enabled = super::pointadd::knob("SKYCOF_R0_ODO_LOAN")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(true);
+    if !enabled {
+        body(c);
+        return;
+    }
+    assert_eq!(c.tracked_condition_depth(), Some(0));
+    assert!(r0 != z && r0 != typ && !odo.contains(&r0));
+    let live = c.active_qubits();
+    c.x(r0);
+    c.release_clean(r0);
+    body(c);
+    assert_eq!(c.active_qubits() + 1, live, "odometer loan leaked a wire");
+    c.reacquire(r0);
+    c.x(r0);
+    assert_eq!(c.active_qubits(), live);
+}
+
 /// `g = z & typ; odo += g; typ ^= g; g ^= z & [odo != 0]` (g ends 0).
 fn odo_fwd(c: &mut Builder, z: Q, typ: Q, odo: &[Q], cap: usize) {
     let g = c.alloc_qubit();
@@ -507,7 +710,10 @@ fn dispose_fwd(
         let zt = ParkTest::compute(c, &cof.r, p.park_j);
         trace_step(c, "parktest");
         ghost_odo_prime_xor(c, p, cof, zt.z, typ);
-        odo_fwd(c, zt.z, typ, odo_view(p, cof, odo), p.cap);
+        let ov = odo_view(p, cof, odo);
+        with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
+            odo_fwd(c, zt.z, typ, ov, p.cap)
+        });
         trace_step(c, "odo");
         c.x(zt.z);
         let cfg = dec_cfg(c, p, env.cof[t1], true);
@@ -571,7 +777,10 @@ fn dispose_rev(
         };
         dec::pop(c, &io, h, cfg);
         c.x(zt.z);
-        odo_rev(c, zt.z, typ, odo_view(p, cof, odo), p.cap);
+        let ov = odo_view(p, cof, odo);
+        with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
+            odo_rev(c, zt.z, typ, ov, p.cap)
+        });
         ghost_odo_prime_xor(c, p, cof, zt.z, typ);
         zt.uncompute(c);
     } else {
@@ -695,7 +904,14 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
         });
         trace_step(c, "tick-start");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
-        let (typ_t, isc, _) = tick::rail_fwd(c, &mut st.rails, st.typ, w.wsw, w.wad, Some(p.cap));
+        let (typ_t, isc, _) = tick::rail_fwd_micro(
+            c,
+            &mut st.rails,
+            st.typ,
+            &w,
+            Some(p.cap),
+            Some(st.cof.r[0]),
+        );
         trace_cost(c, "fwd", t, "rail", t0);
         trace_step(c, "rail");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
@@ -781,8 +997,9 @@ pub fn forward_from(c: &mut Builder, p: &WalkParams, env: &Envelope, mut st: Act
     } = st;
     dispose_fwd(c, p, env, r - 1, typ.unwrap(), &cof, &mut h, &odo);
     // parked rails (R1, R2) = (0, 1) and r = p: classical constants
-    assert_eq!(rails.r1.len(), env.rail[r - 1]);
-    assert_eq!(rails.r2.len(), env.rail[r - 1]);
+    let (post_r1, post_r2) = env.post_widths(r - 1);
+    assert_eq!(rails.r1.len(), post_r1);
+    assert_eq!(rails.r2.len(), post_r2);
     c.x(rails.r2[0]);
     c.free_vec(&rails.r1);
     c.free_vec(&rails.r2);
@@ -863,15 +1080,16 @@ pub fn backward_from_active(
         } else {
             None
         };
-        tick::rail_rev(
+        tick::rail_rev_micro(
             c,
             &mut rails,
             typ,
             isc,
             tprev,
-            w.wsw,
+            &w,
             (prev[t].r1, prev[t].r2),
             Some(p.cap),
+            Some(cof.r[0]),
         );
         if let Some(tq) = tprev {
             typ = tq;
@@ -896,27 +1114,31 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
         prev,
         tops,
     } = pk;
-    let wl = env.rail[r - 1];
+    let (post_r1, post_r2) = env.post_widths(r - 1);
     let mut rails = Rails {
-        r1: c.alloc_qubits(wl),
-        r2: c.alloc_qubits(wl),
+        r1: c.alloc_qubits(post_r1),
+        r2: c.alloc_qubits(post_r2),
     };
     c.x(rails.r2[0]);
     let rr = if ghost_odo() {
         assert_eq!(odo.len(), p.odo_bits);
-        (0..N).map(|i| {
-            if (GHOST_ODO_START..GHOST_ODO_START + p.odo_bits).contains(&i) {
-                odo[i - GHOST_ODO_START]
-            } else {
-                c.alloc_qubit()
-            }
-        }).collect::<Vec<_>>()
+        (0..N)
+            .map(|i| {
+                if (GHOST_ODO_START..GHOST_ODO_START + p.odo_bits).contains(&i) {
+                    odo[i - GHOST_ODO_START]
+                } else {
+                    c.alloc_qubit()
+                }
+            })
+            .collect::<Vec<_>>()
     } else {
         c.alloc_qubits(N)
     };
     let pv = crate::point_add::SECP256K1_P;
     for i in 0..N {
-        if pv.bit(i) && !(ghost_odo() && (GHOST_ODO_START..GHOST_ODO_START + p.odo_bits).contains(&i)) {
+        if pv.bit(i)
+            && !(ghost_odo() && (GHOST_ODO_START..GHOST_ODO_START + p.odo_bits).contains(&i))
+        {
             c.x(rr[i]);
         }
     }
@@ -950,15 +1172,16 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
         };
         trace_cost(c, "rev", t, "decoder", t0);
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
-        tick::rail_rev(
+        tick::rail_rev_micro(
             c,
             &mut rails,
             typ,
             isc,
             tprev,
-            w.wsw,
+            &w,
             (prev[t].r1, prev[t].r2),
             Some(p.cap),
+            Some(cof.r[0]),
         );
         trace_cost(c, "rev", t, "rail", t0);
         trace_tick(c, "rev", t);

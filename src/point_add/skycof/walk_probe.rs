@@ -78,7 +78,12 @@ fn canonical_prefix_spec(d: U512, p: U512, cut: usize) -> [U512; 4] {
             std::mem::swap(&mut x, &mut y);
             std::mem::swap(&mut a, &mut b);
         }
-        let half: U512 = (x >> 1usize) | if x.bit(511) { U512::from(1) << 511usize } else { U512::ZERO };
+        let half: U512 = (x >> 1usize)
+            | if x.bit(511) {
+                U512::from(1) << 511usize
+            } else {
+                U512::ZERO
+            };
         if half.bit(511) == y.bit(511) {
             y = y.wrapping_sub(half);
             a = (a << 1usize).wrapping_add(b);
@@ -379,6 +384,14 @@ pub fn classify(d: U512, p: U512) -> Vec<String> {
         if ad > w.wad {
             out.push(format!("t{t}:rail_add {ad}>{}", w.wad));
         }
+        let post_r1 = swu(h);
+        if post_r1 > w.post_r1 {
+            out.push(format!("t{t}:post_r1 {post_r1}>{}", w.post_r1));
+        }
+        let post_r2 = swu(b2);
+        if post_r2 > w.post_r2 {
+            out.push(format!("t{t}:post_r2 {post_r2}>{}", w.post_r2));
+        }
         let isc = negu(b2) != negu(b);
         typ ^= c;
         if isc {
@@ -428,7 +441,7 @@ pub fn classify(d: U512, p: U512) -> Vec<String> {
             if amb {
                 pushes += 1;
             }
-            if pushes > env.h[t] {
+            if pushes > env.h[t] && !super::pointadd::knob_flag("SKYCOF_CLASSIFY_EXACT_H") {
                 out.push(format!("t{t}:H {pushes}>{}", env.h[t]));
             }
             // letter consistency: decoder certain-A must be A, C iff bit1(s)
@@ -633,8 +646,15 @@ pub fn run() {
             cut200_gauge(&mut b, &mut st, &pass, false);
             let t1 = b.report_totals().map_or(t0, |x| x.1);
             if super::pointadd::knob_flag("SKYCOF_PROBE_CUT200_GAUGE_SPEC") {
-                gauge_spec = Some((b.op_count(), [st.rails.r1.clone(), st.rails.r2.clone(),
-                    st.cof.s.clone(), st.cof.r.clone()]));
+                gauge_spec = Some((
+                    b.op_count(),
+                    [
+                        st.rails.r1.clone(),
+                        st.rails.r2.clone(),
+                        st.cof.s.clone(),
+                        st.cof.r.clone(),
+                    ],
+                ));
             }
             cut200_pack(&mut b, &mut st, &pass, false);
             let t2 = b.report_totals().map_or(t1, |x| x.1);
@@ -686,8 +706,11 @@ pub fn run() {
                     let expected = canonical_prefix_spec(ds[shot], p, cut);
                     gauge_value_failures += usize::from(actual != expected);
                     gauge_invariant_failures += usize::from(
-                        actual[0].wrapping_mul(actual[2]).wrapping_add(
-                            actual[1].wrapping_mul(actual[3])) != p);
+                        actual[0]
+                            .wrapping_mul(actual[2])
+                            .wrapping_add(actual[1].wrapping_mul(actual[3]))
+                            != p,
+                    );
                     gauge_phase_failures += ((sim.phase >> shot) & 1) as usize;
                 }
                 sim.apply_iter(ops[*end..].iter());
@@ -719,8 +742,15 @@ pub fn run() {
         }
         if gauge_spec.is_some() {
             eprintln!("CUT200_GAUGE_SPEC shots={} value_failures={gauge_value_failures} invariant_failures={gauge_invariant_failures} phase_failures={gauge_phase_failures}", batches * 64);
-            assert_eq!((gauge_value_failures, gauge_invariant_failures, gauge_phase_failures), (0, 0, 0),
-                "actual native prefix gauge does not match the canonical signed GCD ABI");
+            assert_eq!(
+                (
+                    gauge_value_failures,
+                    gauge_invariant_failures,
+                    gauge_phase_failures
+                ),
+                (0, 0, 0),
+                "actual native prefix gauge does not match the canonical signed GCD ABI"
+            );
         }
         return;
     }
@@ -785,12 +815,18 @@ pub fn run() {
     let ops_b = b.take_ops();
     let (nq, nb) = b.i13_dims();
     let passenger_ids: HashSet<u64> = pass.iter().map(|q| q.0).collect();
-    assert!(ops_f.iter().chain(&ops_b).all(|op| {
-        !passenger_ids.contains(&op.q_target.0)
-            && !passenger_ids.contains(&op.q_control1.0)
-            && !passenger_ids.contains(&op.q_control2.0)
-    }), "GCD walk accesses a supposedly untouched passenger owner");
-    eprintln!("WALKPROBE spectator_identity Q={} quantum_operand_references=0", pass.len());
+    assert!(
+        ops_f.iter().chain(&ops_b).all(|op| {
+            !passenger_ids.contains(&op.q_target.0)
+                && !passenger_ids.contains(&op.q_control1.0)
+                && !passenger_ids.contains(&op.q_control2.0)
+        }),
+        "GCD walk accesses a supposedly untouched passenger owner"
+    );
+    eprintln!(
+        "WALKPROBE spectator_identity Q={} quantum_operand_references=0",
+        pass.len()
+    );
     let tf = expected_t(&ops_f);
     let tb = expected_t(&ops_b);
     eprintln!("WALKPROBE built: ops_f={} ops_b={} live_after_fwd={} peak={} nq={nq} expected_T_fwd={tf:.3} expected_T_back={tb:.3} expected_T_pair={:.3}", ops_f.len(), ops_b.len(), live_f, b.peak_total(), tf + tb);

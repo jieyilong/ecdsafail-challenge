@@ -55,7 +55,7 @@ fn knob_usize(name: &str, default: usize) -> usize {
 }
 
 /// Source defaults.
-pub const CAP: usize = 1061;
+pub const CAP: usize = 1057;
 pub const R: usize = 404;
 pub const PARK_J: usize = 14;
 pub const W_DEC: usize = 64;
@@ -175,14 +175,27 @@ fn mm_cfg(c: &Builder, extra_live: usize, role: MmRole) -> mm::Cfg {
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(true);
     if targeted_repair {
-        let (min_guard, min_cmpw) = match role {
-            MmRole::SlopeValue => (21, 24),
-            MmRole::NumeratorDebt => (25, 20),
-            MmRole::ValueProduct => (21, 27),
-            MmRole::Generic | MmRole::SlopeDebt => (0, 0),
+        // Role-specific fitted windows. Keep every semantic role independently
+        // tunable so a repair in one product does not widen all products.
+        (guard, cmpw) = match role {
+            MmRole::SlopeValue => (
+                knob_usize("SKYCOF_MM1_GUARD", 24),
+                knob_usize("SKYCOF_MM1_CMPW", 28),
+            ),
+            MmRole::NumeratorDebt => (
+                knob_usize("SKYCOF_MM2_GUARD", 25),
+                knob_usize("SKYCOF_MM2_CMPW", 24),
+            ),
+            MmRole::ValueProduct => (
+                knob_usize("SKYCOF_MM4_GUARD", 21),
+                knob_usize("SKYCOF_MM4_CMPW", 27),
+            ),
+            MmRole::SlopeDebt => (
+                knob_usize("SKYCOF_MM5_GUARD", 24),
+                knob_usize("SKYCOF_MM5_CMPW", 28),
+            ),
+            MmRole::Generic => (guard, cmpw),
         };
-        guard = guard.max(min_guard);
-        cmpw = cmpw.max(min_cmpw);
     }
     mm::Cfg::windowed(mm::Field::secp(), guard, cmpw, room)
 }
@@ -192,7 +205,14 @@ pub(crate) fn mulf(c: &mut Builder, a: &[Q], b: &[Q], k: usize, neg: bool) -> Ve
     mulf_role(c, a, b, k, neg, MmRole::Generic)
 }
 
-pub(crate) fn mulf_role(c: &mut Builder, a: &[Q], b: &[Q], k: usize, neg: bool, role: MmRole) -> Vec<Q> {
+pub(crate) fn mulf_role(
+    c: &mut Builder,
+    a: &[Q],
+    b: &[Q],
+    k: usize,
+    neg: bool,
+    role: MmRole,
+) -> Vec<Q> {
     let f = mm::Field::secp();
     let ng = neg.then(|| {
         let q = c.alloc_qubit();
@@ -213,7 +233,15 @@ pub(crate) fn mulf_inv(c: &mut Builder, a: &[Q], b: &[Q], k: usize, neg: bool, o
     mulf_inv_role(c, a, b, k, neg, out, MmRole::Generic)
 }
 
-pub(crate) fn mulf_inv_role(c: &mut Builder, a: &[Q], b: &[Q], k: usize, neg: bool, out: Vec<Q>, role: MmRole) {
+pub(crate) fn mulf_inv_role(
+    c: &mut Builder,
+    a: &[Q],
+    b: &[Q],
+    k: usize,
+    neg: bool,
+    out: Vec<Q>,
+    role: MmRole,
+) {
     let f = mm::Field::secp();
     let ng = neg.then(|| {
         let q = c.alloc_qubit();

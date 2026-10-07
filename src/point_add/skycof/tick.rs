@@ -44,8 +44,12 @@ pub struct Cof {
 pub struct TickWidths {
     /// rail width at the swap (two's complement incl. sign)
     pub wsw: usize,
-    /// rail width at the add = post-tick rail width
+    /// common width used by the rail arithmetic
     pub wad: usize,
+    /// public post-tick width of the half/source rail
+    pub post_r1: usize,
+    /// public post-tick width of the updated/result rail
+    pub post_r2: usize,
     /// post-tick cofactor field width (unsigned), `<= clamp`
     pub ecof: usize,
     /// cofactor clamp (256 in production)
@@ -71,6 +75,48 @@ fn fredkin(c: &mut Builder, ctrl: Q, a: Q, b: Q) {
     c.cx(b, a);
     c.ccx(ctrl, a, b);
     c.cx(b, a);
+}
+
+/// Lend the physical cofactor bit `r[0]`, whose value is the invariant
+/// constant one, to one scratch-closed adder call.  The arithmetic operands
+/// deliberately exclude this bit.  Reacquiring the exact ID makes the loan
+/// invisible to the surrounding cofactor register.
+fn with_r0_loan(
+    c: &mut Builder,
+    r0: Option<Q>,
+    g: Option<Q>,
+    operand: &[Q],
+    target: &[Q],
+    cin: Option<Q>,
+    body: impl FnOnce(&mut Builder) -> Plan,
+) -> Plan {
+    let enabled = super::pointadd::knob("SKYCOF_R0_LOAN")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(true);
+    if !enabled {
+        return body(c);
+    }
+    let r0 = r0.expect("SKYCOF_R0_LOAN requires the owned cofactor r[0]");
+    assert_eq!(
+        c.tracked_condition_depth(),
+        Some(0),
+        "SKYCOF_R0_LOAN requires an empty outer condition stack"
+    );
+    assert!(g != Some(r0) && cin != Some(r0));
+    assert!(!operand.contains(&r0) && !target.contains(&r0));
+    let live = c.active_qubits();
+    c.x(r0); // invariant |1> -> clean |0>
+    c.release_clean(r0);
+    let plan = body(c);
+    assert_eq!(
+        c.active_qubits() + 1,
+        live,
+        "SKYCOF_R0_LOAN adder leaked a scratch owner"
+    );
+    c.reacquire(r0);
+    c.x(r0); // restore the invariant |1>
+    assert_eq!(c.active_qubits(), live);
+    plan
 }
 
 pub(crate) fn parity_source_carry() -> bool {
@@ -111,6 +157,7 @@ pub fn rail_fwd(
     wsw: usize,
     wad: usize,
     cap: Option<usize>,
+    r0_loan: Option<Q>,
 ) -> (Q, Q, Plan) {
     assert!(wsw >= 3 && wad >= 2, "rail widths {wsw}/{wad}");
     resize_signed(c, &mut rails.r1, wsw);
@@ -130,7 +177,9 @@ pub fn rail_fwd(
     c.cx(r2[wad - 1], tau);
     c.x(tau);
     c.cx_all(tau, &e2);
-    let plan = adder::add(c, None, &e2, r2, Some(tau), cap);
+    let plan = with_r0_loan(c, r0_loan, None, &e2, r2, Some(tau), |c| {
+        adder::add(c, None, &e2, r2, Some(tau), cap)
+    });
     c.cx_all(tau, &e2);
     c.x(tau);
     c.cx(e2[wad - 1], tau);
@@ -140,6 +189,24 @@ pub fn rail_fwd(
     }
     rails.r1 = e2;
     (ctl, tau, plan)
+}
+
+/// Forward rail kernel followed by the two independently fitted public
+/// contractions.  Tau/sign repair and the type update are complete before a
+/// sign-extension owner is released.
+pub fn rail_fwd_micro(
+    c: &mut Builder,
+    rails: &mut Rails,
+    typ_prev: Option<Q>,
+    w: &TickWidths,
+    cap: Option<usize>,
+    r0_loan: Option<Q>,
+) -> (Q, Q, Plan) {
+    assert!(w.post_r1 <= w.wad && w.post_r2 <= w.wad);
+    let out = rail_fwd(c, rails, typ_prev, w.wsw, w.wad, cap, r0_loan);
+    resize_signed(c, &mut rails.r1, w.post_r1);
+    resize_signed(c, &mut rails.r2, w.post_r2);
+    out
 }
 
 /// Exact inverse of [`rail_fwd`] (`heo::rev_tick` with a room-aware subtract); consumes `typ` (it
@@ -154,6 +221,7 @@ pub fn rail_rev(
     wsw: usize,
     prev: (usize, usize),
     cap: Option<usize>,
+    r0_loan: Option<Q>,
 ) -> Plan {
     let wad = rails.r1.len();
     assert_eq!(
@@ -166,7 +234,9 @@ pub fn rail_rev(
     c.cx(rails.r2[wad - 1], tau);
     c.x(tau);
     c.cx_all(tau, &rails.r1);
-    let plan = adder::sub(c, None, &rails.r1, &rails.r2, Some(tau), cap);
+    let plan = with_r0_loan(c, r0_loan, None, &rails.r1, &rails.r2, Some(tau), |c| {
+        adder::sub(c, None, &rails.r1, &rails.r2, Some(tau), cap)
+    });
     c.cx_all(tau, &rails.r1);
     c.x(tau);
     c.cx(rails.r1[wad - 1], tau);
@@ -186,6 +256,28 @@ pub fn rail_rev(
     resize_signed(c, &mut rails.r1, prev.0);
     resize_signed(c, &mut rails.r2, prev.1);
     plan
+}
+
+/// Exact reverse seam for [`rail_fwd_micro`].  Decoder and cofactor reverse
+/// execute while the banks are still contracted; only the rail kernel grows
+/// them back to its common arithmetic width.
+#[allow(clippy::too_many_arguments)]
+pub fn rail_rev_micro(
+    c: &mut Builder,
+    rails: &mut Rails,
+    typ: Q,
+    isc: Q,
+    typ_prev: Option<Q>,
+    w: &TickWidths,
+    prev: (usize, usize),
+    cap: Option<usize>,
+    r0_loan: Option<Q>,
+) -> Plan {
+    assert_eq!(rails.r1.len(), w.post_r1);
+    assert_eq!(rails.r2.len(), w.post_r2);
+    resize_signed(c, &mut rails.r1, w.wad);
+    resize_signed(c, &mut rails.r2, w.wad);
+    rail_rev(c, rails, typ, isc, typ_prev, w.wsw, prev, cap, r0_loan)
 }
 
 /// Operand length of the cofactor add (`s` before the relabel).
@@ -259,15 +351,21 @@ fn cof_fwd_impl(
     // Before tick t, max(s,r) <= 2^t. After it, max(s,r) <= 2^(t+1).
     // At the bounded prefix's missing top operand position t+1 the bit is zero.
     let m = bound.map_or(n, |t| n.min(t + 2));
-    let operand = if bound.is_some() { &cof.s[1..m - 1] } else { &cof.s[1..] };
+    let operand = if bound.is_some() {
+        &cof.s[1..m - 1]
+    } else {
+        &cof.s[1..]
+    };
     c.x(typ);
-    let plan = adder::add(
+    let r0 = cof.r[0];
+    let plan = with_r0_loan(
         c,
+        Some(r0),
         Some(typ),
         operand,
         &cof.r[1..m],
         Some(cof.s[0]),
-        cap,
+        |c| adder::add(c, Some(typ), operand, &cof.r[1..m], Some(cof.s[0]), cap),
     );
     c.x(typ);
     c.cx(isc, cof.s[0]);
@@ -302,7 +400,8 @@ pub fn fwd_tick_open(
         r2: rails.r2.len(),
         cof: cof.s.len(),
     };
-    let (typ, isc, rail) = rail_fwd(c, rails, typ_prev, w.wsw, w.wad, cap);
+    let (typ, isc, rail) =
+        rail_fwd_micro(c, rails, typ_prev, w, cap, Some(cof.r[0]));
     let cofp = cof_fwd(c, cof, typ, isc, w, cap);
     (typ, isc, prev, TickPlans { rail, cof: cofp })
 }
@@ -379,15 +478,21 @@ fn cof_rev_impl(
     );
     c.cx(isc, cof.s[0]);
     let m = bound.map_or(n, |t| n.min(t + 2));
-    let operand = if bound.is_some() { &cof.s[1..m - 1] } else { &cof.s[1..] };
+    let operand = if bound.is_some() {
+        &cof.s[1..m - 1]
+    } else {
+        &cof.s[1..]
+    };
     c.x(typ);
-    let plan = adder::sub(
+    let r0 = cof.r[0];
+    let plan = with_r0_loan(
         c,
+        Some(r0),
         Some(typ),
         operand,
         &cof.r[1..m],
         Some(cof.s[0]),
-        cap,
+        |c| adder::sub(c, Some(typ), operand, &cof.r[1..m], Some(cof.s[0]), cap),
     );
     c.x(typ);
     resize_unsigned(c, &mut cof.r, e_prev);
@@ -414,7 +519,17 @@ pub fn rev_tick_with_isc(
     cap: Option<usize>,
 ) -> TickPlans {
     let cofp = cof_rev(c, cof, typ, isc, prev.cof, cap);
-    let rail = rail_rev(c, rails, typ, isc, typ_prev, w.wsw, (prev.r1, prev.r2), cap);
+    let rail = rail_rev_micro(
+        c,
+        rails,
+        typ,
+        isc,
+        typ_prev,
+        w,
+        (prev.r1, prev.r2),
+        cap,
+        Some(cof.r[0]),
+    );
     TickPlans { rail, cof: cofp }
 }
 

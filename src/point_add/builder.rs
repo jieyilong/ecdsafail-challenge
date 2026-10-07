@@ -66,6 +66,16 @@ impl Builder {
     pub(crate) fn current_phase(&self) -> &'static str {
         self.phase
     }
+    /// Current classical-condition nesting when a research cost recorder is
+    /// active.  Exact owner loans are unsafe under an outer condition: their
+    /// unconditional X/release/reacquire frame would then cease to represent
+    /// a globally clean wire.
+    pub(crate) fn tracked_condition_depth(&self) -> Option<usize> {
+        self.report
+            .as_deref()
+            .map(|r| r.depth as usize)
+            .or_else(|| self.model.then_some(self.model_depth))
+    }
     /// R3: run `body` and return its peak live count.
     pub(crate) fn r3_peak<R>(&mut self, body: impl FnOnce(&mut Self) -> R) -> (R, u32) {
         let saved = self.win_peak;
@@ -490,7 +500,8 @@ impl Builder {
         op.q_target = d;
         if self.ccx_census.watching() {
             let at = self.at();
-            self.ccx_census.on_gate(at, OperationType::CCZ, std::panic::Location::caller());
+            self.ccx_census
+                .on_gate(at, OperationType::CCZ, std::panic::Location::caller());
         }
         self.push_op(op);
     }

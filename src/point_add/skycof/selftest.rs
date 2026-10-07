@@ -646,6 +646,8 @@ fn build_tick(l: &Layout, with_tp: bool, extra: Option<usize>) -> Option<TickCir
         let w = TickWidths {
             wsw: l.wsw,
             wad: l.wad,
+            post_r1: l.wad,
+            post_r2: l.wad,
             ecof: l.ecof,
             clamp: l.clamp,
         };
@@ -1262,6 +1264,8 @@ fn envelope(
             TickWidths {
                 wsw: (sw_need + m_rail).max(3),
                 wad: (ad_need + m_rail).max(2),
+                post_r1: (ad_need + m_rail).max(2),
+                post_r2: (ad_need + m_rail).max(2),
                 ecof: (cof_need + m_cof).clamp(2, clamp),
                 clamp,
             }
@@ -1405,6 +1409,8 @@ fn test_walks_full() {
         .map(|t| TickWidths {
             wsw: if t == 0 { 258 } else { rows[t - 1][1] as usize },
             wad: rows[t][1] as usize,
+            post_r1: rows[t][1] as usize,
+            post_r2: rows[t][1] as usize,
             ecof: rows[t][2] as usize,
             clamp: 256,
         })
@@ -1564,6 +1570,8 @@ pub fn cost_report() {
             let w = TickWidths {
                 wsw,
                 wad: rail,
+                post_r1: rail,
+                post_r2: rail,
                 ecof,
                 clamp: 256,
             };
@@ -1571,7 +1579,7 @@ pub fn cost_report() {
             let _ = c.take_win_peak();
             let o0 = c.op_count();
             // room the rail add will see: rails at wad (r2 and e2), typ (old LSB) and the sign wire
-            let (typ, isc, rp) = rail_fwd(&mut c, &mut rails, typ_prev, w.wsw, w.wad, capo);
+            let (typ, isc, rp) = rail_fwd(&mut c, &mut rails, typ_prev, w.wsw, w.wad, capo, None);
             let o1 = c.op_count();
             let room_rail = adder::LAST_AVAIL.load(std::sync::atomic::Ordering::Relaxed);
             let cp = cof_fwd(&mut c, &mut cof, typ, isc, &w, capo);
@@ -1654,6 +1662,8 @@ fn rev_cost_exact() {
             let w = TickWidths {
                 wsw,
                 wad: rail,
+                post_r1: rail,
+                post_r2: rail,
                 ecof,
                 clamp: 256,
             };
@@ -1705,7 +1715,7 @@ fn test_heo_identity() {
                 r2: r2.clone(),
             };
             if mine {
-                let (typ, isc, _) = rail_fwd(&mut c, &mut rails, Some(tp), wsw, wad, None);
+                let (typ, isc, _) = rail_fwd(&mut c, &mut rails, Some(tp), wsw, wad, None, None);
                 rail_rev(
                     &mut c,
                     &mut rails,
@@ -1714,6 +1724,7 @@ fn test_heo_identity() {
                     Some(tp),
                     wsw,
                     (wsw, wsw),
+                    None,
                     None,
                 );
             } else {
