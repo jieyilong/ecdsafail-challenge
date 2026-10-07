@@ -206,6 +206,37 @@ pub fn cof_fwd(
     w: &TickWidths,
     cap: Option<usize>,
 ) -> Plan {
+    cof_fwd_impl(c, cof, typ, isc, w, cap, None)
+}
+
+/// Public-clock specialization on the source-reachable leading-zero support.
+/// Keep every original cofactor owner; only omit arithmetic on proven zeros.
+/// The late/clamped path must retain its original full-width operand.
+pub fn cof_fwd_at(
+    c: &mut Builder,
+    cof: &mut Cof,
+    typ: Q,
+    isc: Q,
+    w: &TickWidths,
+    cap: Option<usize>,
+    t: usize,
+) -> Plan {
+    let enabled = super::pointadd::knob("SKYCOF_EARLY_COF_BOUND")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(true);
+    let bound = (t <= 50 && enabled).then_some(t);
+    cof_fwd_impl(c, cof, typ, isc, w, cap, bound)
+}
+
+fn cof_fwd_impl(
+    c: &mut Builder,
+    cof: &mut Cof,
+    typ: Q,
+    isc: Q,
+    w: &TickWidths,
+    cap: Option<usize>,
+    bound: Option<usize>,
+) -> Plan {
     let e_prev = cof.s.len();
     assert_eq!(
         cof.r.len(),
@@ -217,19 +248,24 @@ pub fn cof_fwd(
         "cof widths {e_prev} -> {}",
         w.ecof
     );
-    for i in 1..e_prev {
+    let swap_end = bound.map_or(e_prev, |t| e_prev.min(t + 1));
+    for i in 1..swap_end {
         fredkin(c, isc, cof.s[i], cof.r[i]);
     }
     let n = w.ecof;
     let k = add_operand_len(w, e_prev);
     resize_unsigned(c, &mut cof.r, n);
     resize_unsigned(c, &mut cof.s, k);
+    // Before tick t, max(s,r) <= 2^t. After it, max(s,r) <= 2^(t+1).
+    // At the bounded prefix's missing top operand position t+1 the bit is zero.
+    let m = bound.map_or(n, |t| n.min(t + 2));
+    let operand = if bound.is_some() { &cof.s[1..m - 1] } else { &cof.s[1..] };
     c.x(typ);
     let plan = adder::add(
         c,
         Some(typ),
-        &cof.s[1..],
-        &cof.r[1..],
+        operand,
+        &cof.r[1..m],
         Some(cof.s[0]),
         cap,
     );
@@ -304,6 +340,35 @@ pub fn cof_rev(
     e_prev: usize,
     cap: Option<usize>,
 ) -> Plan {
+    cof_rev_impl(c, cof, typ, isc, e_prev, cap, None)
+}
+
+/// Reverse of [`cof_fwd_at`] with the same public clock and full owner layout.
+pub fn cof_rev_at(
+    c: &mut Builder,
+    cof: &mut Cof,
+    typ: Q,
+    isc: Q,
+    e_prev: usize,
+    cap: Option<usize>,
+    t: usize,
+) -> Plan {
+    let enabled = super::pointadd::knob("SKYCOF_EARLY_COF_BOUND")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(true);
+    let bound = (t <= 50 && enabled).then_some(t);
+    cof_rev_impl(c, cof, typ, isc, e_prev, cap, bound)
+}
+
+fn cof_rev_impl(
+    c: &mut Builder,
+    cof: &mut Cof,
+    typ: Q,
+    isc: Q,
+    e_prev: usize,
+    cap: Option<usize>,
+    bound: Option<usize>,
+) -> Plan {
     let n = cof.r.len();
     let z = cof.s.remove(0);
     c.free(z);
@@ -313,19 +378,22 @@ pub fn cof_rev(
         cof.s.len()
     );
     c.cx(isc, cof.s[0]);
+    let m = bound.map_or(n, |t| n.min(t + 2));
+    let operand = if bound.is_some() { &cof.s[1..m - 1] } else { &cof.s[1..] };
     c.x(typ);
     let plan = adder::sub(
         c,
         Some(typ),
-        &cof.s[1..],
-        &cof.r[1..],
+        operand,
+        &cof.r[1..m],
         Some(cof.s[0]),
         cap,
     );
     c.x(typ);
     resize_unsigned(c, &mut cof.r, e_prev);
     resize_unsigned(c, &mut cof.s, e_prev);
-    for i in 1..e_prev {
+    let swap_end = bound.map_or(e_prev, |t| e_prev.min(t + 1));
+    for i in 1..swap_end {
         fredkin(c, isc, cof.s[i], cof.r[i]);
     }
     plan

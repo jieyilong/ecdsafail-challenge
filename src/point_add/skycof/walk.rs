@@ -101,6 +101,17 @@ impl Envelope {
                 *x += extra;
             }
         }
+        // Bounded resource/accuracy experiment. This is an explicit narrowing
+        // of the inherited fitted support, not an exact representation change.
+        {
+            let trim: usize = super::pointadd::knob("SKYCOF_RAIL_TRIM")
+                .map(|raw| raw.parse().expect("SKYCOF_RAIL_TRIM integer"))
+                .unwrap_or(2);
+            assert!(trim <= 8, "rail trim requires a separate wider experiment");
+            for width in &mut rail {
+                *width = width.saturating_sub(trim).max(3);
+            }
+        }
         Envelope { rail, cof, h }
     }
     pub fn widths(&self, t: usize) -> TickWidths {
@@ -694,7 +705,7 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
         trace_cost(c, "fwd", t, "decoder", t0);
         trace_step(c, "dispose");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
-        tick::cof_fwd(c, &mut st.cof, typ_t, isc, &w, Some(p.cap));
+        tick::cof_fwd_at(c, &mut st.cof, typ_t, isc, &w, Some(p.cap), t);
         trace_cost(c, "fwd", t, "cofactor", t0);
         trace_step(c, "cof");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
@@ -846,7 +857,7 @@ pub fn backward_from_active(
             TopFate::None => {}
         }
         let isc = tick::isc_recompute(c, &cof, typ);
-        tick::cof_rev(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap));
+        tick::cof_rev_at(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
         let tprev = if t >= 1 {
             Some(dispose_rev(c, p, env, t - 1, &cof, &mut h, &odo))
         } else {
@@ -929,7 +940,7 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
         trace_cost(c, "rev", t, "unfold", t0);
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
         let isc = tick::isc_recompute(c, &cof, typ);
-        tick::cof_rev(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap));
+        tick::cof_rev_at(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
         trace_cost(c, "rev", t, "cofactor", t0);
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
         let tprev = if t >= 1 {
