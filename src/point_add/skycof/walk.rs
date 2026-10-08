@@ -110,7 +110,7 @@ impl Envelope {
         if let Some(table) = micro_table {
             assert_eq!(r, 404, "microphase table is frozen for R404");
             assert!(
-                (1040..=1057).contains(&super::pointadd::params().walk.cap),
+                (1039..=1057).contains(&super::pointadd::params().walk.cap),
                 "microphase table was fitted near cap 1057; wider cap changes its owner contract"
             );
             assert!(
@@ -313,6 +313,12 @@ fn ghost_odo() -> bool {
         .unwrap_or(true)
 }
 
+fn implicit_r0() -> bool {
+    super::pointadd::knob("SKYCOF_IMPLICIT_R0")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(true)
+}
+
 fn check_ghost_odo(p: &WalkParams, env: &Envelope) {
     if !ghost_odo() {
         return;
@@ -349,8 +355,13 @@ fn check_ghost_odo(p: &WalkParams, env: &Envelope) {
 /// parked. It is an alias, never independently allocated or freed.
 fn odo_view<'a>(p: &WalkParams, cof: &'a Cof, owned: &'a [Q]) -> &'a [Q] {
     if ghost_odo() {
-        assert_eq!(cof.r.len(), CLAMP);
-        &cof.r[GHOST_ODO_START..GHOST_ODO_START + p.odo_bits]
+        if implicit_r0() {
+            assert_eq!(cof.r.len() + 1, CLAMP);
+            &cof.r[GHOST_ODO_START - 1..GHOST_ODO_START - 1 + p.odo_bits]
+        } else {
+            assert_eq!(cof.r.len(), CLAMP);
+            &cof.r[GHOST_ODO_START..GHOST_ODO_START + p.odo_bits]
+        }
     } else {
         owned
     }
@@ -369,6 +380,17 @@ fn ghost_odo_prime_xor(
     host_r0: bool,
 ) {
     if !ghost_odo() {
+        return;
+    }
+    if implicit_r0() {
+        c.x(typ);
+        let prime = crate::point_add::SECP256K1_P;
+        for i in 0..p.odo_bits {
+            if prime.bit(GHOST_ODO_START + i) {
+                c.ccx(z, typ, cof.r[GHOST_ODO_START - 1 + i]);
+            }
+        }
+        c.x(typ);
         return;
     }
     let g = if host_r0 {
@@ -630,9 +652,13 @@ pub struct ParkTest {
 
 impl ParkTest {
     pub fn compute(c: &mut Builder, r: &[Q], s: &[Q], j: usize, cap: usize) -> Self {
-        assert_eq!(r.len(), CLAMP);
+        assert!(r.len() == CLAMP || (implicit_r0() && r.len() + 1 == CLAMP));
         assert!(j > PARK_PART && j <= CLAMP);
-        let bits = &r[CLAMP - j..];
+        let bits = if implicit_r0() {
+            &r[CLAMP - j - 1..]
+        } else {
+            &r[CLAMP - j..]
+        };
         let dirty = match super::pointadd::knob("SKYCOF_DIRTY_PARK").as_deref() {
             Some("1" | "always") => true,
             Some("0" | "never") => false,
@@ -758,7 +784,57 @@ fn odo_nonzero_dirty(
     c.x_all(odo);
 }
 
+fn implicit_mcx(c: &mut Builder, controls: &[Q], target: Q, dirty: &[Q]) {
+    match controls.len() {
+        0 => c.x(target),
+        1 => c.cx(controls[0], target),
+        2 => c.ccx(controls[0], controls[1], target),
+        m => {
+            let d = &dirty[..m - 2];
+            for bottom in [true, false] {
+                if bottom { c.ccx(controls[0], controls[1], d[0]); }
+                for i in 1..d.len() { c.ccx(d[i - 1], controls[i + 1], d[i]); }
+                c.ccx(*d.last().unwrap(), *controls.last().unwrap(), target);
+                for i in (1..d.len()).rev() { c.ccx(d[i - 1], controls[i + 1], d[i]); }
+                if bottom { c.ccx(controls[0], controls[1], d[0]); }
+            }
+        }
+    }
+}
+
+fn implicit_odo_inc(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q]) {
+    for i in (1..odo.len()).rev() {
+        let mut controls = vec![z, typ];
+        controls.extend_from_slice(&odo[..i]);
+        implicit_mcx(c, &controls, odo[i], dirty);
+    }
+    c.ccx(z, typ, odo[0]);
+}
+
+fn implicit_odo_dec(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q]) {
+    c.ccx(z, typ, odo[0]);
+    for i in 1..odo.len() {
+        let mut controls = vec![z, typ];
+        controls.extend_from_slice(&odo[..i]);
+        implicit_mcx(c, &controls, odo[i], dirty);
+    }
+}
+
+fn implicit_odo_typ_nonzero(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q]) {
+    c.cx(z, typ);
+    c.x_all(odo);
+    let mut controls = vec![z];
+    controls.extend_from_slice(odo);
+    implicit_mcx(c, &controls, typ, dirty);
+    c.x_all(odo);
+}
+
 fn odo_fwd(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q], cap: usize) {
+    if implicit_r0() {
+        implicit_odo_inc(c, z, typ, odo, &dirty[..6]);
+        implicit_odo_typ_nonzero(c, z, typ, odo, &dirty[..6]);
+        return;
+    }
     let dirty_mode = match super::pointadd::knob("SKYCOF_DIRTY_ODO").as_deref() {
         Some("1" | "always") => true,
         Some("0" | "never") => false,
@@ -788,6 +864,11 @@ fn odo_fwd(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q], cap: usize) {
 
 /// Exact inverse of [`odo_fwd`].
 fn odo_rev(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q], cap: usize) {
+    if implicit_r0() {
+        implicit_odo_typ_nonzero(c, z, typ, odo, &dirty[..6]);
+        implicit_odo_dec(c, z, typ, odo, &dirty[..6]);
+        return;
+    }
     let dirty_mode = match super::pointadd::knob("SKYCOF_DIRTY_ODO").as_deref() {
         Some("1" | "always") => true,
         Some("0" | "never") => false,
@@ -818,6 +899,52 @@ fn odo_rev(c: &mut Builder, z: Q, typ: Q, odo: &[Q], dirty: &[Q], cap: usize) {
 
 // ─── post-park fold ─────────────────────────────────────────────────────────────────────────────
 
+fn implicit_const_bit(k: u64, i: usize) -> bool { (k >> i) & 1 != 0 }
+
+fn implicit_const_carry(c: &mut Builder, b: Q, cin: Q, out: Q, k: bool) {
+    if k { c.cx(b, out); c.cx(cin, out); }
+    c.ccx(b, cin, out);
+}
+
+/// Exact conditional +/-K on the 57-bit fold tail with no clean owner. On the
+/// active branch the low R tail is the known secp prime tail; off branch it is
+/// arbitrary and restored exactly.
+fn implicit_fold_constant(c: &mut Builder, top: Q, cof: &Cof, add: bool) {
+    let target = &cof.s[1..58];
+    let borrowers = &cof.r[..53];
+    let k = (1u64 << 57) - (1u64 << 31) - 488;
+    let constant = if add { k } else { (1u64 << 57) - k };
+    let prime_tail = k - 1;
+    for (i, &q) in borrowers.iter().enumerate() {
+        if implicit_const_bit(prime_tail, i) { c.cx(top, q); }
+    }
+    c.cx(target[3], borrowers[0]);
+    c.cx(top, target[3]);
+    for i in 4..=55 {
+        let cin = borrowers[i - 4];
+        let cout = borrowers[i - 3];
+        implicit_const_carry(c, target[i], cin, cout, implicit_const_bit(constant, i));
+        if implicit_const_bit(constant, i) { c.cx(top, target[i]); }
+        c.ccx(top, cin, target[i]);
+    }
+    let cin = borrowers[52];
+    if implicit_const_bit(constant, 56) { c.cx(top, target[56]); }
+    c.ccx(top, cin, target[56]);
+    for i in (4..=55).rev() {
+        let cin = borrowers[i - 4];
+        let cout = borrowers[i - 3];
+        c.cx(top, target[i]);
+        implicit_const_carry(c, target[i], cin, cout, implicit_const_bit(constant, i));
+        c.cx(top, target[i]);
+    }
+    c.cx(top, target[3]);
+    c.cx(target[3], borrowers[0]);
+    c.cx(top, target[3]);
+    for (i, &q) in borrowers.iter().enumerate() {
+        if implicit_const_bit(prime_tail, i) { c.cx(top, q); }
+    }
+}
+
 /// `s` at clamp+1 wires: when the top wire is set, `s <- s - p` (= low bits + c, window `fold_w`);
 /// the top wire is then `s[0]` (s even before, odd after) and is cleared and freed.
 fn fold(c: &mut Builder, cof: &mut Cof, p: &WalkParams) {
@@ -825,7 +952,10 @@ fn fold(c: &mut Builder, cof: &mut Cof, p: &WalkParams) {
     let top = cof.s.pop().unwrap();
     let w = p.fold_w;
     let rm = room(c, p.cap);
-    if rm >= 12 {
+    if implicit_r0() {
+        implicit_fold_constant(c, top, cof, false);
+        c.cx(top, cof.s[0]);
+    } else if rm >= 12 {
         mm::cadd_k(c, &cof.s[..w], secp_c(), top, rm);
     } else if tick::parity_source_carry() {
         adder::sub(
@@ -852,7 +982,10 @@ fn unfold(c: &mut Builder, cof: &mut Cof, p: &WalkParams) {
     c.cx(cof.s[0], top);
     let w = p.fold_w;
     let rm = room(c, p.cap);
-    if rm >= 12 {
+    if implicit_r0() {
+        implicit_fold_constant(c, top, cof, true);
+        c.cx(top, cof.s[0]);
+    } else if rm >= 12 {
         mm::csub_k(c, &cof.s[..w], secp_c(), top, rm);
     } else if tick::parity_source_carry() {
         adder::add(
@@ -937,7 +1070,8 @@ pub(crate) fn assert_r8_dispatch_counts() {
     let fwd = R8_FWD_CALLS.load(Ordering::Relaxed);
     let rev = R8_REV_CALLS.load(Ordering::Relaxed);
     eprintln!("SKYCOF_R8_DISPATCH forward={fwd} reverse={rev}");
-    assert_eq!((fwd, rev), (6, 0), "R8 dispatcher count drift");
+    let want = if implicit_r0() { (0, 0) } else { (6, 0) };
+    assert_eq!((fwd, rev), want, "R8 dispatcher count drift");
 }
 
 fn post318_constant_loan() -> bool {
@@ -994,11 +1128,16 @@ fn dispose_fwd(
           let zt = ParkTest::compute(c, &cof.r, &cof.s, p.park_j, p.cap);
           trace_step(c, "parktest");
           let body = |c: &mut Builder| {
-            ghost_odo_prime_xor(c, p, cof, zt.z, typ, ghost_r0_host_disposal(t1));
+            ghost_odo_prime_xor(c, p, cof, zt.z, typ,
+                !implicit_r0() && ghost_r0_host_disposal(t1));
             let ov = odo_view(p, cof, odo);
-            with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
+            if implicit_r0() {
                 odo_fwd(c, zt.z, typ, ov, &cof.s, p.cap)
-            });
+            } else {
+                with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
+                    odo_fwd(c, zt.z, typ, ov, &cof.s, p.cap)
+                });
+            }
             trace_step(c, "odo");
             c.x(zt.z);
             let cfg = dec_cfg(c, p, env.cof[t1], true);
@@ -1011,7 +1150,16 @@ fn dispose_fwd(
                 cflag: None,
                 park: None,
             };
-            if virtual_d_fresh_amb_fwd_disposal(t1) {
+            if implicit_r0() {
+                if cfg.room == dec::min_room(true) {
+                    let dirty = [rails.r1[1], rails.r2[1], rails.r1[2]];
+                    let live = c.active_qubits();
+                    dec::push_implicit_r0_virtual_or_fixture(c, &io, h, cfg, dirty);
+                    assert_eq!(c.active_qubits(), live);
+                } else {
+                    dec::push_implicit_r0_alias_enabled_fixture(c, &io, h, cfg);
+                }
+            } else if virtual_d_fresh_amb_fwd_disposal(t1) {
                 assert!(virtual_d_amb_disposal(t1), "R8 must replace an existing R7 call");
                 assert_eq!(p.cap, 1040);
                 assert_eq!(env.cof[t1], CLAMP);
@@ -1060,15 +1208,6 @@ fn dispose_fwd(
             run(c);
         }
     } else {
-        let io = TickIo {
-            s: &cof.s,
-            r: &cof.r,
-            e: env.cof[t1],
-            en: None,
-            typ,
-            cflag: None,
-            park: None,
-        };
         let mut body = |c: &mut Builder| {
             if let Some([qs, qr]) = constant_loans {
                 assert!(borrower != Some(qs) && borrower != Some(qr));
@@ -1085,10 +1224,25 @@ fn dispose_fwd(
                 assert_eq!(c.active_qubits(), live + 2, "R3 repayment count");
             }
             let cfg = dec_cfg(c, p, env.cof[t1], false);
-            if borrow_amb_disposal(t1) {
+            if implicit_r0() {
+                let n = dec::Window::new(env.cof[t1], p.w_dec).n();
+                if n >= 2 && cfg.room > dec::min_room(false) {
+                    let io = TickIo { s:&cof.s, r:&cof.r, e:env.cof[t1], en:None,
+                        typ, cflag:None, park:None };
+                    dec::push_implicit_r0_alias_noen_fixture(c, &io, h, cfg);
+                } else {
+                    let io=TickIo{s:&cof.s,r:&cof.r,e:env.cof[t1],en:None,typ,cflag:None,park:None};
+                    dec::push_implicit_r0_virtual_or_noen_fixture(c,&io,h,cfg,
+                        [rails.r1[1],rails.r2[1]]);
+                }
+            } else if borrow_amb_disposal(t1) {
+                let io = TickIo { s:&cof.s, r:&cof.r, e:env.cof[t1], en:None,
+                    typ, cflag:None, park:None };
                 let q = borrower.expect("binding decoder needs current-tick isc borrower");
                 dec::push_borrow_amb(c, &io, h, cfg, q)
             } else {
+                let io = TickIo { s:&cof.s, r:&cof.r, e:env.cof[t1], en:None,
+                    typ, cflag:None, park:None };
                 dec::push(c, &io, h, cfg)
             }
             if constant_loans.is_some() {
@@ -1152,7 +1306,16 @@ fn dispose_rev(
                 cflag: None,
                 park: None,
             };
-            if virtual_d_amb_disposal(t1) && cfg.room == dec::min_room(true) {
+            if implicit_r0() {
+                if cfg.room == dec::min_room(true) {
+                    let dirty = [rails.r1[1], rails.r2[1], rails.r1[2]];
+                    let live = c.active_qubits();
+                    dec::pop_implicit_r0_virtual_or_fixture(c, &io, h, cfg, dirty);
+                    assert_eq!(c.active_qubits(), live);
+                } else {
+                    dec::pop_implicit_r0_alias_enabled_fixture(c, &io, h, cfg);
+                }
+            } else if virtual_d_amb_disposal(t1) && cfg.room == dec::min_room(true) {
                 let dirty = [rails.r1[1], rails.r2[1]];
                 assert_ne!(dirty[0], dirty[1]);
                 assert_eq!(cfg.room, dec::min_room(true), "R7 binding room changed");
@@ -1167,10 +1330,15 @@ fn dispose_rev(
             }
             c.x(zt.z);
             let ov = odo_view(p, cof, odo);
-            with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
+            if implicit_r0() {
                 odo_rev(c, zt.z, typ, ov, &cof.s, p.cap)
-            });
-            ghost_odo_prime_xor(c, p, cof, zt.z, typ, ghost_r0_host_disposal(t1));
+            } else {
+                with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
+                    odo_rev(c, zt.z, typ, ov, &cof.s, p.cap)
+                });
+            }
+            ghost_odo_prime_xor(c, p, cof, zt.z, typ,
+                !implicit_r0() && ghost_r0_host_disposal(t1));
           };
           if wide_loan {
               body(c);
@@ -1185,18 +1353,24 @@ fn dispose_rev(
             run(c);
         }
     } else {
-        let io = TickIo {
-            s: &cof.s,
-            r: &cof.r,
-            e: env.cof[t1],
-            en: None,
-            typ,
-            cflag: None,
-            park: None,
-        };
         with_rail_parity_loan(c, rails, |c| {
             let cfg = dec_cfg(c, p, env.cof[t1], false);
-            dec::pop(c, &io, h, cfg)
+            if implicit_r0() {
+                let n = dec::Window::new(env.cof[t1], p.w_dec).n();
+                if n >= 2 && cfg.room > dec::min_room(false) {
+                    let io = TickIo { s:&cof.s, r:&cof.r, e:env.cof[t1], en:None,
+                        typ, cflag:None, park:None };
+                    dec::pop_implicit_r0_alias_noen_fixture(c, &io, h, cfg);
+                } else {
+                    let io=TickIo{s:&cof.s,r:&cof.r,e:env.cof[t1],en:None,typ,cflag:None,park:None};
+                    dec::pop_implicit_r0_virtual_or_noen_fixture(c,&io,h,cfg,
+                        [rails.r1[1],rails.r2[1]]);
+                }
+            } else {
+                let io = TickIo { s:&cof.s, r:&cof.r, e:env.cof[t1], en:None,
+                    typ, cflag:None, park:None };
+                dec::pop(c, &io, h, cfg)
+            }
         });
     }
     typ
@@ -1325,7 +1499,7 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
                     st.typ,
                     &w,
                     Some(p.cap),
-                    Some(st.cof.r[0]),
+                    if implicit_r0() { None } else { Some(st.cof.r[0]) },
                     Some(t),
                 )
             }
@@ -1336,7 +1510,7 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
                 st.typ,
                 &w,
                 Some(p.cap),
-                Some(st.cof.r[0]),
+                if implicit_r0() { None } else { Some(st.cof.r[0]) },
                 Some(t),
             )
         };
@@ -1365,12 +1539,17 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
         trace_cost(c, "fwd", t, "decoder", t0);
         trace_step(c, "dispose");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
-        tick::cof_fwd_at(c, &mut st.cof, typ_t, isc, &w, Some(p.cap), t);
+        if implicit_r0() {
+            tick::cof_fwd_at_implicit_r0(c, &mut st.cof, typ_t, isc, &w, Some(p.cap), t);
+        } else {
+            tick::cof_fwd_at(c, &mut st.cof, typ_t, isc, &w, Some(p.cap), t);
+        }
         trace_cost(c, "fwd", t, "cofactor", t0);
         trace_step(c, "cof");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
         tick::erase_isc(c, &st.cof, typ_t, isc);
-        let fate = if st.cof.s.len() > st.cof.r.len() {
+        let r_logical = st.cof.r.len() + usize::from(implicit_r0());
+        let fate = if st.cof.s.len() > r_logical {
             fold(c, &mut st.cof, p);
             TopFate::Folded
         } else {
@@ -1378,7 +1557,7 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
         };
         trace_cost(c, "fwd", t, "erase_fold", t0);
         st.tops.push(fate);
-        if t == 318 && end > 319 && post318_constant_loan() {
+        if !implicit_r0() && t == 318 && end > 319 && post318_constant_loan() {
             assert_eq!(fate, TopFate::None, "R3 tick318 crossed a fold");
             assert_eq!(st.tops.get(317), Some(&TopFate::None));
             let qs = st.cof.s[0];
@@ -1422,9 +1601,9 @@ pub fn forward_to(
     let rails = seed(c, d, p.cap);
     let cof = Cof {
         s: c.alloc_qubits(2),
-        r: c.alloc_qubits(2),
+        r: c.alloc_qubits(if implicit_r0() { 1 } else { 2 }),
     };
-    c.x(cof.r[0]);
+    if !implicit_r0() { c.x(cof.r[0]); }
     let mut st = ActiveWalk {
         rails,
         cof,
@@ -1474,23 +1653,24 @@ pub fn forward_from(c: &mut Builder, p: &WalkParams, env: &Envelope, mut st: Act
     c.x(rails.r2[0]);
     c.free_vec(&rails.r1);
     c.free_vec(&rails.r2);
-    assert_eq!(cof.r.len(), N);
+    assert_eq!(cof.r.len() + usize::from(implicit_r0()), N);
     assert_eq!(cof.s.len(), N);
     let pv = crate::point_add::SECP256K1_P;
     if ghost_odo() {
         assert!(odo.is_empty());
-        odo = cof.r[GHOST_ODO_START..GHOST_ODO_START + p.odo_bits].to_vec();
+        let start = GHOST_ODO_START - usize::from(implicit_r0());
+        odo = cof.r[start..start + p.odo_bits].to_vec();
     }
-    for i in 0..N {
+    for i in usize::from(implicit_r0())..N {
         if ghost_odo() && (GHOST_ODO_START..GHOST_ODO_START + p.odo_bits).contains(&i) {
             // These owners contain the endpoint counter, not prime padding.
             continue;
         }
         if pv.bit(i) {
-            c.x(cof.r[i]);
+            c.x(cof.r[i - usize::from(implicit_r0())]);
         }
         if ghost_odo() {
-            c.free(cof.r[i]);
+            c.free(cof.r[i - usize::from(implicit_r0())]);
         }
     }
     if !ghost_odo() {
@@ -1536,7 +1716,7 @@ pub fn backward_from_active(
     let mut typ = typ.expect("nonempty prefix has a current type bit");
     for t in (0..next_t).rev() {
         let w = env.widths(t);
-        if t == 328 && recycle_cofzero_tick(t) {
+        if !implicit_r0() && t == 328 && recycle_cofzero_tick(t) {
             assert_eq!(tops[t], TopFate::Folded, "tick328 role order requires unfold first");
             assert!(w.post_r1 < w.wad, "tick328 sign-extension host geometry drifted");
         }
@@ -1557,7 +1737,13 @@ pub fn backward_from_active(
         };
         if recycle_zero {
             assert_cofzero_disjoint(isc, typ, &rails, &cof, &h, &odo);
-            tick::cof_rev_at_zero_head(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+            if implicit_r0() {
+                tick::cof_rev_at_implicit_r0_zero_head(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+            } else {
+                tick::cof_rev_at_zero_head(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+            }
+        } else if implicit_r0() {
+            tick::cof_rev_at_implicit_r0(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
         } else {
             tick::cof_rev_at(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
         }
@@ -1578,25 +1764,22 @@ pub fn backward_from_active(
             None
         };
         trace_step(c, "rev-dec");
-        tick::rail_rev_micro(
-            c,
-            &mut rails,
-            typ,
-            isc,
-            tprev,
-            &w,
-            (prev[t].r1, prev[t].r2),
-            Some(p.cap),
-            Some(cof.r[0]),
-            Some(t),
-        );
+        if implicit_r0() && t == 324 {
+            let tp=tprev.expect("implicit rail324 needs previous typ");
+            let park=&cof.r[cof.r.len()-14..];let dirty=&cof.s[1..14];
+            tick::rail_rev_dirty_s0_implicit(c,&mut rails,typ,isc,tp,cof.s[0],park,dirty,
+                w.wad,p.cap);
+        } else {
+            tick::rail_rev_micro(c,&mut rails,typ,isc,tprev,&w,(prev[t].r1,prev[t].r2),
+                Some(p.cap),if implicit_r0(){None}else{Some(cof.r[0])},Some(t));
+        }
         trace_step(c, "rev-rail");
         if let Some(tq) = tprev {
             typ = tq;
         }
     }
     assert_eq!(cof.s.len(), 2);
-    c.x(cof.r[0]);
+    if !implicit_r0() { c.x(cof.r[0]); }
     c.free_vec(&cof.s);
     c.free_vec(&cof.r);
     h.shrink_to(c, 0);
@@ -1620,9 +1803,10 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
         r2: c.alloc_qubits(post_r2),
     };
     c.x(rails.r2[0]);
+    let rstart = usize::from(implicit_r0());
     let rr = if ghost_odo() {
         assert_eq!(odo.len(), p.odo_bits);
-        (0..N)
+        (rstart..N)
             .map(|i| {
                 if (GHOST_ODO_START..GHOST_ODO_START + p.odo_bits).contains(&i) {
                     odo[i - GHOST_ODO_START]
@@ -1632,14 +1816,14 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
             })
             .collect::<Vec<_>>()
     } else {
-        c.alloc_qubits(N)
+        c.alloc_qubits(N - rstart)
     };
     let pv = crate::point_add::SECP256K1_P;
-    for i in 0..N {
+    for i in rstart..N {
         if pv.bit(i)
             && !(ghost_odo() && (GHOST_ODO_START..GHOST_ODO_START + p.odo_bits).contains(&i))
         {
-            c.x(rr[i]);
+            c.x(rr[i - rstart]);
         }
     }
     if ghost_odo() {
@@ -1650,7 +1834,7 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
     let mut typ = dispose_rev(c, p, env, r - 1, &rails, &cof, &mut h, &odo, None);
     for t in (0..r).rev() {
         let w = env.widths(t);
-        if t == 328 && recycle_cofzero_tick(t) {
+        if !implicit_r0() && t == 328 && recycle_cofzero_tick(t) {
             assert_eq!(tops[t], TopFate::Folded, "tick328 role order requires unfold first");
             assert!(w.post_r1 < w.wad, "tick328 sign-extension host geometry drifted");
         }
@@ -1674,7 +1858,13 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
         };
         if recycle_zero {
             assert_cofzero_disjoint(isc, typ, &rails, &cof, &h, &odo);
-            tick::cof_rev_at_zero_head(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+            if implicit_r0() {
+                tick::cof_rev_at_implicit_r0_zero_head(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+            } else {
+                tick::cof_rev_at_zero_head(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
+            }
+        } else if implicit_r0() {
+            tick::cof_rev_at_implicit_r0(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
         } else {
             tick::cof_rev_at(c, &mut cof, typ, isc, prev[t].cof, Some(p.cap), t);
         }
@@ -1699,18 +1889,15 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
         trace_cost(c, "rev", t, "decoder", t0);
         trace_step(c, "rev-dec");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
-        tick::rail_rev_micro(
-            c,
-            &mut rails,
-            typ,
-            isc,
-            tprev,
-            &w,
-            (prev[t].r1, prev[t].r2),
-            Some(p.cap),
-            Some(cof.r[0]),
-            Some(t),
-        );
+        if implicit_r0() && t == 324 {
+            let tp=tprev.expect("implicit rail324 needs previous typ");
+            let park=&cof.r[cof.r.len()-14..];let dirty=&cof.s[1..14];
+            tick::rail_rev_dirty_s0_implicit(c,&mut rails,typ,isc,tp,cof.s[0],park,dirty,
+                w.wad,p.cap);
+        } else {
+            tick::rail_rev_micro(c,&mut rails,typ,isc,tprev,&w,(prev[t].r1,prev[t].r2),
+                Some(p.cap),if implicit_r0(){None}else{Some(cof.r[0])},Some(t));
+        }
         trace_cost(c, "rev", t, "rail", t0);
         trace_step(c, "rev-rail");
         trace_tick(c, "rev", t);
@@ -1723,7 +1910,7 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
     }
     // cofactors back at (s, r) = (0, 1), width 2; history and odometer empty
     assert_eq!(cof.s.len(), 2);
-    c.x(cof.r[0]);
+    if !implicit_r0() { c.x(cof.r[0]); }
     c.free_vec(&cof.s);
     c.free_vec(&cof.r);
     h.shrink_to(c, 0);

@@ -96,6 +96,11 @@ fn with_r0_loan(
     if !enabled {
         return body(c);
     }
+    if r0.is_none() {
+        assert!(super::pointadd::knob("SKYCOF_IMPLICIT_R0")
+            .map(|v| v != "0" && !v.is_empty()).unwrap_or(true));
+        return body(c);
+    }
     let r0 = r0.expect("SKYCOF_R0_LOAN requires the owned cofactor r[0]");
     assert_eq!(
         c.tracked_condition_depth(),
@@ -302,11 +307,47 @@ fn signext_host_tick(t: Option<usize>, w: &TickWidths) -> bool {
 }
 
 fn late_r0_lease_tick(t: Option<usize>) -> bool {
+    if super::pointadd::knob("SKYCOF_IMPLICIT_R0")
+        .map(|v| v != "0" && !v.is_empty()).unwrap_or(true) { return false; }
     let Some(t) = t else { return false };
     super::pointadd::knob("SKYCOF_LATE_R0_LEASE")
         .unwrap_or_else(|| "324".to_owned())
         .split(',')
         .any(|x| x.trim().parse::<usize>() == Ok(t))
+}
+
+fn implicit_mcx15(c:&mut Builder,controls:&[Q],target:Q,dirty:&[Q]){
+    assert_eq!(controls.len(),15);assert_eq!(dirty.len(),13);
+    for bottom in[true,false]{
+        if bottom{c.ccx(controls[0],controls[1],dirty[0]);}
+        for i in 1..dirty.len(){c.ccx(dirty[i-1],controls[i+1],dirty[i]);}
+        c.ccx(*dirty.last().unwrap(),*controls.last().unwrap(),target);
+        for i in(1..dirty.len()).rev(){c.ccx(dirty[i-1],controls[i+1],dirty[i]);}
+        if bottom{c.ccx(controls[0],controls[1],dirty[0]);}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rail_rev_dirty_s0_implicit(
+    c:&mut Builder,rails:&mut Rails,typ:Q,isc:Q,typ_prev:Q,sigma:Q,
+    park:&[Q],dirty:&[Q],n:usize,cap:usize,
+)->Plan{
+    assert_eq!(rails.r1.len(),n-1);assert_eq!(rails.r2.len(),n-1);
+    assert_eq!(park.len(),14);assert_eq!(dirty.len(),13);
+    let true_target_sign=*rails.r2.last().unwrap();
+    c.cx(true_target_sign,sigma);rails.r2.push(sigma);let q=sigma;let host=isc;
+    let sign=*rails.r1.last().unwrap();c.cx(sign,host);c.cx(true_target_sign,host);c.x(host);
+    c.cx_all(host,&rails.r1);let plan=adder::sub(c,None,&rails.r1,&rails.r2,Some(host),Some(cap));
+    assert_eq!(plan,Plan::Vented(0));c.cx(sign,q);c.cx_all(host,&rails.r1);c.x(host);
+    c.cx(sign,host);c.cx(q,host);let mut controls=park.to_vec();controls.push(q);
+    implicit_mcx15(c,&controls,host,dirty);c.cx(sign,host);rails.r1.push(host);
+    let ctl=typ;c.cx(typ_prev,ctl);resize_signed(c,&mut rails.r1,n-1);c.reacquire(host);
+    c.cx(q,host);implicit_mcx15(c,&controls,host,dirty);c.cx(host,q);
+    *rails.r2.last_mut().unwrap()=host;resize_signed(c,&mut rails.r2,n);
+    rails.r1.insert(0,ctl);c.cx(ctl,rails.r2[0]);
+    for i in 1..n{fredkin(c,ctl,rails.r1[i],rails.r2[i]);}
+    resize_signed(c,&mut rails.r1,n-1);resize_signed(c,&mut rails.r2,n);
+    plan
 }
 
 /// Forward rail kernel followed by the two independently fitted public
@@ -688,6 +729,38 @@ pub fn cof_fwd_at(
     cof_fwd_impl(c, cof, typ, isc, w, cap, bound)
 }
 
+/// Research implicit-R0 cofactor cell. `cof.r[j]` is logical r[j+1]; the
+/// invariant logical r[0]=1 has no physical owner.
+pub(crate) fn cof_fwd_at_implicit_r0(
+    c: &mut Builder,
+    cof: &mut Cof,
+    typ: Q,
+    isc: Q,
+    w: &TickWidths,
+    cap: Option<usize>,
+    t: usize,
+) -> Plan {
+    let e_prev = cof.s.len();
+    assert_eq!(cof.r.len() + 1, e_prev);
+    let enabled = super::pointadd::knob("SKYCOF_EARLY_COF_BOUND")
+        .map(|v| v != "0" && !v.is_empty()).unwrap_or(true);
+    let bound = (t <= 50 && enabled).then_some(t);
+    let swap_end = bound.map_or(e_prev, |x| e_prev.min(x + 1));
+    for i in 1..swap_end { fredkin(c, isc, cof.s[i], cof.r[i - 1]); }
+    let n = w.ecof;
+    let k = add_operand_len(w, e_prev);
+    resize_unsigned(c, &mut cof.r, n - 1);
+    resize_unsigned(c, &mut cof.s, k);
+    let m = bound.map_or(n, |x| n.min(x + 2));
+    let operand = if bound.is_some() { &cof.s[1..m - 1] } else { &cof.s[1..] };
+    c.x(typ);
+    let plan = adder::add(c, Some(typ), operand, &cof.r[..m - 1], Some(cof.s[0]), cap);
+    c.x(typ);
+    c.cx(isc, cof.s[0]);
+    cof.s.insert(0, c.alloc_qubit());
+    plan
+}
+
 fn cof_fwd_impl(
     c: &mut Builder,
     cof: &mut Cof,
@@ -859,6 +932,65 @@ pub(crate) fn cof_rev_at_zero_head(
         .unwrap_or(true);
     let bound = (t <= 50 && enabled).then_some(t);
     cof_rev_impl(c, cof, typ, isc, e_prev, cap, bound, Some(isc))
+}
+
+/// Exact inverse of [`cof_fwd_at_implicit_r0`].
+pub(crate) fn cof_rev_at_implicit_r0(
+    c: &mut Builder,
+    cof: &mut Cof,
+    typ: Q,
+    isc: Q,
+    e_prev: usize,
+    cap: Option<usize>,
+    t: usize,
+) -> Plan {
+    cof_rev_at_implicit_r0_impl(c, cof, typ, isc, e_prev, cap, t, false)
+}
+
+pub(crate) fn cof_rev_at_implicit_r0_zero_head(
+    c: &mut Builder,
+    cof: &mut Cof,
+    typ: Q,
+    isc: Q,
+    e_prev: usize,
+    cap: Option<usize>,
+    t: usize,
+) -> Plan {
+    cof_rev_at_implicit_r0_impl(c, cof, typ, isc, e_prev, cap, t, true)
+}
+
+fn cof_rev_at_implicit_r0_impl(
+    c: &mut Builder,
+    cof: &mut Cof,
+    typ: Q,
+    isc: Q,
+    e_prev: usize,
+    cap: Option<usize>,
+    t: usize,
+    retained_zero_head: bool,
+) -> Plan {
+    let n = cof.r.len() + 1;
+    if retained_zero_head {
+        assert!(!cof.s.contains(&isc) && !cof.r.contains(&isc));
+    } else {
+        let z = cof.s.remove(0);
+        c.free(z);
+    }
+    assert!(cof.s.len() == n || cof.s.len() + 1 == n);
+    c.cx(isc, cof.s[0]);
+    let enabled = super::pointadd::knob("SKYCOF_EARLY_COF_BOUND")
+        .map(|v| v != "0" && !v.is_empty()).unwrap_or(true);
+    let bound = (t <= 50 && enabled).then_some(t);
+    let m = bound.map_or(n, |x| n.min(x + 2));
+    let operand = if bound.is_some() { &cof.s[1..m - 1] } else { &cof.s[1..] };
+    c.x(typ);
+    let plan = adder::sub(c, Some(typ), operand, &cof.r[..m - 1], Some(cof.s[0]), cap);
+    c.x(typ);
+    resize_unsigned(c, &mut cof.r, e_prev - 1);
+    resize_unsigned(c, &mut cof.s, e_prev);
+    let swap_end = bound.map_or(e_prev, |x| e_prev.min(x + 1));
+    for i in 1..swap_end { fredkin(c, isc, cof.s[i], cof.r[i - 1]); }
+    plan
 }
 
 fn cof_rev_impl(

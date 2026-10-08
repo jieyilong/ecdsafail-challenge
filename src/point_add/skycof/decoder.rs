@@ -881,6 +881,295 @@ pub(crate) fn pop_virtual_d_fresh_amb_fixture(
     close_ge_fixture(c, sc);
 }
 
+/// Research-only implicit-R0 floor-comparator scope. Logical r[0]=1 is
+/// omitted physically. On enabled lanes s[0]=0, so X(s[0]) supplies the exact
+/// carry-one seed. The synthetic constant-one top step is left virtual:
+/// ge = top_a OR carry_into_top.
+struct ImplicitR0GeScope {
+    a: Vec<Q>,
+    bb: Vec<Q>,
+    s0: Q,
+    top_a: Q,
+    top_carry: Q,
+}
+
+fn open_implicit_r0_ge_fixture(c: &mut Builder, io: &TickIo, cfg: DecCfg) -> ImplicitR0GeScope {
+    let win = Window::new(io.e, cfg.w);
+    let n = win.n();
+    assert!(n >= 1 && cfg.room >= 1);
+    assert!(io.r.len() + 1 >= io.e && io.s.len() >= io.e);
+    let a: Vec<Q> = (0..n).map(|i| io.r[win.lo - 1 + i]).collect();
+    let bb: Vec<Q> = (0..n - 1).map(|i| io.s[win.lo + 1 + i]).collect();
+    let s0 = io.s[0];
+    c.x_all(&bb);
+    c.x(s0);
+    for i in 0..n - 1 {
+        let ci = if i == 0 { s0 } else { a[i - 1] };
+        c.cx(a[i], bb[i]);
+        c.cx(a[i], ci);
+        c.ccx(ci, bb[i], a[i]);
+    }
+    let top_a = a[n - 1];
+    let top_carry = if n == 1 { s0 } else { a[n - 2] };
+    assert_ne!(top_a, top_carry);
+    ImplicitR0GeScope { a, bb, s0, top_a, top_carry }
+}
+
+fn close_implicit_r0_ge_fixture(c: &mut Builder, sc: ImplicitR0GeScope) {
+    for i in (0..sc.a.len() - 1).rev() {
+        let ci = if i == 0 { sc.s0 } else { sc.a[i - 1] };
+        c.ccx(ci, sc.bb[i], sc.a[i]);
+        c.cx(sc.a[i], ci);
+        c.cx(sc.a[i], sc.bb[i]);
+    }
+    c.x(sc.s0);
+    c.x_all(&sc.bb);
+}
+
+fn open_implicit_r0_alias_ge_fixture(
+    c: &mut Builder, io: &TickIo, cfg: DecCfg, enabled: bool,
+) -> GeScope {
+    let win = Window::new(io.e, cfg.w);
+    let n = win.n();
+    assert!(n >= 2 && io.r.len() + 1 >= io.e && io.s.len() >= io.e);
+    let j = gidney_bits(n, cfg.room, enabled);
+    assert!(j >= 1, "S0 alias requires a non-mutating first Gidney carry");
+    let a: Vec<Q> = (0..n).map(|i| io.r[win.lo - 1 + i]).collect();
+    let bb: Vec<Q> = (0..n)
+        .map(|i| if i + 1 < n { io.s[win.lo + 1 + i] } else { io.s[0] })
+        .collect();
+    c.x_all(&bb); // S0 is simultaneously carry-one and synthetic top-one.
+    let mut sc = GeScope { win, j, ge: io.s[0], gid: Vec::with_capacity(j),
+        a, bb, r0: io.s[0] };
+    for i in 0..j {
+        let ci = sc.cin(i);
+        c.cx(ci, sc.a[i]); c.cx(ci, sc.bb[i]);
+        let t = c.alloc_qubit();
+        c.ccx(sc.a[i], sc.bb[i], t); c.cx(ci, t);
+        sc.gid.push(t);
+    }
+    for i in j..n {
+        let ci = sc.cin(i);
+        c.cx(sc.a[i], sc.bb[i]); c.cx(sc.a[i], ci); c.ccx(ci, sc.bb[i], sc.a[i]);
+    }
+    sc.ge = if j == n { sc.gid[n - 1] } else { sc.a[n - 1] };
+    sc
+}
+
+pub(crate) fn push_implicit_r0_alias_virtual_fixture(
+    c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg, dirty: [Q; 2],
+) {
+    assert!(io.en.is_some() && dirty[0] != dirty[1]);
+    let sc = open_implicit_r0_alias_ge_fixture(c, io, cfg, true);
+    for i in (1..h.wires.len()).rev() {
+        virtual_amb_fredkin(c, io, sc.ge, h.wires[i], h.wires[i - 1], &dirty);
+    }
+    if let Some(&h0) = h.wires.first() {
+        virtual_amb_fredkin(c, io, sc.ge, h0, io.typ, &dirty);
+    }
+    virtual_d_xor(c, io, io.typ);
+    virtual_amb_xor(c, io, sc.ge, io.typ, &dirty);
+    close_ge_fixture(c, sc);
+}
+
+pub(crate) fn pop_implicit_r0_alias_virtual_fixture(
+    c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg, dirty: [Q; 2],
+) {
+    assert!(io.en.is_some() && dirty[0] != dirty[1]);
+    let sc = open_implicit_r0_alias_ge_fixture(c, io, cfg, true);
+    virtual_amb_xor(c, io, sc.ge, io.typ, &dirty);
+    virtual_d_xor(c, io, io.typ);
+    if let Some(&h0) = h.wires.first() {
+        virtual_amb_fredkin(c, io, sc.ge, h0, io.typ, &dirty);
+    }
+    for i in 1..h.wires.len() {
+        virtual_amb_fredkin(c, io, sc.ge, h.wires[i], h.wires[i - 1], &dirty);
+    }
+    close_ge_fixture(c, sc);
+}
+
+pub(crate) fn push_implicit_r0_alias_enabled_fixture(
+    c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg,
+) {
+    let en = io.en.expect("enabled implicit alias");
+    assert!(io.cflag.is_none() && io.park.is_none());
+    let s1 = io.s[1];
+    let d = c.alloc_qubit(); c.x(s1); c.ccx(en, s1, d); c.x(s1);
+    let sc = open_implicit_r0_alias_ge_fixture(c, io, cfg, true);
+    let amb = c.alloc_qubit(); c.ccx(d, sc.ge, amb);
+    shift_in(c, amb, io.typ, &h.wires); c.cx(d, io.typ); c.cx(amb, io.typ);
+    meas_cz(c, amb, d, sc.ge); close_ge_fixture(c, sc);
+    let m=c.alloc_bit(); c.hmr(d,m); c.x(s1); c.cz_if(en,s1,m); c.x(s1);
+    c.free_bit(m); c.release_clean(d);
+}
+
+pub(crate) fn pop_implicit_r0_alias_enabled_fixture(
+    c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg,
+) {
+    let en = io.en.expect("enabled implicit alias");
+    assert!(io.cflag.is_none() && io.park.is_none());
+    let s1 = io.s[1];
+    let d = c.alloc_qubit(); c.x(s1); c.ccx(en, s1, d); c.x(s1);
+    let sc = open_implicit_r0_alias_ge_fixture(c, io, cfg, true);
+    let amb = c.alloc_qubit(); c.ccx(d, sc.ge, amb);
+    c.cx(amb, io.typ); c.cx(d, io.typ); shift_out(c, amb, io.typ, &h.wires);
+    meas_cz(c, amb, d, sc.ge); close_ge_fixture(c, sc);
+    let m=c.alloc_bit(); c.hmr(d,m); c.x(s1); c.cz_if(en,s1,m); c.x(s1);
+    c.free_bit(m); c.release_clean(d);
+}
+
+pub(crate) fn push_implicit_r0_alias_noen_fixture(
+    c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg,
+) {
+    assert!(io.en.is_none() && io.cflag.is_none() && io.park.is_none());
+    let s1 = io.s[1]; c.x(s1);
+    let sc = open_implicit_r0_alias_ge_fixture(c, io, cfg, false);
+    let amb = c.alloc_qubit(); c.ccx(s1, sc.ge, amb);
+    shift_in(c, amb, io.typ, &h.wires); c.cx(s1, io.typ); c.cx(amb, io.typ);
+    meas_cz(c, amb, s1, sc.ge); c.x(s1); close_ge_fixture(c, sc);
+}
+
+pub(crate) fn pop_implicit_r0_alias_noen_fixture(
+    c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg,
+) {
+    assert!(io.en.is_none() && io.cflag.is_none() && io.park.is_none());
+    let s1 = io.s[1]; c.x(s1);
+    let sc = open_implicit_r0_alias_ge_fixture(c, io, cfg, false);
+    let amb = c.alloc_qubit(); c.ccx(s1, sc.ge, amb);
+    c.cx(amb, io.typ); c.cx(s1, io.typ); shift_out(c, amb, io.typ, &h.wires);
+    meas_cz(c, amb, s1, sc.ge); c.x(s1); close_ge_fixture(c, sc);
+}
+
+fn dirty_mcx_three_fixture(c: &mut Builder, controls: &[Q], target: Q, dirty: &[Q; 3]) {
+    match controls.len() {
+        0 => c.x(target),
+        1 => c.cx(controls[0], target),
+        2 => c.ccx(controls[0], controls[1], target),
+        m => {
+            assert!(m <= 5);
+            let d = &dirty[..m - 2];
+            assert!(controls.iter().all(|q| *q != target && !d.contains(q)));
+            assert!(!d.contains(&target));
+            for bottom in [true, false] {
+                if bottom { c.ccx(controls[0], controls[1], d[0]); }
+                for i in 1..d.len() { c.ccx(d[i - 1], controls[i + 1], d[i]); }
+                c.ccx(*d.last().unwrap(), *controls.last().unwrap(), target);
+                for i in (1..d.len()).rev() { c.ccx(d[i - 1], controls[i + 1], d[i]); }
+                if bottom { c.ccx(controls[0], controls[1], d[0]); }
+            }
+        }
+    }
+}
+
+fn implicit_or_amb_xor(
+    c: &mut Builder, en: Q, s1_framed: Q, a: Q, carry: Q, target: Q, dirty: &[Q; 3],
+) {
+    // D(a OR c) = D*a XOR D*(!a)*c; the terms are disjoint.
+    dirty_mcx_three_fixture(c, &[en, s1_framed, a], target, dirty);
+    c.x(a);
+    dirty_mcx_three_fixture(c, &[en, s1_framed, a, carry], target, dirty);
+    c.x(a);
+}
+
+fn implicit_or_amb_fredkin(
+    c: &mut Builder, en: Q, s1_framed: Q, a: Q, carry: Q,
+    x: Q, y: Q, dirty: &[Q; 3],
+) {
+    c.cx(y, x);
+    dirty_mcx_three_fixture(c, &[en, s1_framed, a, x], y, dirty);
+    c.x(a);
+    dirty_mcx_three_fixture(c, &[en, s1_framed, a, carry, x], y, dirty);
+    c.x(a);
+    c.cx(y, x);
+}
+
+fn assert_implicit_r0_dirty(io: &TickIo, h: &Hreg, dirty: &[Q; 3]) {
+    assert!(io.cflag.is_none() && io.park.is_none() && io.en.is_some());
+    assert!(dirty[0] != dirty[1] && dirty[0] != dirty[2] && dirty[1] != dirty[2]);
+    for &q in dirty {
+        assert!(io.en != Some(q) && q != io.typ && !io.s.contains(&q) && !io.r.contains(&q));
+        assert!(!h.wires.contains(&q));
+    }
+}
+
+pub(crate) fn push_implicit_r0_virtual_or_fixture(
+    c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg, dirty: [Q; 3],
+) {
+    assert_implicit_r0_dirty(io, h, &dirty);
+    let en = io.en.unwrap();
+    let sc = open_implicit_r0_ge_fixture(c, io, cfg);
+    let s1 = io.s[1];
+    c.x(s1);
+    for i in (1..h.wires.len()).rev() {
+        implicit_or_amb_fredkin(c, en, s1, sc.top_a, sc.top_carry,
+            h.wires[i], h.wires[i - 1], &dirty);
+    }
+    if let Some(&h0) = h.wires.first() {
+        implicit_or_amb_fredkin(c, en, s1, sc.top_a, sc.top_carry, h0, io.typ, &dirty);
+    }
+    c.ccx(en, s1, io.typ); // typ ^= D
+    implicit_or_amb_xor(c, en, s1, sc.top_a, sc.top_carry, io.typ, &dirty);
+    c.x(s1);
+    close_implicit_r0_ge_fixture(c, sc);
+}
+
+pub(crate) fn pop_implicit_r0_virtual_or_fixture(
+    c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg, dirty: [Q; 3],
+) {
+    assert_implicit_r0_dirty(io, h, &dirty);
+    let en = io.en.unwrap();
+    let sc = open_implicit_r0_ge_fixture(c, io, cfg);
+    let s1 = io.s[1];
+    c.x(s1);
+    implicit_or_amb_xor(c, en, s1, sc.top_a, sc.top_carry, io.typ, &dirty);
+    c.ccx(en, s1, io.typ);
+    if let Some(&h0) = h.wires.first() {
+        implicit_or_amb_fredkin(c, en, s1, sc.top_a, sc.top_carry, h0, io.typ, &dirty);
+    }
+    for i in 1..h.wires.len() {
+        implicit_or_amb_fredkin(c, en, s1, sc.top_a, sc.top_carry,
+            h.wires[i], h.wires[i - 1], &dirty);
+    }
+    c.x(s1);
+    close_implicit_r0_ge_fixture(c, sc);
+}
+
+fn implicit_noen_amb_xor(
+    c:&mut Builder,s1_framed:Q,a:Q,carry:Q,target:Q,dirty:&[Q;2],
+) {
+    c.ccx(s1_framed,a,target);
+    c.x(a);dirty_mcx_fixture(c,&[s1_framed,a,carry],target,dirty);c.x(a);
+}
+
+fn implicit_noen_amb_fredkin(
+    c:&mut Builder,s1_framed:Q,a:Q,carry:Q,x:Q,y:Q,dirty:&[Q;2],
+) {
+    c.cx(y,x);dirty_mcx_fixture(c,&[s1_framed,a,x],y,dirty);
+    c.x(a);dirty_mcx_fixture(c,&[s1_framed,a,carry,x],y,dirty);c.x(a);c.cx(y,x);
+}
+
+pub(crate) fn push_implicit_r0_virtual_or_noen_fixture(
+    c:&mut Builder,io:&TickIo,h:&Hreg,cfg:DecCfg,dirty:[Q;2],
+) {
+    assert!(io.en.is_none()&&io.cflag.is_none()&&io.park.is_none());
+    let sc=open_implicit_r0_ge_fixture(c,io,cfg);let s1=io.s[1];c.x(s1);
+    for i in(1..h.wires.len()).rev(){implicit_noen_amb_fredkin(c,s1,sc.top_a,sc.top_carry,h.wires[i],h.wires[i-1],&dirty)}
+    if let Some(&h0)=h.wires.first(){implicit_noen_amb_fredkin(c,s1,sc.top_a,sc.top_carry,h0,io.typ,&dirty)}
+    c.cx(s1,io.typ);implicit_noen_amb_xor(c,s1,sc.top_a,sc.top_carry,io.typ,&dirty);c.x(s1);
+    close_implicit_r0_ge_fixture(c,sc);
+}
+
+pub(crate) fn pop_implicit_r0_virtual_or_noen_fixture(
+    c:&mut Builder,io:&TickIo,h:&Hreg,cfg:DecCfg,dirty:[Q;2],
+) {
+    assert!(io.en.is_none()&&io.cflag.is_none()&&io.park.is_none());
+    let sc=open_implicit_r0_ge_fixture(c,io,cfg);let s1=io.s[1];c.x(s1);
+    implicit_noen_amb_xor(c,s1,sc.top_a,sc.top_carry,io.typ,&dirty);c.cx(s1,io.typ);
+    if let Some(&h0)=h.wires.first(){implicit_noen_amb_fredkin(c,s1,sc.top_a,sc.top_carry,h0,io.typ,&dirty)}
+    for i in 1..h.wires.len(){implicit_noen_amb_fredkin(c,s1,sc.top_a,sc.top_carry,h.wires[i],h.wires[i-1],&dirty)}
+    c.x(s1);close_implicit_r0_ge_fixture(c,sc);
+}
+
 /// Tick 0 (letters A or C only): `typ ^= !bit1(s)`, `cflag ^= bit1(s)`. Self-inverse, 0 CCX.
 pub fn first_tick(c: &mut Builder, s: &[Q], typ: Q, cflag: Option<Q>) {
     c.cx(s[1], typ);
