@@ -199,7 +199,7 @@ pub fn rail_fwd(
 /// This is only valid when the source was sign-extended from `wsw - 1` to
 /// `wad` and the public schedule discards that extension immediately after
 /// the kernel.  Callers enforce those public-width conditions.
-pub(crate) fn rail_fwd_signext_host(
+fn rail_fwd_signext_host_impl(
     c: &mut Builder,
     rails: &mut Rails,
     typ_prev: Option<Q>,
@@ -207,6 +207,7 @@ pub(crate) fn rail_fwd_signext_host(
     wad: usize,
     cap: Option<usize>,
     r0_loan: Option<Q>,
+    scratch_loans: Option<[Q; 2]>,
 ) -> (Q, Q, Plan) {
     assert!(wsw >= 3 && wad >= 3, "hosted rail widths {wsw}/{wad}");
     assert!(
@@ -232,15 +233,27 @@ pub(crate) fn rail_fwd_signext_host(
     assert!(!e2.contains(&host));
     assert!(!r2.contains(&host));
     assert!(r0_loan != Some(host));
+    if let Some(loans) = scratch_loans {
+        assert!(r0_loan.is_none(), "external loans replace the r0 loan");
+        assert!(!loans.contains(&host));
+        assert!(loans.iter().all(|q| !e2.contains(q) && !r2.contains(q)));
+    }
 
     // h initially equals the source sign.  h ^= target_sign; h ^= 1
     // therefore materializes the same tau as the ordinary fresh-zero path.
     c.cx(target_top, host);
     c.x(host);
     c.cx_all(host, &e2);
-    let plan = with_r0_loan(c, r0_loan, None, &e2, r2, Some(host), |c| {
-        adder::add(c, None, &e2, r2, Some(host), cap)
-    });
+    let plan = if let Some(loans) = scratch_loans {
+        c.set_avoid(&[]);
+        let plan = adder::add(c, None, &e2, r2, Some(host), cap);
+        c.set_avoid(&loans);
+        plan
+    } else {
+        with_r0_loan(c, r0_loan, None, &e2, r2, Some(host), |c| {
+            adder::add(c, None, &e2, r2, Some(host), cap)
+        })
+    };
     // Restore the omitted transformed top source contribution while tau's
     // complement frame is still active.
     // `sign` is currently the transformed top bit (original sign XOR tau).
@@ -258,10 +271,25 @@ pub(crate) fn rail_fwd_signext_host(
     (ctl, host, plan)
 }
 
+pub(crate) fn rail_fwd_signext_host(
+    c: &mut Builder,
+    rails: &mut Rails,
+    typ_prev: Option<Q>,
+    wsw: usize,
+    wad: usize,
+    cap: Option<usize>,
+    r0_loan: Option<Q>,
+) -> (Q, Q, Plan) {
+    rail_fwd_signext_host_impl(c, rails, typ_prev, wsw, wad, cap, r0_loan, None)
+}
+
 fn signext_host_tick(t: Option<usize>, w: &TickWidths) -> bool {
     let Some(t) = t else { return false };
     let selected = super::pointadd::knob("SKYCOF_SIGNEXT_ISC_HOST")
-        .unwrap_or_else(|| "321,323,324,329,330,331".to_owned())
+        .unwrap_or_else(|| {
+            "303,305,306,314,317,318,319,320,321,323,324,328,329,330,331,333,334,335,337"
+                .to_owned()
+        })
         .split(',')
         .any(|x| x.trim().parse::<usize>() == Ok(t));
     if selected {
@@ -271,6 +299,14 @@ fn signext_host_tick(t: Option<usize>, w: &TickWidths) -> bool {
         );
     }
     selected
+}
+
+fn late_r0_lease_tick(t: Option<usize>) -> bool {
+    let Some(t) = t else { return false };
+    super::pointadd::knob("SKYCOF_LATE_R0_LEASE")
+        .unwrap_or_else(|| "324".to_owned())
+        .split(',')
+        .any(|x| x.trim().parse::<usize>() == Ok(t))
 }
 
 /// Forward rail kernel followed by the two independently fitted public
@@ -291,6 +327,34 @@ pub fn rail_fwd_micro(
     } else {
         rail_fwd(c, rails, typ_prev, w.wsw, w.wad, cap, r0_loan)
     };
+    resize_signed(c, &mut rails.r1, w.post_r1);
+    resize_signed(c, &mut rails.r2, w.post_r2);
+    out
+}
+
+/// Tick319 half of the R3 seam. The known cofactor constants remain parked
+/// across every persistent rail allocation; only the closed adder scope may
+/// reuse their IDs. Tick319's doomed source sign extension still hosts isC.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rail_fwd_micro_signext_loans(
+    c: &mut Builder,
+    rails: &mut Rails,
+    typ_prev: Option<Q>,
+    w: &TickWidths,
+    cap: Option<usize>,
+    loans: [Q; 2],
+) -> (Q, Q, Plan) {
+    assert!(w.post_r1 < w.wad && w.wad >= w.wsw);
+    let out = rail_fwd_signext_host_impl(
+        c,
+        rails,
+        typ_prev,
+        w.wsw,
+        w.wad,
+        cap,
+        None,
+        Some(loans),
+    );
     resize_signed(c, &mut rails.r1, w.post_r1);
     resize_signed(c, &mut rails.r2, w.post_r2);
     out
@@ -411,6 +475,92 @@ pub(crate) fn rail_rev_signext_host(
     plan
 }
 
+/// Reverse-tick324 late-return lease. The invariant-one cofactor `r0` owner
+/// hosts the regrown target top until the hosted source-sign/isC owner is
+/// cleanly contracted; two CXs then move the target data to that exact donor
+/// and restore the original physical r0 owner to |1>.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rail_rev_signext_late_r0(
+    c: &mut Builder,
+    rails: &mut Rails,
+    typ: Q,
+    isc: Q,
+    typ_prev: Option<Q>,
+    n: usize,
+    prev: (usize, usize),
+    cap: usize,
+    r0: Q,
+) -> Plan {
+    assert!(n >= 4);
+    assert_eq!(prev, (n - 1, n));
+    assert_eq!(rails.r1.len(), n - 1);
+    assert_eq!(rails.r2.len(), n - 1);
+    assert_eq!(c.tracked_condition_depth(), Some(0));
+    assert!(r0 != isc && !rails.r1.contains(&r0) && !rails.r2.contains(&r0));
+
+    // Release the invariant-one owner before target growth, then reacquire
+    // that exact ID as the target sign-extension top. No allocator choice or
+    // avoid-set behavior is assumed.
+    c.x(r0);
+    c.release_clean(r0);
+    c.reacquire(r0);
+    c.cx(*rails.r2.last().unwrap(), r0);
+    rails.r2.push(r0);
+
+    let host = isc;
+    let sign = *rails.r1.last().unwrap();
+    let target_top = r0;
+    assert!(!rails.r1.contains(&host) && !rails.r2.contains(&host));
+
+    c.cx(sign, host);
+    c.cx(target_top, host);
+    c.x(host);
+    c.cx_all(host, &rails.r1);
+    // r0 is target data here. Explicitly bypass the ordinary r0 loan while
+    // leaving every other circuit loan enabled.
+    let plan = adder::sub(c, None, &rails.r1, &rails.r2, Some(host), Some(cap));
+    assert_eq!(plan, Plan::Vented(0), "late-r0 adder plan drift");
+    c.cx(sign, target_top);
+    c.cx_all(host, &rails.r1);
+    c.x(host);
+    c.cx(sign, host);
+    c.cx(target_top, host);
+    c.cx(sign, host);
+    rails.r1.push(host);
+
+    let ctl = typ;
+    if let Some(tp) = typ_prev {
+        c.cx(tp, ctl);
+    }
+    // The existing source contraction proves host clean and releases this
+    // exact donor. Reacquire it before any allocation can intervene.
+    resize_signed(c, &mut rails.r1, n - 1);
+    assert!(!rails.r1.contains(&host));
+    c.reacquire(host);
+
+    // On donor=0: (r0=data,host=0) -> (r0=0,host=data), coherently.
+    c.cx(r0, host);
+    c.cx(host, r0);
+    let top = rails.r2.last_mut().unwrap();
+    assert_eq!(*top, r0);
+    *top = host;
+    c.release_clean(r0);
+    c.reacquire(r0);
+    c.x(r0);
+
+    resize_signed(c, &mut rails.r2, n);
+    rails.r1.insert(0, ctl);
+    c.cx(ctl, rails.r2[0]);
+    for i in 1..n {
+        fredkin(c, ctl, rails.r1[i], rails.r2[i]);
+    }
+    resize_signed(c, &mut rails.r1, prev.0);
+    resize_signed(c, &mut rails.r2, prev.1);
+    assert!(!rails.r1.contains(&r0) && !rails.r2.contains(&r0));
+    assert_eq!(*rails.r2.last().unwrap(), host);
+    plan
+}
+
 /// Exact reverse seam for [`rail_fwd_micro`].  Decoder and cofactor reverse
 /// execute while the banks are still contracted; only the rail kernel grows
 /// them back to its common arithmetic width.
@@ -430,6 +580,17 @@ pub fn rail_rev_micro(
     assert_eq!(rails.r1.len(), w.post_r1);
     assert_eq!(rails.r2.len(), w.post_r2);
     let hosted = signext_host_tick(tick, w);
+    if late_r0_lease_tick(tick) {
+        assert!(hosted, "late-r0 requires the sign-extension host");
+        assert_eq!(tick, Some(324));
+        assert_eq!((w.wsw, w.wad, w.post_r1, w.post_r2), (52, 52, 51, 51));
+        assert_eq!(prev, (51, 52));
+        let cap = cap.expect("late-r0 requires the frozen production cap");
+        assert_eq!(cap, 1040, "late-r0 frozen cap drift");
+        let r0 = r0_loan.expect("late-r0 requires the invariant-one cofactor owner");
+        return rail_rev_signext_late_r0(
+            c, rails, typ, isc, typ_prev, w.wad, prev, cap, r0);
+    }
     resize_signed(c, &mut rails.r1, w.wad - usize::from(hosted));
     resize_signed(c, &mut rails.r2, w.wad);
     if hosted {
@@ -458,6 +619,54 @@ pub fn cof_fwd(
     cap: Option<usize>,
 ) -> Plan {
     cof_fwd_impl(c, cof, typ, isc, w, cap, None)
+}
+
+/// Isolated R4 fixture path.  It performs the ordinary full cofactor cell but
+/// omits the fresh zero-head allocation: after the last controlled use, isC is
+/// HMR/phase-cleared against the newly formed s[1], then the exact same clean
+/// physical owner is reacquired and relabelled as the new s[0].  Production
+/// dispatch never calls this function pending the R4 audit gate.
+pub(crate) fn cof_fwd_rotate_isc_fixture(
+    c: &mut Builder,
+    cof: &mut Cof,
+    typ: Q,
+    isc: Q,
+    w: &TickWidths,
+    cap: Option<usize>,
+) -> Plan {
+    let e_prev = cof.s.len();
+    assert_eq!(cof.r.len(), e_prev);
+    for i in 1..e_prev {
+        fredkin(c, isc, cof.s[i], cof.r[i]);
+    }
+    let n = w.ecof;
+    let k = add_operand_len(w, e_prev);
+    resize_unsigned(c, &mut cof.r, n);
+    resize_unsigned(c, &mut cof.s, k);
+    let operand = &cof.s[1..];
+    c.x(typ);
+    let r0 = cof.r[0];
+    let plan = with_r0_loan(
+        c,
+        Some(r0),
+        Some(typ),
+        operand,
+        &cof.r[1..],
+        Some(cof.s[0]),
+        |c| adder::add(c, Some(typ), operand, &cof.r[1..], Some(cof.s[0]), cap),
+    );
+    c.x(typ);
+    c.cx(isc, cof.s[0]);
+    let m = c.alloc_bit();
+    c.hmr(isc, m);
+    c.x(typ);
+    c.cz_if(cof.s[0], typ, m);
+    c.x(typ);
+    c.free_bit(m);
+    c.release_clean(isc);
+    c.reacquire(isc);
+    cof.s.insert(0, isc);
+    plan
 }
 
 /// Public-clock specialization on the source-reachable leading-zero support.

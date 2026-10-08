@@ -17,6 +17,7 @@
 //! Every gate-level check: values exact, zero phase, no dirty release, every non-register wire zero.
 use super::adder::{self, Force, Plan};
 use super::tick::*;
+use super::walk::with_rail_parity_loan;
 use crate::circuit::{Op, OperationType as K, QubitId as Q, NO_BIT};
 use crate::point_add::builder::Builder;
 use crate::point_add::heo::Rails;
@@ -1760,6 +1761,7 @@ fn test_heo_identity() {
 fn test_signext_isc_host() {
     struct Built {
         ops: Vec<Op>,
+        contract_start: usize,
         fwd_end: usize,
         nq: usize,
         nb: usize,
@@ -1767,6 +1769,8 @@ fn test_signext_isc_host() {
         input_r2: Vec<Q>,
         typ_prev: Q,
         r0: Q,
+        pre_r1: Vec<Q>,
+        pre_r2: Vec<Q>,
         mid_r1: Vec<Q>,
         mid_r2: Vec<Q>,
         typ: Q,
@@ -1776,7 +1780,8 @@ fn test_signext_isc_host() {
         peak: u32,
     }
 
-    fn build(n: usize, hosted: bool) -> Built {
+    fn build(n: usize, hosted: bool, drop_r1: usize, drop_r2: usize) -> Built {
+        assert!(drop_r1 >= 1 && drop_r1 < n && drop_r2 < n);
         let mut c = Builder::new();
         let input_r1 = c.alloc_qubits(n);
         let input_r2 = c.alloc_qubits(n);
@@ -1808,10 +1813,17 @@ fn test_signext_isc_host() {
                 Some(r0),
             )
         };
+        let pre_r1 = rails.r1.clone();
+        let pre_r2 = rails.r2.clone();
+        let contract_start = c.op_count();
+        resize_signed(&mut c, &mut rails.r1, n - drop_r1);
+        resize_signed(&mut c, &mut rails.r2, n - drop_r2);
         let mid_r1 = rails.r1.clone();
         let mid_r2 = rails.r2.clone();
         let fwd_end = c.op_count();
         if hosted {
+            resize_signed(&mut c, &mut rails.r1, n - 1);
+            resize_signed(&mut c, &mut rails.r2, n);
             rail_rev_signext_host(
                 &mut c,
                 &mut rails,
@@ -1824,6 +1836,8 @@ fn test_signext_isc_host() {
                 Some(r0),
             );
         } else {
+            resize_signed(&mut c, &mut rails.r1, n);
+            resize_signed(&mut c, &mut rails.r2, n);
             rail_rev(
                 &mut c,
                 &mut rails,
@@ -1844,6 +1858,7 @@ fn test_signext_isc_host() {
         let (nq, nb) = c.i13_dims();
         Built {
             ops: c.take_ops(),
+            contract_start,
             fwd_end,
             nq,
             nb,
@@ -1851,6 +1866,8 @@ fn test_signext_isc_host() {
             input_r2,
             typ_prev,
             r0,
+            pre_r1,
+            pre_r2,
             mid_r1,
             mid_r2,
             typ,
@@ -1865,13 +1882,29 @@ fn test_signext_isc_host() {
     // reporter, so enable that observer before constructing either circuit.
     std::env::set_var("HEO_RESEARCH", "1");
     std::env::set_var("HEO_PHASE_REPORT", "1");
+    fn sign_extended(sim: &Sim, reg: &[Q], keep: usize, lane: usize) -> bool {
+        let sign = sim.wire(reg[keep - 1], lane);
+        reg[keep..].iter().all(|&q| sim.wire(q, lane) == sign)
+    }
+
+    // Every distinct (source contraction, target contraction) geometry used by
+    // the newly hosted production rows.  The kernel proof is exhaustive over
+    // arbitrary pre-rail inputs; contraction/re-growth is checked on exactly
+    // the lanes satisfying its public sign-extension support promise.
+    let geometries = [
+        (1usize, 0usize), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2), (3, 0),
+    ];
     let mut total_cases = 0usize;
-    for n in 3usize..=8 {
-        let baseline = build(n, false);
-        let hosted = build(n, true);
+    let mut total_supported = 0usize;
+    for (drop_r1, drop_r2) in geometries {
+      let n_min = if (drop_r1, drop_r2) == (1, 0) { 3 } else { 4 };
+      for n in n_min..=8 {
+        let baseline = build(n, false, drop_r1, drop_r2);
+        let hosted = build(n, true, drop_r1, drop_r2);
         assert_eq!(hosted.peak + 1, baseline.peak, "hosted peak delta n={n}");
         let cases = 1usize << (2 * n + 1);
         total_cases += cases;
+        let mut supported_cases = 0usize;
         for lo in (0..cases).step_by(64) {
             let hi = (lo + 64).min(cases);
             let mut sb = Sim::new(baseline.nq, baseline.nb, 0xB451_0000 + lo as u64);
@@ -1893,19 +1926,39 @@ fn test_signext_isc_host() {
                     *sh.q.get_mut(hosted.typ_prev.0 as usize).unwrap() |= 1u64 << lane;
                 }
             }
-            sb.run(&baseline.ops[..baseline.fwd_end]);
-            sh.run(&hosted.ops[..hosted.fwd_end]);
+            sb.run(&baseline.ops[..baseline.contract_start]);
+            sh.run(&hosted.ops[..hosted.contract_start]);
             let live_mask = mask(hi - lo);
             assert_eq!(
                 sb.phase & live_mask,
                 sh.phase & live_mask,
+                "pre-contract phase differential n={n} lo={lo}"
+            );
+            let mut support_mask = 0u64;
+            for lane in 0..hi - lo {
+                if sign_extended(&sb, &baseline.pre_r1, n - drop_r1, lane)
+                    && sign_extended(&sb, &baseline.pre_r2, n - drop_r2, lane)
+                {
+                    support_mask |= 1u64 << lane;
+                    supported_cases += 1;
+                }
+            }
+            sb.run(&baseline.ops[baseline.contract_start..baseline.fwd_end]);
+            sh.run(&hosted.ops[hosted.contract_start..hosted.fwd_end]);
+            let checked = live_mask & support_mask;
+            assert_eq!(
+                sb.phase & checked,
+                sh.phase & checked,
                 "forward phase differential n={n} lo={lo}"
             );
-            assert_eq!(sb.dirty & live_mask, 0, "baseline forward dirty n={n} lo={lo}");
-            assert_eq!(sh.dirty & live_mask, 0, "hosted forward dirty n={n} lo={lo}");
+            assert_eq!(sb.dirty & checked, 0, "baseline forward dirty n={n} lo={lo}");
+            assert_eq!(sh.dirty & checked, 0, "hosted forward dirty n={n} lo={lo}");
             for lane in 0..hi - lo {
+                if (checked >> lane) & 1 == 0 {
+                    continue;
+                }
                 assert_eq!(
-                    sb.get(&baseline.mid_r1[..n - 1], lane),
+                    sb.get(&baseline.mid_r1, lane),
                     sh.get(&hosted.mid_r1, lane),
                     "forward r1 n={n} case={}",
                     lo + lane
@@ -1943,12 +1996,15 @@ fn test_signext_isc_host() {
                 .copied()
                 .chain([hosted.typ, hosted.isc, hosted.typ_prev, hosted.r0])
                 .collect();
-            assert_eq!(sb.residue(&keep_b) & live_mask, 0, "baseline fwd residue n={n}");
-            assert_eq!(sh.residue(&keep_h) & live_mask, 0, "hosted fwd residue n={n}");
+            assert_eq!(sb.residue(&keep_b) & checked, 0, "baseline fwd residue n={n}");
+            assert_eq!(sh.residue(&keep_h) & checked, 0, "hosted fwd residue n={n}");
 
             sb.run(&baseline.ops[baseline.fwd_end..]);
             sh.run(&hosted.ops[hosted.fwd_end..]);
             for lane in 0..hi - lo {
+                if (checked >> lane) & 1 == 0 {
+                    continue;
+                }
                 assert_eq!(
                     sb.get(&baseline.final_r1, lane),
                     sh.get(&hosted.final_r1, lane),
@@ -1963,13 +2019,13 @@ fn test_signext_isc_host() {
                 );
             }
             assert_eq!(
-                sb.phase & live_mask,
-                sh.phase & live_mask,
+                sb.phase & checked,
+                sh.phase & checked,
                 "reverse phase differential n={n} lo={lo}"
             );
             assert_eq!(
-                sb.dirty & live_mask,
-                sh.dirty & live_mask,
+                sb.dirty & checked,
+                sh.dirty & checked,
                 "reverse dirty differential n={n} lo={lo}"
             );
             let keep_b: Vec<Q> = baseline
@@ -1986,16 +2042,214 @@ fn test_signext_isc_host() {
                 .copied()
                 .chain([hosted.typ_prev, hosted.r0])
                 .collect();
-            assert_eq!(sb.residue(&keep_b) & live_mask, 0, "baseline reverse residue n={n}");
-            assert_eq!(sh.residue(&keep_h) & live_mask, 0, "hosted reverse residue n={n}");
+            assert_eq!(sb.residue(&keep_b) & checked, 0, "baseline reverse residue n={n}");
+            assert_eq!(sh.residue(&keep_h) & checked, 0, "hosted reverse residue n={n}");
         }
+        assert!(supported_cases > 0, "empty contraction support geometry");
+        total_supported += supported_cases;
         println!(
-            "{{\"kind\":\"skycof-signext-isc-host\",\"n\":{n},\"cases\":{cases},\"baseline_peak\":{},\"hosted_peak\":{},\"forward\":\"equal\",\"reverse\":\"exact\",\"phase\":\"clean\",\"garbage\":\"clean\"}}",
+            "{{\"kind\":\"skycof-signext-isc-host\",\"n\":{n},\"drop_r1\":{drop_r1},\"drop_r2\":{drop_r2},\"cases\":{cases},\"supported\":{supported_cases},\"baseline_peak\":{},\"hosted_peak\":{},\"forward\":\"equal\",\"reverse\":\"exact\",\"phase\":\"clean\",\"garbage\":\"clean\"}}",
             baseline.peak, hosted.peak
         );
+      }
     }
     println!(
-        "{{\"kind\":\"skycof-signext-isc-host-summary\",\"n_min\":3,\"n_max\":8,\"cases\":{total_cases},\"result\":\"PASS\"}}"
+        "{{\"kind\":\"skycof-signext-isc-host-summary\",\"n_min\":3,\"n_max\":8,\"geometries\":7,\"cases\":{total_cases},\"supported\":{total_supported},\"result\":\"PASS\"}}"
+    );
+}
+
+/// Exact reduced-width falsifier for the reverse-tick324 late-return r0 lease.
+/// Legal poststates are generated by the ordinary hosted forward kernel, then
+/// contracted to `(n-1,n-1)` before comparing the incumbent reverse with the
+/// late-return owner rotation.
+fn test_late_r0_target_lease() {
+    struct Built {
+        ops: Vec<Op>,
+        contract_start: usize,
+        fwd_end: usize,
+        nq: usize,
+        nb: usize,
+        in_r1: Vec<Q>,
+        in_r2: Vec<Q>,
+        pre_r2: Vec<Q>,
+        out_r1: Vec<Q>,
+        out_r2: Vec<Q>,
+        typ_prev: Q,
+        typ: Q,
+        isc: Q,
+        spectator: Q,
+        r0: Q,
+        donor: Q,
+        rev_peak: u32,
+        plan: Plan,
+    }
+
+    fn build(n: usize, late: bool) -> Built {
+        let mut c = Builder::new();
+        let in_r1 = c.alloc_qubits(n - 1);
+        let in_r2 = c.alloc_qubits(n);
+        let typ_prev = c.alloc_qubit();
+        let spectator = c.alloc_qubit();
+        let r0 = c.alloc_qubit();
+        c.x(r0);
+        let mut rails = Rails { r1: in_r1.clone(), r2: in_r2.clone() };
+        let (typ, isc, _) = rail_fwd_signext_host(
+            &mut c, &mut rails, Some(typ_prev), n, n, None, Some(r0));
+        assert_eq!(rails.r1.len(), n - 1);
+        assert_eq!(rails.r2.len(), n);
+        let pre_r2 = rails.r2.clone();
+        let contract_start = c.op_count();
+        resize_signed(&mut c, &mut rails.r2, n - 1);
+        let fwd_end = c.op_count();
+        let cap = c.active_qubits() as usize;
+        let ((plan, donor), rev_peak) = c.r3_peak(|c| {
+            if late {
+                let p = rail_rev_signext_late_r0(
+                    c, &mut rails, typ, isc, Some(typ_prev), n,
+                    (n - 1, n), cap, r0);
+                (p, *rails.r2.last().unwrap())
+            } else {
+                resize_signed(c, &mut rails.r2, n);
+                let p = rail_rev_signext_host(
+                    c, &mut rails, typ, isc, Some(typ_prev), n,
+                    (n - 1, n), Some(cap), Some(r0));
+                (p, *rails.r2.last().unwrap())
+            }
+        });
+        assert_eq!(plan, Plan::Vented(0));
+        assert_eq!(rails.r1.len(), n - 1);
+        assert_eq!(rails.r2.len(), n);
+        if late {
+            assert_eq!(*rails.r2.last().unwrap(), isc, "late donor ID is not hosted isC");
+            assert_eq!(donor, isc);
+            assert!(!rails.r1.contains(&r0) && !rails.r2.contains(&r0));
+        }
+        let out_r1 = rails.r1;
+        let out_r2 = rails.r2;
+        let (nq, nb) = c.i13_dims();
+        Built {
+            ops: c.take_ops(), contract_start, fwd_end, nq, nb, in_r1, in_r2, pre_r2, out_r1, out_r2,
+            typ_prev, typ, isc, spectator, r0, donor, rev_peak, plan,
+        }
+    }
+
+    // Symplectic conjugation for CX(a,q);CX(q,a), ordered as
+    // [Xa,Xq | Za,Zq]. This proves the coherent move on q=0 also transports
+    // entanglement with an arbitrary spectator and introduces no phase gate.
+    fn cx(p: &mut [bool; 4], control: usize, target: usize) {
+        p[target] ^= p[control];
+        p[2 + control] ^= p[2 + target];
+    }
+    fn moved(mut p: [bool; 4]) -> [bool; 4] {
+        cx(&mut p, 0, 1);
+        cx(&mut p, 1, 0);
+        p
+    }
+    assert_eq!(moved([true,false,false,false]), [false,true,false,false]); // Xa -> Xq
+    assert_eq!(moved([false,true,false,false]), [true,true,false,false]); // Xq -> XaXq
+    assert_eq!(moved([false,false,true,false]), [false,false,true,true]); // Za -> ZaZq
+    assert_eq!(moved([false,false,false,true]), [false,false,true,false]); // Zq -> Za
+    for a in [false, true] {
+        for spectator in [false, true] {
+            let (mut aa, mut q) = (a, false);
+            q ^= aa;
+            aa ^= q;
+            assert_eq!((aa, q, spectator), (false, a, spectator));
+        }
+    }
+
+    std::env::set_var("HEO_RESEARCH", "1");
+    std::env::set_var("HEO_PHASE_REPORT", "1");
+    fn sign_extended(sim: &Sim, reg: &[Q], keep: usize, lane: usize) -> bool {
+        let sign = sim.wire(reg[keep - 1], lane);
+        reg[keep..].iter().all(|&q| sim.wire(q, lane) == sign)
+    }
+    let mut generated = 0u64;
+    let mut supported = 0u64;
+    let mut saw_isc = [false; 2];
+    let mut saw_typ = [false; 2];
+    for n in 4usize..=8 {
+        let ordinary = build(n, false);
+        let late = build(n, true);
+        assert_eq!(late.rev_peak + 1, ordinary.rev_peak,
+            "late-r0 peak delta n={n}");
+        assert_eq!(ordinary.plan, Plan::Vented(0));
+        assert_eq!(late.plan, Plan::Vented(0));
+        assert_eq!(late.donor, late.isc);
+        let bits = 2 * n + 1; // r1(n-1), r2(n), typ_prev, spectator
+        let cases = 1u64 << bits;
+        generated += cases;
+        for lo in (0..cases).step_by(64) {
+            let hi = (lo + 64).min(cases);
+            let live = if hi - lo == 64 { u64::MAX } else { (1u64 << (hi - lo)) - 1 };
+            let mut so = Sim::new(ordinary.nq, ordinary.nb + 1, 0x1A7E_0000 ^ lo);
+            let mut sl = Sim::new(late.nq, late.nb + 1, 0x1A7E_0000 ^ lo);
+            let mut r1v = Vec::new();
+            let mut r2v = Vec::new();
+            for case in lo..hi {
+                let lane = (case - lo) as usize;
+                let rv1 = U::from(case & ((1u64 << (n - 1)) - 1));
+                let rv2 = U::from((case >> (n - 1)) & ((1u64 << n) - 1));
+                let tp = (case >> (2 * n - 1)) & 1 != 0;
+                let sp = (case >> (2 * n)) & 1 != 0;
+                so.set(&ordinary.in_r1, rv1, lane);
+                so.set(&ordinary.in_r2, rv2, lane);
+                sl.set(&late.in_r1, rv1, lane);
+                sl.set(&late.in_r2, rv2, lane);
+                if tp { so.q[ordinary.typ_prev.0 as usize] |= 1u64 << lane; sl.q[late.typ_prev.0 as usize] |= 1u64 << lane; }
+                if sp { so.q[ordinary.spectator.0 as usize] |= 1u64 << lane; sl.q[late.spectator.0 as usize] |= 1u64 << lane; }
+                r1v.push(rv1);
+                r2v.push(rv2);
+            }
+            so.run(&ordinary.ops[..ordinary.contract_start]);
+            sl.run(&late.ops[..late.contract_start]);
+            let mut support = 0u64;
+            for lane in 0..(hi - lo) as usize {
+                if sign_extended(&so, &ordinary.pre_r2, n - 1, lane) {
+                    support |= 1u64 << lane;
+                    supported += 1;
+                    saw_isc[so.wire(ordinary.isc, lane) as usize] = true;
+                    saw_typ[so.wire(ordinary.typ, lane) as usize] = true;
+                    assert_eq!(so.wire(ordinary.isc, lane), sl.wire(late.isc, lane));
+                    assert_eq!(so.wire(ordinary.typ, lane), sl.wire(late.typ, lane));
+                }
+            }
+            let checked = live & support;
+            so.run(&ordinary.ops[ordinary.contract_start..ordinary.fwd_end]);
+            sl.run(&late.ops[late.contract_start..late.fwd_end]);
+            assert_eq!(so.dirty & checked, 0, "ordinary forward dirty n={n} lo={lo}");
+            assert_eq!(sl.dirty & checked, 0, "late forward dirty n={n} lo={lo}");
+            so.run(&ordinary.ops[ordinary.fwd_end..]);
+            sl.run(&late.ops[late.fwd_end..]);
+            assert_eq!(so.phase & checked, sl.phase & checked, "late-r0 phase n={n} lo={lo}");
+            assert_eq!(so.dirty & checked, sl.dirty & checked, "late-r0 dirty n={n} lo={lo}");
+            for lane in 0..(hi - lo) as usize {
+                if (checked >> lane) & 1 == 0 { continue; }
+                assert_eq!(so.get(&ordinary.out_r1, lane), r1v[lane]);
+                assert_eq!(so.get(&ordinary.out_r2, lane), r2v[lane]);
+                assert_eq!(sl.get(&late.out_r1, lane), r1v[lane]);
+                assert_eq!(sl.get(&late.out_r2, lane), r2v[lane]);
+                assert_eq!(so.wire(ordinary.typ_prev, lane), sl.wire(late.typ_prev, lane));
+                assert_eq!(so.wire(ordinary.spectator, lane), sl.wire(late.spectator, lane));
+                assert!(so.wire(ordinary.r0, lane));
+                assert!(sl.wire(late.r0, lane));
+            }
+            let keep_o: Vec<Q> = ordinary.out_r1.iter().chain(&ordinary.out_r2)
+                .copied().chain([ordinary.typ_prev, ordinary.spectator, ordinary.r0]).collect();
+            let keep_l: Vec<Q> = late.out_r1.iter().chain(&late.out_r2)
+                .copied().chain([late.typ_prev, late.spectator, late.r0]).collect();
+            assert_eq!(so.residue(&keep_o) & checked, 0, "ordinary garbage n={n} lo={lo}");
+            assert_eq!(sl.residue(&keep_l) & checked, 0, "late garbage n={n} lo={lo}");
+        }
+        println!(
+            "{{\"kind\":\"skycof-late-r0-target-lease\",\"n\":{n},\"cases\":{cases},\"ordinary_peak\":{},\"late_peak\":{},\"plan\":\"Vented0\",\"r0\":\"restored1\",\"donor_id\":{},\"result\":\"PASS\"}}",
+            ordinary.rev_peak, late.rev_peak, late.donor.0
+        );
+    }
+    assert_eq!(saw_isc, [true, true]);
+    assert_eq!(saw_typ, [true, true]);
+    println!(
+        "{{\"kind\":\"skycof-late-r0-target-lease-summary\",\"n_min\":4,\"n_max\":8,\"generated\":{generated},\"supported\":{supported},\"isc_values\":2,\"typ_values\":2,\"two_cx_stabilizer\":\"PASS\",\"result\":\"PASS\"}}"
     );
 }
 
@@ -2142,6 +2396,490 @@ fn test_cofzero_isc_recycle() {
     );
 }
 
+/// Isolated R4 recurrence: ordinary `cof_fwd + erase_isc` versus clearing the
+/// last-use isC owner and immediately rotating that exact clean ID into the
+/// fresh zero head. Reverse uses the matching zero-head-to-isC rotation.
+fn test_cof_isc_zero_rotation() {
+    struct Built {
+        ops: Vec<Op>,
+        fwd_end: usize,
+        nq: usize,
+        nb: usize,
+        input_s: Vec<Q>,
+        input_r: Vec<Q>,
+        typ: Q,
+        isc_in: Q,
+        spectator: Q,
+        mid_s: Vec<Q>,
+        mid_r: Vec<Q>,
+        out_s: Vec<Q>,
+        out_r: Vec<Q>,
+        isc_out: Q,
+        peak: u32,
+    }
+    fn build(n: usize, rotated: bool) -> Built {
+        let mut c = Builder::new();
+        let input_s = c.alloc_qubits(n);
+        let input_r = c.alloc_qubits(n);
+        let typ = c.alloc_qubit();
+        let isc_in = c.alloc_qubit();
+        let spectator = c.alloc_qubit();
+        let mut cof = Cof { s: input_s.clone(), r: input_r.clone() };
+        let w = TickWidths {
+            wsw: n,
+            wad: n,
+            post_r1: n,
+            post_r2: n,
+            ecof: n,
+            clamp: 256,
+        };
+        if rotated {
+            cof_fwd_rotate_isc_fixture(&mut c, &mut cof, typ, isc_in, &w, None);
+        } else {
+            cof_fwd(&mut c, &mut cof, typ, isc_in, &w, None);
+            erase_isc(&mut c, &cof, typ, isc_in);
+        }
+        let mid_s = cof.s.clone();
+        let mid_r = cof.r.clone();
+        let fwd_end = c.op_count();
+        let isc_out = if rotated {
+            let q = isc_recompute_from_zero_head(&mut c, &mut cof, typ);
+            cof_rev_at_zero_head(&mut c, &mut cof, typ, q, n, None, 100);
+            q
+        } else {
+            let q = isc_recompute(&mut c, &cof, typ);
+            cof_rev_at(&mut c, &mut cof, typ, q, n, None, 100);
+            q
+        };
+        let out_s = cof.s;
+        let out_r = cof.r;
+        let peak = c.peak_total();
+        let (nq, nb) = c.i13_dims();
+        Built {
+            ops: c.take_ops(), fwd_end, nq, nb, input_s, input_r, typ, isc_in,
+            spectator, mid_s, mid_r, out_s, out_r, isc_out, peak,
+        }
+    }
+    std::env::set_var("HEO_RESEARCH", "1");
+    std::env::set_var("HEO_PHASE_REPORT", "1");
+    let mut valid_total = 0usize;
+    let mut clean_total = 0usize;
+    for n in 2usize..=8 {
+        let ordinary = build(n, false);
+        let rotated = build(n, true);
+        assert!(rotated.peak <= ordinary.peak, "R4 raised peak n={n}");
+        let raw_cases = 1usize << (2 * (n - 1) + 3);
+        let mut valid_n = 0usize;
+        for lo in (0..raw_cases).step_by(64) {
+            let hi = (lo + 64).min(raw_cases);
+            let mut so = Sim::new(ordinary.nq, ordinary.nb, 0xC04F_0000 + lo as u64);
+            let mut sr = Sim::new(rotated.nq, rotated.nb, 0xC04F_0000 + lo as u64);
+            let mut valid = 0u64;
+            for case in lo..hi {
+                let lane = case - lo;
+                let high_mask = (1usize << (n - 1)) - 1;
+                let sh = case & high_mask;
+                let rh = (case >> (n - 1)) & high_mask;
+                let typ = (case >> (2 * (n - 1))) & 1 != 0;
+                let isc = (case >> (2 * (n - 1) + 1)) & 1 != 0;
+                let spectator = (case >> (2 * (n - 1) + 2)) & 1 != 0;
+                if typ && isc { continue; }
+                valid |= 1u64 << lane;
+                valid_n += 1;
+                for (sim, built) in [(&mut so, &ordinary), (&mut sr, &rotated)] {
+                    sim.set(&built.input_s, U::from((sh << 1) as u64), lane);
+                    sim.set(&built.input_r, U::from(((rh << 1) | 1) as u64), lane);
+                    if typ { sim.q[built.typ.0 as usize] |= 1u64 << lane; }
+                    if isc { sim.q[built.isc_in.0 as usize] |= 1u64 << lane; }
+                    if spectator { sim.q[built.spectator.0 as usize] |= 1u64 << lane; }
+                }
+            }
+            so.run(&ordinary.ops[..ordinary.fwd_end]);
+            sr.run(&rotated.ops[..rotated.fwd_end]);
+            let checked = valid & !so.dirty;
+            clean_total += checked.count_ones() as usize;
+            assert_eq!(so.phase & checked, sr.phase & checked, "R4 fwd phase n={n} lo={lo}");
+            assert_eq!(sr.dirty & checked, 0);
+            for lane in 0..hi - lo {
+                if (checked >> lane) & 1 == 0 { continue; }
+                assert_eq!(so.get(&ordinary.mid_s, lane), sr.get(&rotated.mid_s, lane));
+                assert_eq!(so.get(&ordinary.mid_r, lane), sr.get(&rotated.mid_r, lane));
+                assert_eq!(so.wire(ordinary.typ, lane), sr.wire(rotated.typ, lane));
+                assert_eq!(so.wire(ordinary.spectator, lane), sr.wire(rotated.spectator, lane));
+            }
+            so.run(&ordinary.ops[ordinary.fwd_end..]);
+            sr.run(&rotated.ops[rotated.fwd_end..]);
+            assert_eq!(so.phase & checked, sr.phase & checked, "R4 rev phase n={n} lo={lo}");
+            assert_eq!(so.dirty & checked, sr.dirty & checked);
+            for lane in 0..hi - lo {
+                if (checked >> lane) & 1 == 0 { continue; }
+                assert_eq!(so.get(&ordinary.out_s, lane), sr.get(&rotated.out_s, lane));
+                assert_eq!(so.get(&ordinary.out_r, lane), sr.get(&rotated.out_r, lane));
+                for (qo, qr) in [(ordinary.typ, rotated.typ),
+                    (ordinary.spectator, rotated.spectator),
+                    (ordinary.isc_out, rotated.isc_out)] {
+                    assert_eq!(so.wire(qo, lane), sr.wire(qr, lane));
+                }
+            }
+        }
+        valid_total += valid_n;
+        println!(
+            "{{\"kind\":\"skycof-cof-isc-zero-rotation\",\"n\":{n},\"valid_cases\":{valid_n},\"ordinary_peak\":{},\"rotated_peak\":{},\"forward\":\"equal\",\"reverse\":\"equal\",\"phase\":\"equal\",\"spectator\":\"restored\"}}",
+            ordinary.peak, rotated.peak
+        );
+    }
+    println!(
+        "{{\"kind\":\"skycof-cof-isc-zero-rotation-summary\",\"valid_cases\":{valid_total},\"clean_supported\":{clean_total},\"result\":\"PASS\"}}"
+    );
+}
+
+/// Exhaustive physical-ID test for beginning the rail-parity loan before the
+/// clamp predicate. The body models ParkTest's fresh AND owner followed by its
+/// exact measurement/phase repair; under r1[0] XOR r2[0] = 1 the released rail
+/// ID may be reused and must return with arbitrary rail/control state intact.
+fn test_park_parity_loan() {
+    std::env::set_var("HEO_RESEARCH", "1");
+    std::env::set_var("HEO_PHASE_REPORT", "1");
+    struct Built {
+        ops: Vec<Op>,
+        nq: usize,
+        nb: usize,
+        a: Q,
+        q: Q,
+        u: Q,
+        v: Q,
+        peak: u32,
+    }
+    fn build(loan: bool) -> Built {
+        let mut c = Builder::new();
+        let a = c.alloc_qubit();
+        let q = c.alloc_qubit();
+        let u = c.alloc_qubit();
+        let v = c.alloc_qubit();
+        let rails = Rails { r1: vec![a], r2: vec![q] };
+        let body = |c: &mut Builder| {
+            let z = c.alloc_qubit();
+            c.ccx(u, v, z);
+            let m = c.alloc_bit();
+            c.hmr(z, m);
+            c.cz_if(u, v, m);
+            c.free_bit(m);
+            c.release_clean(z);
+        };
+        if loan {
+            with_rail_parity_loan(&mut c, &rails, body);
+        } else {
+            body(&mut c);
+        }
+        let peak = c.peak_total();
+        let (nq, nb) = c.i13_dims();
+        Built { ops: c.take_ops(), nq, nb, a, q, u, v, peak }
+    }
+    let ordinary = build(false);
+    let loaned = build(true);
+    assert_eq!(loaned.peak + 1, ordinary.peak);
+    let mut so = Sim::new(ordinary.nq, ordinary.nb, 0xB1A0_0001);
+    let mut sl = Sim::new(loaned.nq, loaned.nb, 0xB1A0_0001);
+    for case in 0..8usize {
+        let a = case & 1 != 0;
+        let q = !a;
+        let u = case & 2 != 0;
+        let v = case & 4 != 0;
+        for (sim, built) in [(&mut so, &ordinary), (&mut sl, &loaned)] {
+            if a { sim.q[built.a.0 as usize] |= 1u64 << case; }
+            if q { sim.q[built.q.0 as usize] |= 1u64 << case; }
+            if u { sim.q[built.u.0 as usize] |= 1u64 << case; }
+            if v { sim.q[built.v.0 as usize] |= 1u64 << case; }
+        }
+    }
+    so.run(&ordinary.ops);
+    sl.run(&loaned.ops);
+    let live = mask(8);
+    assert_eq!(so.phase & live, sl.phase & live);
+    assert_eq!(so.dirty & live, 0);
+    assert_eq!(sl.dirty & live, 0);
+    for case in 0..8usize {
+        for (qo, ql) in [(ordinary.a, loaned.a), (ordinary.q, loaned.q), (ordinary.u, loaned.u), (ordinary.v, loaned.v)] {
+            assert_eq!(so.wire(qo, case), sl.wire(ql, case));
+        }
+    }
+    let keep_o = [ordinary.a, ordinary.q, ordinary.u, ordinary.v];
+    let keep_l = [loaned.a, loaned.q, loaned.u, loaned.v];
+    assert_eq!(so.residue(&keep_o) & live, 0);
+    assert_eq!(sl.residue(&keep_l) & live, 0);
+    println!(
+        "{{\"kind\":\"skycof-park-parity-loan\",\"cases\":8,\"ordinary_peak\":{},\"loaned_peak\":{},\"state\":\"equal\",\"phase\":\"equal\",\"garbage\":\"clean\"}}",
+        ordinary.peak, loaned.peak
+    );
+}
+
+/// Isolated R6-A fixture: replace ghost_odo's fresh `g=z&!typ` with the
+/// invariant physical r0=|1>. The host is zeroed, used for the same predicate,
+/// HMR/phase-cleared with the incumbent Z/CZ correction, then reacquired and
+/// restored to |1>; unrelated target/spectator data must be identical.
+fn test_ghost_r0_host() {
+    struct Built {
+        ops: Vec<Op>,
+        nq: usize,
+        nb: usize,
+        r0: Q,
+        z: Q,
+        typ: Q,
+        targets: Vec<Q>,
+        spectator: Q,
+        peak: u32,
+    }
+    fn build(hosted: bool) -> Built {
+        let mut c = Builder::new();
+        let r0 = c.alloc_qubit();
+        c.x(r0);
+        let z = c.alloc_qubit();
+        let typ = c.alloc_qubit();
+        let targets = c.alloc_qubits(3);
+        let spectator = c.alloc_qubit();
+        let g = if hosted {
+            c.x(r0);
+            r0
+        } else {
+            c.alloc_qubit()
+        };
+        c.x(typ);
+        c.ccx(z, typ, g);
+        c.x(typ);
+        for &q in &targets {
+            c.cx(g, q);
+        }
+        let m = c.alloc_bit();
+        c.hmr(g, m);
+        c.z_if(z, m);
+        c.cz_if(z, typ, m);
+        c.free_bit(m);
+        c.release_clean(g);
+        if hosted {
+            c.reacquire(r0);
+            c.x(r0);
+        }
+        let peak = c.peak_total();
+        let (nq, nb) = c.i13_dims();
+        Built { ops: c.take_ops(), nq, nb, r0, z, typ, targets, spectator, peak }
+    }
+    let ordinary = build(false);
+    let hosted = build(true);
+    assert_eq!(hosted.peak + 1, ordinary.peak);
+    let mut so = Sim::new(ordinary.nq, ordinary.nb, 0x6605_7001);
+    let mut sh = Sim::new(hosted.nq, hosted.nb, 0x6605_7001);
+    for case in 0..64usize {
+        for (sim, built) in [(&mut so, &ordinary), (&mut sh, &hosted)] {
+            if case & 1 != 0 { sim.q[built.z.0 as usize] |= 1u64 << case; }
+            if case & 2 != 0 { sim.q[built.typ.0 as usize] |= 1u64 << case; }
+            for (i, &q) in built.targets.iter().enumerate() {
+                if (case >> (2 + i)) & 1 != 0 { sim.q[q.0 as usize] |= 1u64 << case; }
+            }
+            if case & 32 != 0 { sim.q[built.spectator.0 as usize] |= 1u64 << case; }
+        }
+    }
+    so.run(&ordinary.ops);
+    sh.run(&hosted.ops);
+    assert_eq!(so.phase, sh.phase);
+    assert_eq!(so.dirty, 0);
+    assert_eq!(sh.dirty, 0);
+    for case in 0..64usize {
+        for (qo, qh) in [(ordinary.r0, hosted.r0), (ordinary.z, hosted.z),
+            (ordinary.typ, hosted.typ), (ordinary.spectator, hosted.spectator)] {
+            assert_eq!(so.wire(qo, case), sh.wire(qh, case));
+        }
+        for (&qo, &qh) in ordinary.targets.iter().zip(&hosted.targets) {
+            assert_eq!(so.wire(qo, case), sh.wire(qh, case));
+        }
+    }
+    let keep_o: Vec<Q> = [ordinary.r0, ordinary.z, ordinary.typ, ordinary.spectator]
+        .into_iter().chain(ordinary.targets.iter().copied()).collect();
+    let keep_h: Vec<Q> = [hosted.r0, hosted.z, hosted.typ, hosted.spectator]
+        .into_iter().chain(hosted.targets.iter().copied()).collect();
+    assert_eq!(so.residue(&keep_o), 0);
+    assert_eq!(sh.residue(&keep_h), 0);
+    println!(
+        "{{\"kind\":\"skycof-ghost-r0-host\",\"cases\":64,\"ordinary_peak\":{},\"hosted_peak\":{},\"state\":\"equal\",\"phase\":\"equal\",\"r0\":\"restored\",\"spectator\":\"restored\"}}",
+        ordinary.peak, hosted.peak
+    );
+}
+
+/// Reduced-width differential for the narrow tick318 dual-known-constant
+/// loan.  Production geometry is `(prev_r1,prev_r2)=(n-1,n+1)`,
+/// `(wsw,wadd,post1,post2)=(n+1,n,n,n)`.  The target contraction is checked on
+/// exactly its sign-extension support; typ_prev and an unrelated spectator are
+/// arbitrary, and the ordinary reverse must restore every physical input.
+fn test_t318_dual_loan() {
+    struct Built {
+        ops: Vec<Op>,
+        fwd_end: usize,
+        nq: usize,
+        nb: usize,
+        in_r1: Vec<Q>,
+        in_r2: Vec<Q>,
+        typ_prev: Q,
+        spectator: Q,
+        qs: Q,
+        qr: Q,
+        mid_r1: Vec<Q>,
+        mid_r2: Vec<Q>,
+        typ: Q,
+        isc: Q,
+        out_r1: Vec<Q>,
+        out_r2: Vec<Q>,
+        peak: u32,
+    }
+    fn build(n: usize, dual: bool) -> Built {
+        let mut c = Builder::new();
+        let qs = c.alloc_qubit();
+        let qr = c.alloc_qubit();
+        c.x(qr);
+        let spectator = c.alloc_qubit();
+        let typ_prev = c.alloc_qubit();
+        let in_r1 = c.alloc_qubits(n - 1);
+        let in_r2 = c.alloc_qubits(n + 1);
+        let mut rails = Rails { r1: in_r1.clone(), r2: in_r2.clone() };
+        let w = TickWidths {
+            wsw: n + 1,
+            wad: n,
+            post_r1: n,
+            post_r2: n,
+            ecof: n,
+            clamp: 256,
+        };
+        let (typ, isc, _) = if dual {
+            c.release_clean(qs);
+            c.x(qr);
+            c.release_clean(qr);
+            c.set_avoid(&[qs, qr]);
+            c.reacquire(qs);
+            c.reacquire(qr);
+            c.x(qr);
+            c.set_avoid(&[]);
+            let out = rail_fwd_micro(
+                &mut c,
+                &mut rails,
+                Some(typ_prev),
+                &w,
+                None,
+                Some(qr),
+                None,
+            );
+            assert!(out.0 != qs && out.0 != qr && out.1 != qs && out.1 != qr);
+            assert!(!rails.r1.contains(&qs) && !rails.r2.contains(&qs));
+            assert!(!rails.r1.contains(&qr) && !rails.r2.contains(&qr));
+            out
+        } else {
+            rail_fwd_micro(
+                &mut c,
+                &mut rails,
+                Some(typ_prev),
+                &w,
+                None,
+                Some(qr),
+                None,
+            )
+        };
+        let mid_r1 = rails.r1.clone();
+        let mid_r2 = rails.r2.clone();
+        let fwd_end = c.op_count();
+        rail_rev_micro(
+            &mut c,
+            &mut rails,
+            typ,
+            isc,
+            Some(typ_prev),
+            &w,
+            (n - 1, n + 1),
+            None,
+            Some(qr),
+            None,
+        );
+        let out_r1 = rails.r1;
+        let out_r2 = rails.r2;
+        let peak = c.peak_total();
+        let (nq, nb) = c.i13_dims();
+        Built {
+            ops: c.take_ops(), fwd_end, nq, nb, in_r1, in_r2, typ_prev,
+            spectator, qs, qr, mid_r1, mid_r2, typ, isc, out_r1, out_r2, peak,
+        }
+    }
+    std::env::set_var("HEO_RESEARCH", "1");
+    std::env::set_var("HEO_PHASE_REPORT", "1");
+    let mut total = 0usize;
+    let mut supported = 0usize;
+    for n in 3usize..=7 {
+        let ordinary = build(n, false);
+        let dual = build(n, true);
+        assert!(dual.peak <= ordinary.peak);
+        let cases = 1usize << (2 * n + 2);
+        total += cases;
+        for lo in (0..cases).step_by(64) {
+            let hi = (lo + 64).min(cases);
+            let mut so = Sim::new(ordinary.nq, ordinary.nb, 0xD0A1_0000 + lo as u64);
+            let mut sd = Sim::new(dual.nq, dual.nb, 0xD0A1_0000 + lo as u64);
+            let mut checked = 0u64;
+            for case in lo..hi {
+                let lane = case - lo;
+                let r1m = (1usize << (n - 1)) - 1;
+                let r2m = (1usize << (n + 1)) - 1;
+                let r1 = U::from((case & r1m) as u64);
+                let r2 = U::from(((case >> (n - 1)) & r2m) as u64);
+                let tp = (case >> (2 * n)) & 1 != 0;
+                let sp = (case >> (2 * n + 1)) & 1 != 0;
+                for (sim, built) in [(&mut so, &ordinary), (&mut sd, &dual)] {
+                    sim.set(&built.in_r1, r1, lane);
+                    sim.set(&built.in_r2, r2, lane);
+                    sim.q[built.qr.0 as usize] |= 1u64 << lane;
+                    if tp { sim.q[built.typ_prev.0 as usize] |= 1u64 << lane; }
+                    if sp { sim.q[built.spectator.0 as usize] |= 1u64 << lane; }
+                }
+                if r2.bit(n) == r2.bit(n - 1) {
+                    checked |= 1u64 << lane;
+                    supported += 1;
+                }
+            }
+            so.run(&ordinary.ops[..ordinary.fwd_end]);
+            sd.run(&dual.ops[..dual.fwd_end]);
+            assert_eq!(so.phase & checked, sd.phase & checked);
+            assert_eq!(so.dirty & checked, 0);
+            assert_eq!(sd.dirty & checked, 0);
+            for lane in 0..hi - lo {
+                if (checked >> lane) & 1 == 0 { continue; }
+                for (ro, rd) in [(&ordinary.mid_r1, &dual.mid_r1), (&ordinary.mid_r2, &dual.mid_r2)] {
+                    assert_eq!(so.get(ro, lane), sd.get(rd, lane));
+                }
+                for (qo, qd) in [(ordinary.typ, dual.typ), (ordinary.isc, dual.isc),
+                    (ordinary.typ_prev, dual.typ_prev), (ordinary.spectator, dual.spectator),
+                    (ordinary.qs, dual.qs), (ordinary.qr, dual.qr)] {
+                    assert_eq!(so.wire(qo, lane), sd.wire(qd, lane));
+                }
+            }
+            so.run(&ordinary.ops[ordinary.fwd_end..]);
+            sd.run(&dual.ops[dual.fwd_end..]);
+            assert_eq!(so.phase & checked, sd.phase & checked);
+            assert_eq!(so.dirty & checked, sd.dirty & checked);
+            for lane in 0..hi - lo {
+                if (checked >> lane) & 1 == 0 { continue; }
+                assert_eq!(so.get(&ordinary.out_r1, lane), sd.get(&dual.out_r1, lane));
+                assert_eq!(so.get(&ordinary.out_r2, lane), sd.get(&dual.out_r2, lane));
+                for (qo, qd) in [(ordinary.typ_prev, dual.typ_prev),
+                    (ordinary.spectator, dual.spectator), (ordinary.qs, dual.qs),
+                    (ordinary.qr, dual.qr)] {
+                    assert_eq!(so.wire(qo, lane), sd.wire(qd, lane));
+                }
+            }
+        }
+        println!(
+            "{{\"kind\":\"skycof-t318-dual-loan\",\"n\":{n},\"cases\":{cases},\"ordinary_peak\":{},\"dual_peak\":{},\"state\":\"equal\",\"phase\":\"equal\",\"spectator\":\"restored\"}}",
+            ordinary.peak, dual.peak
+        );
+    }
+    println!(
+        "{{\"kind\":\"skycof-t318-dual-loan-summary\",\"cases\":{total},\"supported\":{supported},\"result\":\"PASS\"}}"
+    );
+}
+
 pub fn run() {
     let mode = std::env::var("SKYCOF_TICK_SELFTEST").unwrap_or_default();
     let t0 = std::time::Instant::now();
@@ -2149,8 +2887,24 @@ pub fn run() {
         test_signext_isc_host();
         return;
     }
+    if mode.trim() == "late-r0" {
+        test_late_r0_target_lease();
+        return;
+    }
     if mode.trim() == "cofzero" {
         test_cofzero_isc_recycle();
+        return;
+    }
+    if mode.trim() == "cofrotate" {
+        test_cof_isc_zero_rotation();
+        return;
+    }
+    if mode.trim() == "park-parity" {
+        test_park_parity_loan();
+        return;
+    }
+    if mode.trim() == "ghost-r0" {
+        test_ghost_r0_host();
         return;
     }
     if mode.trim() == "cost" {

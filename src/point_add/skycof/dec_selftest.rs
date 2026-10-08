@@ -509,7 +509,14 @@ struct BorrowBuilt {
     peak: u32,
 }
 
-fn build_borrow_diff(e: usize, room: usize, m: usize, mode: Mode, borrowed: bool) -> BorrowBuilt {
+fn build_borrow_diff(
+    e: usize,
+    room: usize,
+    m: usize,
+    mode: Mode,
+    borrowed: bool,
+    has_en: bool,
+) -> BorrowBuilt {
     let mut c = Builder::new();
     let s = c.alloc_qubits(e);
     let r = c.alloc_qubits(e);
@@ -522,7 +529,7 @@ fn build_borrow_diff(e: usize, room: usize, m: usize, mode: Mode, borrowed: bool
         s: &s,
         r: &r,
         e,
-        en: Some(en),
+        en: has_en.then_some(en),
         typ,
         cflag: None,
         park: None,
@@ -569,14 +576,15 @@ fn borrow_amb_exhaustive() -> bool {
     let mut ok = true;
     for e in 2usize..=6 {
         let n = Window::new(e, e).n();
-        for room in [dec::min_room(true), dec::min_room(true) + n] {
+      for has_en in [false, true] {
+        for room in [dec::min_room(has_en), dec::min_room(has_en) + n] {
             let m = 3usize;
             let nbits = 2 * e + 1 + 1 + m + 1;
             let total = 1u64 << nbits;
             cases += total * 3;
             for mode in [Mode::Push, Mode::Pop, Mode::PushPop] {
-                let ordinary = build_borrow_diff(e, room, m, mode, false);
-                let borrowed = build_borrow_diff(e, room, m, mode, true);
+                let ordinary = build_borrow_diff(e, room, m, mode, false, has_en);
+                let borrowed = build_borrow_diff(e, room, m, mode, true, has_en);
                 assert_eq!(ordinary.io.len(), borrowed.io.len());
                 for lo in (0..total).step_by(64) {
                     let hi = (lo + 64).min(total);
@@ -631,7 +639,7 @@ fn borrow_amb_exhaustive() -> bool {
                     }
                 }
                 println!(
-                    "{{\"kind\":\"skycof-decoder-borrow-amb\",\"e\":{e},\"room\":{room},\"mode\":\"{mode:?}\",\"cases\":{total},\"ordinary_peak\":{},\"borrowed_peak\":{},\"result\":\"{}\"}}",
+                    "{{\"kind\":\"skycof-decoder-borrow-amb\",\"e\":{e},\"room\":{room},\"has_en\":{has_en},\"mode\":\"{mode:?}\",\"cases\":{total},\"ordinary_peak\":{},\"borrowed_peak\":{},\"result\":\"{}\"}}",
                     ordinary.peak,
                     borrowed.peak,
                     if ok { "PASS" } else { "FAIL" }
@@ -641,10 +649,415 @@ fn borrow_amb_exhaustive() -> bool {
                 }
             }
         }
+      }
     }
     println!(
         "{{\"kind\":\"skycof-decoder-borrow-amb-summary\",\"e_min\":2,\"e_max\":6,\"cases\":{cases},\"borrower_values\":2,\"result\":\"PASS\"}}"
     );
+    true
+}
+
+fn build_r0_d_diff(e: usize, room: usize, m: usize, mode: Mode, hosted: bool) -> BorrowBuilt {
+    let mut c = Builder::new();
+    let s = c.alloc_qubits(e);
+    let r = c.alloc_qubits(e);
+    let en = c.alloc_qubit();
+    let typ = c.alloc_qubit();
+    let mut h = Hreg::new();
+    h.grow_to(&mut c, m);
+    let borrower = c.alloc_qubit();
+    let io = TickIo { s: &s, r: &r, e, en: Some(en), typ, cflag: None, park: None };
+    let cfg = DecCfg { w: e, room };
+    let base = c.active_qubits();
+    let ((), peak) = c.r3_peak(|c| match (mode, hosted) {
+        (Mode::Push, false) => dec::push_borrow_amb(c, &io, &h, cfg, borrower),
+        (Mode::Pop, false) => dec::pop_borrow_amb(c, &io, &h, cfg, borrower),
+        (Mode::PushPop, false) => {
+            dec::push_borrow_amb(c, &io, &h, cfg, borrower);
+            dec::pop_borrow_amb(c, &io, &h, cfg, borrower);
+        }
+        (Mode::Push, true) => dec::push_borrow_amb_r0_d_fixture(c, &io, &h, cfg, borrower),
+        (Mode::Pop, true) => dec::pop_borrow_amb_r0_d_fixture(c, &io, &h, cfg, borrower),
+        (Mode::PushPop, true) => {
+            dec::push_borrow_amb_r0_d_fixture(c, &io, &h, cfg, borrower);
+            dec::pop_borrow_amb_r0_d_fixture(c, &io, &h, cfg, borrower);
+        }
+        (Mode::First, _) => unreachable!(),
+    });
+    assert_eq!(c.active_qubits(), base);
+    let mut ios = s;
+    ios.extend(r);
+    ios.push(en);
+    ios.push(typ);
+    ios.extend(h.wires);
+    ios.push(borrower);
+    let (nq, nb) = c.i13_dims();
+    BorrowBuilt { ops: c.take_ops(), nq, nb: nb + 1, io: ios, peak }
+}
+
+fn r0_d_exhaustive() -> bool {
+    std::env::set_var("HEO_RESEARCH", "1");
+    std::env::set_var("HEO_PHASE_REPORT", "1");
+    let mut checked_cases = 0u64;
+    for e in 2usize..=6 {
+        let n = Window::new(e, e).n();
+        for room in [dec::min_room(true), dec::min_room(true) + n] {
+            let m = 3usize;
+            let nbits = 2 * e + 1 + 1 + m + 1;
+            let total = 1u64 << nbits;
+            for mode in [Mode::Push, Mode::Pop, Mode::PushPop] {
+                let ordinary = build_r0_d_diff(e, room, m, mode, false);
+                let hosted = build_r0_d_diff(e, room, m, mode, true);
+                for lo in (0..total).step_by(64) {
+                    let hi = (lo + 64).min(total);
+                    let tag = format!("r0d-{e}-{room}-{mode:?}-{lo}");
+                    let mut ro = xof(tag.as_bytes());
+                    let mut rh = xof(tag.as_bytes());
+                    let mut so = Simulator::new(ordinary.nq, ordinary.nb, &mut ro);
+                    let mut sh = Simulator::new(hosted.nq, hosted.nb, &mut rh);
+                    let mut valid = 0u64;
+                    for case in lo..hi {
+                        let lane = case - lo;
+                        if (case >> e) & 1 == 0 { continue; } // logical r0=1 invariant
+                        valid |= 1u64 << lane;
+                        checked_cases += 1;
+                        for (bit, (&qo, &qh)) in ordinary.io.iter().zip(&hosted.io).enumerate() {
+                            if (case >> bit) & 1 == 1 {
+                                *so.qubit_mut(qo) |= 1u64 << lane;
+                                *sh.qubit_mut(qh) |= 1u64 << lane;
+                            }
+                        }
+                    }
+                    so.apply_iter(ordinary.ops.iter());
+                    sh.apply_iter(hosted.ops.iter());
+                    assert_eq!(so.phase & valid, sh.phase & valid,
+                        "r0-D phase e={e} room={room} mode={mode:?} lo={lo}");
+                    for (&qo, &qh) in ordinary.io.iter().zip(&hosted.io) {
+                        assert_eq!((so.qubit(qo) ^ sh.qubit(qh)) & valid, 0,
+                            "r0-D state e={e} room={room} mode={mode:?} lo={lo}");
+                    }
+                    let mut go = 0u64;
+                    let mut gh = 0u64;
+                    for q in 0..ordinary.nq {
+                        if !ordinary.io.iter().any(|x| x.0 as usize == q) { go |= so.qubits[q] & valid; }
+                    }
+                    for q in 0..hosted.nq {
+                        if !hosted.io.iter().any(|x| x.0 as usize == q) { gh |= sh.qubits[q] & valid; }
+                    }
+                    assert_eq!(go, 0);
+                    assert_eq!(gh, 0);
+                }
+                println!(
+                    "{{\"kind\":\"skycof-decoder-r0-d-host\",\"e\":{e},\"room\":{room},\"mode\":\"{mode:?}\",\"ordinary_peak\":{},\"hosted_peak\":{},\"result\":\"PASS\"}}",
+                    ordinary.peak, hosted.peak
+                );
+            }
+        }
+    }
+    println!(
+        "{{\"kind\":\"skycof-decoder-r0-d-host-summary\",\"checked_cases\":{checked_cases},\"result\":\"PASS\"}}"
+    );
+    true
+}
+
+fn build_virtual_d_amb_diff(
+    e: usize,
+    room: usize,
+    m: usize,
+    mode: Mode,
+    virtualized: bool,
+) -> BorrowBuilt {
+    let mut c = Builder::new();
+    let s = c.alloc_qubits(e);
+    let r = c.alloc_qubits(e);
+    let en = c.alloc_qubit();
+    let typ = c.alloc_qubit();
+    let mut h = Hreg::new();
+    h.grow_to(&mut c, m);
+    let q0 = c.alloc_qubit();
+    let q1 = c.alloc_qubit();
+    let io = TickIo { s: &s, r: &r, e, en: Some(en), typ, cflag: None, park: None };
+    let cfg = DecCfg { w: e, room };
+    let base = c.active_qubits();
+    let ((), peak) = c.r3_peak(|c| match (mode, virtualized) {
+        (Mode::Push, false) => dec::push_borrow_amb(c, &io, &h, cfg, q0),
+        (Mode::Pop, false) => dec::pop_borrow_amb(c, &io, &h, cfg, q0),
+        (Mode::PushPop, false) => {
+            dec::push_borrow_amb(c, &io, &h, cfg, q0);
+            dec::pop_borrow_amb(c, &io, &h, cfg, q0);
+        }
+        (Mode::Push, true) => dec::push_virtual_d_amb_fixture(c, &io, &h, cfg, [q0, q1]),
+        (Mode::Pop, true) => dec::pop_virtual_d_amb_fixture(c, &io, &h, cfg, [q0, q1]),
+        (Mode::PushPop, true) => {
+            dec::push_virtual_d_amb_fixture(c, &io, &h, cfg, [q0, q1]);
+            dec::pop_virtual_d_amb_fixture(c, &io, &h, cfg, [q0, q1]);
+        }
+        (Mode::First, _) => unreachable!(),
+    });
+    assert_eq!(c.active_qubits(), base);
+    let mut ios = s;
+    ios.extend(r);
+    ios.push(en);
+    ios.push(typ);
+    ios.extend(h.wires);
+    ios.push(q0);
+    ios.push(q1);
+    let (nq, nb) = c.i13_dims();
+    BorrowBuilt { ops: c.take_ops(), nq, nb: nb + 1, io: ios, peak }
+}
+
+fn virtual_d_amb_exhaustive() -> bool {
+    std::env::set_var("HEO_RESEARCH", "1");
+    std::env::set_var("HEO_PHASE_REPORT", "1");
+    let mut cases = 0u64;
+    for e in 2usize..=6 {
+        let n = Window::new(e, e).n();
+        for room in [dec::min_room(true), dec::min_room(true) + n] {
+          for m in 0usize..=3 {
+            let nbits = 2 * e + 1 + 1 + m + 2;
+            let total = 1u64 << nbits;
+            cases += total * 3;
+            for mode in [Mode::Push, Mode::Pop, Mode::PushPop] {
+                let ordinary = build_virtual_d_amb_diff(e, room, m, mode, false);
+                let virtualized = build_virtual_d_amb_diff(e, room, m, mode, true);
+                for lo in (0..total).step_by(64) {
+                    let hi = (lo + 64).min(total);
+                    let tag = format!("virtual-da-{e}-{room}-{mode:?}-{lo}");
+                    let mut ro = xof(tag.as_bytes());
+                    let mut rv = xof(tag.as_bytes());
+                    let mut so = Simulator::new(ordinary.nq, ordinary.nb, &mut ro);
+                    let mut sv = Simulator::new(virtualized.nq, virtualized.nb, &mut rv);
+                    for (bit, (&qo, &qv)) in ordinary.io.iter().zip(&virtualized.io).enumerate() {
+                        let mut word = 0u64;
+                        for case in lo..hi {
+                            if (case >> bit) & 1 == 1 { word |= 1u64 << (case - lo); }
+                        }
+                        *so.qubit_mut(qo) = word;
+                        *sv.qubit_mut(qv) = word;
+                    }
+                    so.apply_iter(ordinary.ops.iter());
+                    sv.apply_iter(virtualized.ops.iter());
+                    let live = if hi - lo == 64 { u64::MAX } else { (1u64 << (hi - lo)) - 1 };
+                    assert_eq!(so.phase & live, sv.phase & live,
+                        "virtual D/amb phase e={e} room={room} mode={mode:?} lo={lo}");
+                    for (&qo, &qv) in ordinary.io.iter().zip(&virtualized.io) {
+                        assert_eq!((so.qubit(qo) ^ sv.qubit(qv)) & live, 0,
+                            "virtual D/amb state e={e} room={room} mode={mode:?} lo={lo}");
+                    }
+                    let mut go = 0u64;
+                    let mut gv = 0u64;
+                    for q in 0..ordinary.nq {
+                        if !ordinary.io.iter().any(|x| x.0 as usize == q) { go |= so.qubits[q] & live; }
+                    }
+                    for q in 0..virtualized.nq {
+                        if !virtualized.io.iter().any(|x| x.0 as usize == q) { gv |= sv.qubits[q] & live; }
+                    }
+                    assert_eq!(go, 0);
+                    assert_eq!(gv, 0);
+                }
+                println!(
+                    "{{\"kind\":\"skycof-decoder-virtual-d-amb\",\"e\":{e},\"room\":{room},\"m\":{m},\"mode\":\"{mode:?}\",\"cases\":{total},\"ordinary_peak\":{},\"virtual_peak\":{},\"result\":\"PASS\"}}",
+                    ordinary.peak, virtualized.peak
+                );
+            }
+          }
+        }
+    }
+    println!(
+        "{{\"kind\":\"skycof-decoder-virtual-d-amb-summary\",\"cases\":{cases},\"result\":\"PASS\"}}"
+    );
+    true
+}
+
+fn build_virtual_d_fresh_amb_diff(
+    e: usize,
+    room: usize,
+    m: usize,
+    mode: Mode,
+    optimized: bool,
+) -> BorrowBuilt {
+    let mut c = Builder::new();
+    let s = c.alloc_qubits(e);
+    let r = c.alloc_qubits(e);
+    let en = c.alloc_qubit();
+    let typ = c.alloc_qubit();
+    let mut h = Hreg::new();
+    h.grow_to(&mut c, m);
+    let dirty = c.alloc_qubit();
+    let io = TickIo { s: &s, r: &r, e, en: Some(en), typ, cflag: None, park: None };
+    let cfg = DecCfg { w: e, room };
+    let base = c.active_qubits();
+    let ((), peak) = c.r3_peak(|c| match (mode, optimized) {
+        (Mode::Push, false) => dec::push(c, &io, &h, cfg),
+        (Mode::Pop, false) => dec::pop(c, &io, &h, cfg),
+        (Mode::PushPop, false) => {
+            dec::push(c, &io, &h, cfg);
+            dec::pop(c, &io, &h, cfg);
+        }
+        (Mode::Push, true) => dec::push_virtual_d_fresh_amb_fixture(c, &io, &h, cfg, dirty),
+        (Mode::Pop, true) => dec::pop_virtual_d_fresh_amb_fixture(c, &io, &h, cfg, dirty),
+        (Mode::PushPop, true) => {
+            dec::push_virtual_d_fresh_amb_fixture(c, &io, &h, cfg, dirty);
+            dec::pop_virtual_d_fresh_amb_fixture(c, &io, &h, cfg, dirty);
+        }
+        (Mode::First, _) => unreachable!(),
+    });
+    assert_eq!(c.active_qubits(), base);
+    let mut ios = s;
+    ios.extend(r);
+    ios.push(en);
+    ios.push(typ);
+    ios.extend(h.wires);
+    ios.push(dirty);
+    let (nq, nb) = c.i13_dims();
+    BorrowBuilt { ops: c.take_ops(), nq, nb: nb + 1, io: ios, peak }
+}
+
+fn virtual_d_fresh_amb_exhaustive() -> bool {
+    std::env::set_var("HEO_RESEARCH", "1");
+    std::env::set_var("HEO_PHASE_REPORT", "1");
+    let mut cases = 0u64;
+    for e in 2usize..=6 {
+        let n = Window::new(e, e).n();
+        for room in [dec::min_room(true), dec::min_room(true) + n] {
+          for m in 0usize..=3 {
+            let nbits = 2 * e + 1 + 1 + m + 1;
+            let total = 1u64 << nbits;
+            cases += total * 3;
+            for mode in [Mode::Push, Mode::Pop, Mode::PushPop] {
+                let ordinary = build_virtual_d_fresh_amb_diff(e, room, m, mode, false);
+                let optimized = build_virtual_d_fresh_amb_diff(e, room, m, mode, true);
+                assert_eq!(optimized.peak + 1, ordinary.peak,
+                    "R8 peak delta e={e} room={room} m={m} mode={mode:?}");
+                for lo in (0..total).step_by(64) {
+                    let hi = (lo + 64).min(total);
+                    let tag = format!("r8-fresh-amb-{e}-{room}-{m}-{mode:?}-{lo}");
+                    let mut ro = xof(tag.as_bytes());
+                    let mut rv = xof(tag.as_bytes());
+                    let mut so = Simulator::new(ordinary.nq, ordinary.nb, &mut ro);
+                    let mut sv = Simulator::new(optimized.nq, optimized.nb, &mut rv);
+                    for (bit, (&qo, &qv)) in ordinary.io.iter().zip(&optimized.io).enumerate() {
+                        let mut word = 0u64;
+                        for case in lo..hi {
+                            if (case >> bit) & 1 == 1 { word |= 1u64 << (case - lo); }
+                        }
+                        *so.qubit_mut(qo) = word;
+                        *sv.qubit_mut(qv) = word;
+                    }
+                    so.apply_iter(ordinary.ops.iter());
+                    sv.apply_iter(optimized.ops.iter());
+                    let live = if hi - lo == 64 { u64::MAX } else { (1u64 << (hi - lo)) - 1 };
+                    assert_eq!(so.phase & live, sv.phase & live,
+                        "R8 phase e={e} room={room} m={m} mode={mode:?} lo={lo}");
+                    for (&qo, &qv) in ordinary.io.iter().zip(&optimized.io) {
+                        assert_eq!((so.qubit(qo) ^ sv.qubit(qv)) & live, 0,
+                            "R8 state e={e} room={room} m={m} mode={mode:?} lo={lo}");
+                    }
+                    let mut go = 0u64;
+                    let mut gv = 0u64;
+                    for q in 0..ordinary.nq {
+                        if !ordinary.io.iter().any(|x| x.0 as usize == q) { go |= so.qubits[q] & live; }
+                    }
+                    for q in 0..optimized.nq {
+                        if !optimized.io.iter().any(|x| x.0 as usize == q) { gv |= sv.qubits[q] & live; }
+                    }
+                    assert_eq!(go, 0, "ordinary R8 reference garbage");
+                    assert_eq!(gv, 0, "R8 optimized garbage");
+                }
+            }
+          }
+        }
+    }
+    println!(
+        "{{\"kind\":\"skycof-decoder-r8-fresh-amb-summary\",\"e_min\":2,\"e_max\":6,\"h_min\":0,\"h_max\":3,\"cases\":{cases},\"result\":\"PASS\"}}"
+    );
+    true
+}
+
+fn build_r7_r8_production(m: usize, r8: bool) -> BorrowBuilt {
+    let mut c = Builder::new();
+    let s = c.alloc_qubits(256);
+    let r = c.alloc_qubits(256);
+    let en = c.alloc_qubit();
+    let typ = c.alloc_qubit();
+    let mut h = Hreg::new();
+    h.grow_to(&mut c, m);
+    let q0 = c.alloc_qubit();
+    let q1 = c.alloc_qubit();
+    let io = TickIo { s: &s, r: &r, e: 256, en: Some(en), typ, cflag: None, park: None };
+    let cfg = DecCfg { w: 64, room: dec::min_room(true) };
+    let base = c.active_qubits();
+    let ((), peak) = c.r3_peak(|c| {
+        if r8 {
+            dec::push_virtual_d_fresh_amb_fixture(c, &io, &h, cfg, q0)
+        } else {
+            dec::push_virtual_d_amb_fixture(c, &io, &h, cfg, [q0, q1])
+        }
+    });
+    assert_eq!(c.active_qubits(), base);
+    let mut ios = s;
+    ios.extend(r);
+    ios.push(en);
+    ios.push(typ);
+    ios.extend(h.wires);
+    ios.push(q0);
+    ios.push(q1);
+    let (nq, nb) = c.i13_dims();
+    BorrowBuilt { ops: c.take_ops(), nq, nb: nb + 1, io: ios, peak }
+}
+
+fn r7_r8_production_differential() -> bool {
+    fn next(seed: &mut u64) -> u64 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        *seed
+    }
+    for m in [167usize, 171, 175] {
+        let r7 = build_r7_r8_production(m, false);
+        let r8 = build_r7_r8_production(m, true);
+        assert_eq!(r8.peak, r7.peak + 1, "R8 production peak delta H={m}");
+        let t7 = ccx_count(&r7.ops);
+        let t8 = ccx_count(&r8.ops);
+        assert_eq!(t7 - t8, 7 * m - 4, "R8 production T delta H={m}");
+        let mut rr7 = xof(format!("r7-r8-prod-{m}").as_bytes());
+        let mut rr8 = xof(format!("r7-r8-prod-{m}").as_bytes());
+        let mut s7 = Simulator::new(r7.nq, r7.nb, &mut rr7);
+        let mut s8 = Simulator::new(r8.nq, r8.nb, &mut rr8);
+        let mut seed = 0x5238_0000_0000_0000u64 ^ m as u64;
+        for (i, (&q7, &q8)) in r7.io.iter().zip(&r8.io).enumerate() {
+            let word = match i {
+                0 => 0,
+                1 => u64::MAX,
+                2 => 0xAAAA_AAAA_AAAA_AAAA,
+                3 => 0xCCCC_CCCC_CCCC_CCCC,
+                4 => 0xF0F0_F0F0_F0F0_F0F0,
+                _ => next(&mut seed),
+            };
+            *s7.qubit_mut(q7) = word;
+            *s8.qubit_mut(q8) = word;
+        }
+        s7.apply_iter(r7.ops.iter());
+        s8.apply_iter(r8.ops.iter());
+        assert_eq!(s7.phase, s8.phase, "R7/R8 production phase H={m}");
+        for (&q7, &q8) in r7.io.iter().zip(&r8.io) {
+            assert_eq!(s7.qubit(q7), s8.qubit(q8), "R7/R8 production state H={m}");
+        }
+        let mut g7 = 0u64;
+        let mut g8 = 0u64;
+        for q in 0..r7.nq {
+            if !r7.io.iter().any(|x| x.0 as usize == q) { g7 |= s7.qubits[q]; }
+        }
+        for q in 0..r8.nq {
+            if !r8.io.iter().any(|x| x.0 as usize == q) { g8 |= s8.qubits[q]; }
+        }
+        assert_eq!(g7, 0, "R7 production garbage H={m}");
+        assert_eq!(g8, 0, "R8 production garbage H={m}");
+        println!(
+            "{{\"kind\":\"skycof-decoder-r7-r8-production\",\"H\":{m},\"cases\":64,\"r7_peak\":{},\"r8_peak\":{},\"r7_T\":{t7},\"r8_T\":{t8},\"delta_T\":{},\"result\":\"PASS\"}}",
+            r7.peak, r8.peak, t7 - t8
+        );
+    }
     true
 }
 
@@ -1685,6 +2098,24 @@ pub fn run() {
     let which = env_str("SKYCOF_DEC_SELFTEST", "all");
     if which == "borrow-amb" {
         if !borrow_amb_exhaustive() {
+            std::process::exit(1);
+        }
+        return;
+    }
+    if which == "r0-d" {
+        if !r0_d_exhaustive() {
+            std::process::exit(1);
+        }
+        return;
+    }
+    if which == "virtual-d-amb" {
+        if !virtual_d_amb_exhaustive() {
+            std::process::exit(1);
+        }
+        return;
+    }
+    if which == "r8-fresh-amb" {
+        if !virtual_d_fresh_amb_exhaustive() || !r7_r8_production_differential() {
             std::process::exit(1);
         }
         return;

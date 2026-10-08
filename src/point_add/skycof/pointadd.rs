@@ -55,7 +55,7 @@ fn knob_usize(name: &str, default: usize) -> usize {
 }
 
 /// Source defaults.
-pub const CAP: usize = 1044;
+pub const CAP: usize = 1040;
 pub const R: usize = 404;
 pub const PARK_J: usize = 14;
 pub const W_DEC: usize = 64;
@@ -97,7 +97,7 @@ pub fn effective_mm_role_windows() -> [(usize, usize); 4] {
         ),
         (
             knob_usize("SKYCOF_MM5_GUARD", 24),
-            knob_usize("SKYCOF_MM5_CMPW", 28),
+            knob_usize("SKYCOF_MM5_CMPW", 30),
         ),
     ]
 }
@@ -354,6 +354,7 @@ pub(crate) fn place(c: &mut Builder, cur_x: Vec<Q>, cur_y: Vec<Q>, want_x: &[Q],
 /// The SKY-COF candidate circuit.
 pub fn build_point_add() -> Vec<Op> {
     let _ = params();
+    walk::reset_r8_dispatch_counts();
     let circ = &mut Builder::new();
     let x: Vec<Q> = circ.alloc_qubits(N);
     let y: Vec<Q> = circ.alloc_qubits(N);
@@ -373,6 +374,7 @@ pub fn build_point_add() -> Vec<Op> {
     sub_square(circ, &x1, &y1);
 
     let (x2, y2) = mul_leg(circ, x1, y1);
+    walk::assert_r8_dispatch_counts();
 
     circ.set_phase("coord_y_sub_final");
     coord_sub(circ, &y2, &oy);

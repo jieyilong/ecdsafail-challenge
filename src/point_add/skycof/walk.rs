@@ -105,7 +105,7 @@ impl Envelope {
                 std::fs::read_to_string(&path)
                     .unwrap_or_else(|e| panic!("read SKYCOF_MICROPHASE_TABLE={path}: {e}")),
             ),
-            None => Some(include_str!("micro_widths_q1044_hcut4.tsv").to_owned()),
+            None => Some(include_str!("micro_widths_q1040_health_repair.tsv").to_owned()),
         };
         if let Some(table) = micro_table {
             assert_eq!(r, 404, "microphase table is frozen for R404");
@@ -360,11 +360,25 @@ fn odo_view<'a>(p: &WalkParams, cof: &'a Cof, owned: &'a [Q]) -> &'a [Q] {
 /// direction this turns known prime bits into zero counter storage. In the
 /// inverse direction it restores the full prime before the park cofactor
 /// update is undone. Erase g while typ is still unchanged.
-fn ghost_odo_prime_xor(c: &mut Builder, p: &WalkParams, cof: &Cof, z: Q, typ: Q) {
+fn ghost_odo_prime_xor(
+    c: &mut Builder,
+    p: &WalkParams,
+    cof: &Cof,
+    z: Q,
+    typ: Q,
+    host_r0: bool,
+) {
     if !ghost_odo() {
         return;
     }
-    let g = c.alloc_qubit();
+    let g = if host_r0 {
+        let r0 = cof.r[0];
+        assert!(r0 != z && r0 != typ);
+        c.x(r0);
+        r0
+    } else {
+        c.alloc_qubit()
+    };
     c.x(typ);
     c.ccx(z, typ, g);
     c.x(typ);
@@ -379,7 +393,11 @@ fn ghost_odo_prime_xor(c: &mut Builder, p: &WalkParams, cof: &Cof, z: Q, typ: Q)
     c.z_if(z, m);
     c.cz_if(z, typ, m);
     c.free_bit(m);
-    c.release_clean(g);
+    if host_r0 {
+        c.x(g);
+    } else {
+        c.release_clean(g);
+    }
 }
 
 fn knob_on_by_default(name: &str) -> bool {
@@ -391,7 +409,11 @@ fn knob_on_by_default(name: &str) -> bool {
 /// Post-rail the two low bits have opposite parity.  During decoder/odometer
 /// work neither rail is read, so turn r2[0] into a clean temporary owner and
 /// restore the exact physical ID before rail execution resumes.
-fn with_rail_parity_loan<R>(c: &mut Builder, rails: &Rails, body: impl FnOnce(&mut Builder) -> R) -> R {
+pub(crate) fn with_rail_parity_loan<R>(
+    c: &mut Builder,
+    rails: &Rails,
+    body: impl FnOnce(&mut Builder) -> R,
+) -> R {
     if !knob_on_by_default("SKYCOF_RAIL_PARITY_LOAN") {
         return body(c);
     }
@@ -862,14 +884,71 @@ fn dec_cfg(c: &Builder, p: &WalkParams, e: usize, en: bool) -> DecCfg {
 
 fn borrow_amb_disposal(t1: usize) -> bool {
     super::pointadd::knob("SKYCOF_DEC_BORROW_AMB")
+        .unwrap_or_else(|| "320,321,322,323,324,331,332,334,336,337".to_owned())
+        .split(',')
+        .any(|x| x.trim().parse::<usize>() == Ok(t1))
+}
+
+/// On the exact binding clamp calls, start the already-proved rail-parity loan
+/// before materializing ParkTest instead of after it. ParkTest/odometer/decoder
+/// do not read either rail, so the released physical ID may host the predicate
+/// root and is restored before rail execution resumes.
+fn parity_park_disposal(t1: usize) -> bool {
+    super::pointadd::knob("SKYCOF_PARK_PARITY_LOAN")
         .unwrap_or_else(|| "320,321,322,323,331".to_owned())
         .split(',')
         .any(|x| x.trim().parse::<usize>() == Ok(t1))
 }
 
+fn ghost_r0_host_disposal(t1: usize) -> bool {
+    super::pointadd::knob("SKYCOF_GHOST_R0_HOST")
+        .unwrap_or_else(|| {
+            "320,321,322,323,324,327,328,329,330,331,332,334,336,337".to_owned()
+        })
+        .split(',')
+        .any(|x| x.trim().parse::<usize>() == Ok(t1))
+}
+
+fn virtual_d_amb_disposal(t1: usize) -> bool {
+    super::pointadd::knob("SKYCOF_VIRTUAL_D_AMB")
+        .unwrap_or_else(|| "320,321,322,323,324,327,328,329,330,332,334,336,337".to_owned())
+        .split(',')
+        .any(|x| x.trim().parse::<usize>() == Ok(t1))
+}
+
+fn virtual_d_fresh_amb_fwd_disposal(t1: usize) -> bool {
+    super::pointadd::knob("SKYCOF_VIRTUAL_D_FRESH_AMB_FWD")
+        .unwrap_or_else(|| "324,332,334".to_owned())
+        .split(',')
+        .any(|x| x.trim().parse::<usize>() == Ok(t1))
+}
+
+static R8_FWD_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static R8_REV_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub(crate) fn reset_r8_dispatch_counts() {
+    use std::sync::atomic::Ordering;
+    R8_FWD_CALLS.store(0, Ordering::Relaxed);
+    R8_REV_CALLS.store(0, Ordering::Relaxed);
+}
+
+pub(crate) fn assert_r8_dispatch_counts() {
+    use std::sync::atomic::Ordering;
+    let fwd = R8_FWD_CALLS.load(Ordering::Relaxed);
+    let rev = R8_REV_CALLS.load(Ordering::Relaxed);
+    eprintln!("SKYCOF_R8_DISPATCH forward={fwd} reverse={rev}");
+    assert_eq!((fwd, rev), (6, 0), "R8 dispatcher count drift");
+}
+
+fn post318_constant_loan() -> bool {
+    super::pointadd::knob("SKYCOF_T318_POST_LOAN")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false)
+}
+
 fn recycle_cofzero_tick(t: usize) -> bool {
     super::pointadd::knob("SKYCOF_REV_COFZERO")
-        .unwrap_or_else(|| "322".to_owned())
+        .unwrap_or_else(|| "321,322,323,328,334".to_owned())
         .split(',')
         .any(|x| x.trim().parse::<usize>() == Ok(t))
 }
@@ -902,16 +981,20 @@ fn dispose_fwd(
     h: &mut Hreg,
     odo: &[Q],
     borrower: Option<Q>,
+    constant_loans: Option<[Q; 2]>,
 ) {
     h.grow_to(c, env.h[t1]);
+    let mut typ_released = false;
     if t1 == 0 {
         with_rail_parity_loan(c, rails, |c| dec::first_tick(c, &cof.s, typ, None));
     } else if env.cof[t1] == CLAMP {
         trace_step(c, "pre-park");
-        let zt = ParkTest::compute(c, &cof.r, &cof.s, p.park_j, p.cap);
-        trace_step(c, "parktest");
-        with_rail_parity_loan(c, rails, |c| {
-            ghost_odo_prime_xor(c, p, cof, zt.z, typ);
+        let wide_loan = parity_park_disposal(t1);
+        let run = |c: &mut Builder| {
+          let zt = ParkTest::compute(c, &cof.r, &cof.s, p.park_j, p.cap);
+          trace_step(c, "parktest");
+          let body = |c: &mut Builder| {
+            ghost_odo_prime_xor(c, p, cof, zt.z, typ, ghost_r0_host_disposal(t1));
             let ov = odo_view(p, cof, odo);
             with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
                 odo_fwd(c, zt.z, typ, ov, &cof.s, p.cap)
@@ -928,7 +1011,33 @@ fn dispose_fwd(
                 cflag: None,
                 park: None,
             };
-            if borrow_amb_disposal(t1) {
+            if virtual_d_fresh_amb_fwd_disposal(t1) {
+                assert!(virtual_d_amb_disposal(t1), "R8 must replace an existing R7 call");
+                assert_eq!(p.cap, 1040);
+                assert_eq!(env.cof[t1], CLAMP);
+                assert_eq!(cfg.room, dec::min_room(true), "R8 requires floor room");
+                assert_eq!(c.tracked_condition_depth(), Some(0));
+                let dirty = rails.r1[1];
+                assert!(dirty != rails.r1[0] && !rails.r2.contains(&dirty));
+                assert!(dirty != zt.z && dirty != typ);
+                assert!(!cof.s.contains(&dirty) && !cof.r.contains(&dirty));
+                assert!(!h.wires.contains(&dirty) && !odo.contains(&dirty));
+                let live = c.active_qubits();
+                assert!(live <= 1039, "R8 entry has no fresh-amb room: {live}");
+                let ((), peak) = c.r3_peak(|c| {
+                    dec::push_virtual_d_fresh_amb_fixture(c, &io, h, cfg, dirty)
+                });
+                assert_eq!(c.active_qubits(), live, "R8 forward leaked an owner");
+                assert!(peak <= 1040, "R8 forward peak {peak}");
+                R8_FWD_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            } else if virtual_d_amb_disposal(t1) && cfg.room == dec::min_room(true) {
+                let dirty = [rails.r1[1], rails.r2[1]];
+                assert_ne!(dirty[0], dirty[1]);
+                assert_eq!(cfg.room, dec::min_room(true), "R7 binding room changed");
+                let live = c.active_qubits();
+                dec::push_virtual_d_amb_fixture(c, &io, h, cfg, dirty);
+                assert_eq!(c.active_qubits(), live, "R7 forward allocated an owner");
+            } else if borrow_amb_disposal(t1) {
                 let q = borrower.expect("binding decoder needs current-tick isc borrower");
                 dec::push_borrow_amb(c, &io, h, cfg, q);
             } else {
@@ -936,9 +1045,20 @@ fn dispose_fwd(
             }
             trace_step(c, "dec");
             c.x(zt.z);
-        });
-        zt.uncompute(c);
-        trace_step(c, "unpark");
+          };
+          if wide_loan {
+              body(c);
+          } else {
+              with_rail_parity_loan(c, rails, body);
+          }
+          zt.uncompute(c);
+          trace_step(c, "unpark");
+        };
+        if wide_loan {
+            with_rail_parity_loan(c, rails, run);
+        } else {
+            run(c);
+        }
     } else {
         let io = TickIo {
             s: &cof.s,
@@ -949,12 +1069,54 @@ fn dispose_fwd(
             cflag: None,
             park: None,
         };
-        with_rail_parity_loan(c, rails, |c| {
+        let mut body = |c: &mut Builder| {
+            if let Some([qs, qr]) = constant_loans {
+                assert!(borrower != Some(qs) && borrower != Some(qr));
+                assert!(typ != qs && typ != qr);
+                assert!(!rails.r1.contains(&qs) && !rails.r2.contains(&qs));
+                assert!(!rails.r1.contains(&qr) && !rails.r2.contains(&qr));
+                assert!(!h.wires.contains(&qs) && !h.wires.contains(&qr));
+                assert!(!odo.contains(&qs) && !odo.contains(&qr));
+                let live = c.active_qubits();
+                c.reacquire(qs);
+                c.reacquire(qr);
+                c.x(qr);
+                c.set_avoid(&[]);
+                assert_eq!(c.active_qubits(), live + 2, "R3 repayment count");
+            }
             let cfg = dec_cfg(c, p, env.cof[t1], false);
-            dec::push(c, &io, h, cfg)
-        });
+            if borrow_amb_disposal(t1) {
+                let q = borrower.expect("binding decoder needs current-tick isc borrower");
+                dec::push_borrow_amb(c, &io, h, cfg, q)
+            } else {
+                dec::push(c, &io, h, cfg)
+            }
+            if constant_loans.is_some() {
+                c.release_clean(typ);
+                typ_released = true;
+            }
+        };
+        if constant_loans.is_some() {
+            let (a, q) = (rails.r1[0], rails.r2[0]);
+            assert_ne!(a, q);
+            assert_eq!(c.tracked_condition_depth(), Some(0));
+            let live = c.active_qubits();
+            c.cx(a, q);
+            c.x(q);
+            c.release_clean(q);
+            body(c);
+            assert_eq!(c.active_qubits(), live, "R3 decoder repayment/typ balance");
+            c.reacquire(q);
+            c.x(q);
+            c.cx(a, q);
+            assert_eq!(c.active_qubits(), live + 1, "R3 decoder final live delta");
+        } else {
+            with_rail_parity_loan(c, rails, body);
+        }
     }
-    c.release_clean(typ);
+    if !typ_released {
+        c.release_clean(typ);
+    }
 }
 
 /// Reverse: re-create the letter of tick `t1` (exact inverse of [`dispose_fwd`]).
@@ -975,8 +1137,10 @@ fn dispose_rev(
     if t1 == 0 {
         with_rail_parity_loan(c, rails, |c| dec::first_tick(c, &cof.s, typ, None));
     } else if env.cof[t1] == CLAMP {
-        let zt = ParkTest::compute(c, &cof.r, &cof.s, p.park_j, p.cap);
-        with_rail_parity_loan(c, rails, |c| {
+        let wide_loan = parity_park_disposal(t1);
+        let run = |c: &mut Builder| {
+          let zt = ParkTest::compute(c, &cof.r, &cof.s, p.park_j, p.cap);
+          let body = |c: &mut Builder| {
             c.x(zt.z);
             let cfg = dec_cfg(c, p, env.cof[t1], true);
             let io = TickIo {
@@ -988,7 +1152,14 @@ fn dispose_rev(
                 cflag: None,
                 park: None,
             };
-            if borrow_amb_disposal(t1) {
+            if virtual_d_amb_disposal(t1) && cfg.room == dec::min_room(true) {
+                let dirty = [rails.r1[1], rails.r2[1]];
+                assert_ne!(dirty[0], dirty[1]);
+                assert_eq!(cfg.room, dec::min_room(true), "R7 binding room changed");
+                let live = c.active_qubits();
+                dec::pop_virtual_d_amb_fixture(c, &io, h, cfg, dirty);
+                assert_eq!(c.active_qubits(), live, "R7 reverse allocated an owner");
+            } else if borrow_amb_disposal(t1) {
                 let q = borrower.expect("binding decoder needs current-tick isc borrower");
                 dec::pop_borrow_amb(c, &io, h, cfg, q);
             } else {
@@ -999,9 +1170,20 @@ fn dispose_rev(
             with_odo_r0_loan(c, cof.r[0], zt.z, typ, ov, |c| {
                 odo_rev(c, zt.z, typ, ov, &cof.s, p.cap)
             });
-            ghost_odo_prime_xor(c, p, cof, zt.z, typ);
-        });
-        zt.uncompute(c);
+            ghost_odo_prime_xor(c, p, cof, zt.z, typ, ghost_r0_host_disposal(t1));
+          };
+          if wide_loan {
+              body(c);
+          } else {
+              with_rail_parity_loan(c, rails, body);
+          }
+          zt.uncompute(c);
+        };
+        if wide_loan {
+            with_rail_parity_loan(c, rails, run);
+        } else {
+            run(c);
+        }
     } else {
         let io = TickIo {
             s: &cof.s,
@@ -1116,6 +1298,7 @@ impl ActiveWalk {
 
 fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut ActiveWalk, end: usize) {
     assert!(st.next_t <= end && end <= p.r);
+    let mut constant_loans: Option<[Q; 2]> = None;
     for t in st.next_t..end {
         let w = env.widths(t);
         st.prev.push(PrevWidths {
@@ -1125,15 +1308,38 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
         });
         trace_step(c, "tick-start");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
-        let (typ_t, isc, _) = tick::rail_fwd_micro(
-            c,
-            &mut st.rails,
-            st.typ,
-            &w,
-            Some(p.cap),
-            Some(st.cof.r[0]),
-            Some(t),
-        );
+        let (typ_t, isc, _) = if t == 319 {
+            if let Some(loans) = constant_loans {
+                tick::rail_fwd_micro_signext_loans(
+                    c,
+                    &mut st.rails,
+                    st.typ,
+                    &w,
+                    Some(p.cap),
+                    loans,
+                )
+            } else {
+                tick::rail_fwd_micro(
+                    c,
+                    &mut st.rails,
+                    st.typ,
+                    &w,
+                    Some(p.cap),
+                    Some(st.cof.r[0]),
+                    Some(t),
+                )
+            }
+        } else {
+            tick::rail_fwd_micro(
+                c,
+                &mut st.rails,
+                st.typ,
+                &w,
+                Some(p.cap),
+                Some(st.cof.r[0]),
+                Some(t),
+            )
+        };
         trace_cost(c, "fwd", t, "rail", t0);
         trace_step(c, "rail");
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
@@ -1149,7 +1355,12 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
                 &mut st.h,
                 &st.odo,
                 Some(isc),
+                constant_loans,
             );
+            if constant_loans.is_some() {
+                assert_eq!(t, 319, "R3 constants repaid at wrong tick");
+                constant_loans = None;
+            }
         }
         trace_cost(c, "fwd", t, "decoder", t0);
         trace_step(c, "dispose");
@@ -1167,6 +1378,20 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
         };
         trace_cost(c, "fwd", t, "erase_fold", t0);
         st.tops.push(fate);
+        if t == 318 && end > 319 && post318_constant_loan() {
+            assert_eq!(fate, TopFate::None, "R3 tick318 crossed a fold");
+            assert_eq!(st.tops.get(317), Some(&TopFate::None));
+            let qs = st.cof.s[0];
+            let qr = st.cof.r[0];
+            assert_ne!(qs, qr);
+            assert!(!st.rails.r1.contains(&qs) && !st.rails.r2.contains(&qs));
+            assert!(!st.rails.r1.contains(&qr) && !st.rails.r2.contains(&qr));
+            c.release_clean(qs);
+            c.x(qr);
+            c.release_clean(qr);
+            c.set_avoid(&[qs, qr]);
+            constant_loans = Some([qs, qr]);
+        }
         st.typ = Some(typ_t);
         st.next_t = t + 1;
         trace_tick(c, "fwd", t);
@@ -1180,6 +1405,7 @@ fn forward_ticks(c: &mut Builder, p: &WalkParams, env: &Envelope, st: &mut Activ
             st.typ,
         );
     }
+    assert!(constant_loans.is_none(), "R3 constants left parked across a public cut");
 }
 
 /// Execute the exact public-layout prefix and stop at `cut` before tick
@@ -1238,6 +1464,7 @@ pub fn forward_from(c: &mut Builder, p: &WalkParams, env: &Envelope, mut st: Act
         &cof,
         &mut h,
         &odo,
+        None,
         None,
     );
     // parked rails (R1, R2) = (0, 1) and r = p: classical constants
@@ -1309,6 +1536,10 @@ pub fn backward_from_active(
     let mut typ = typ.expect("nonempty prefix has a current type bit");
     for t in (0..next_t).rev() {
         let w = env.widths(t);
+        if t == 328 && recycle_cofzero_tick(t) {
+            assert_eq!(tops[t], TopFate::Folded, "tick328 role order requires unfold first");
+            assert!(w.post_r1 < w.wad, "tick328 sign-extension host geometry drifted");
+        }
         match tops[t] {
             TopFate::Folded => unfold(c, &mut cof, p),
             TopFate::Freed => {
@@ -1419,6 +1650,10 @@ pub fn backward(c: &mut Builder, p: &WalkParams, env: &Envelope, pk: Parked) -> 
     let mut typ = dispose_rev(c, p, env, r - 1, &rails, &cof, &mut h, &odo, None);
     for t in (0..r).rev() {
         let w = env.widths(t);
+        if t == 328 && recycle_cofzero_tick(t) {
+            assert_eq!(tops[t], TopFate::Folded, "tick328 role order requires unfold first");
+            assert!(w.post_r1 < w.wad, "tick328 sign-extension host geometry drifted");
+        }
         let t0 = c.report_totals().map_or(0.0, |x| x.1);
         match tops[t] {
             TopFate::Folded => unfold(c, &mut cof, p),

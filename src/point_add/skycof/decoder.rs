@@ -216,6 +216,8 @@ pub struct BorrowScope {
     win: Window,
     j: usize,
     pub d: Q,
+    d_fresh: bool,
+    d_r0_host: bool,
     pub ge: Q,
     gid: Vec<Q>,
     a: Vec<Q>,
@@ -235,12 +237,116 @@ impl BorrowScope {
     }
 }
 
+struct GeScope {
+    win: Window,
+    j: usize,
+    ge: Q,
+    gid: Vec<Q>,
+    a: Vec<Q>,
+    bb: Vec<Q>,
+    r0: Q,
+}
+
+impl GeScope {
+    fn cin(&self, i: usize) -> Q {
+        if i == 0 { self.r0 } else if i <= self.j { self.gid[i - 1] } else { self.a[i - 1] }
+    }
+}
+
+fn open_ge_fixture(c: &mut Builder, io: &TickIo, cfg: DecCfg, dirty: &[Q; 2]) -> GeScope {
+    let win = Window::new(io.e, cfg.w);
+    let n = win.n();
+    let j = gidney_bits(n, cfg.room, true);
+    let a: Vec<Q> = (0..n).map(|i| io.r[win.lo + i]).collect();
+    let bb: Vec<Q> = (0..n)
+        .map(|i| if i + 1 < n { io.s[win.lo + 1 + i] } else { io.s[0] })
+        .collect();
+    assert!(dirty.iter().all(|q| !io.s.contains(q) && !io.r.contains(q) && *q != io.typ));
+    c.x_all(&bb);
+    let mut sc = GeScope { win, j, ge: io.r[0], gid: Vec::with_capacity(j), a, bb, r0: io.r[0] };
+    for i in 0..j {
+        let ci = sc.cin(i);
+        c.cx(ci, sc.a[i]); c.cx(ci, sc.bb[i]);
+        let t = c.alloc_qubit();
+        c.ccx(sc.a[i], sc.bb[i], t); c.cx(ci, t);
+        sc.gid.push(t);
+    }
+    for i in j..n {
+        let ci = sc.cin(i);
+        c.cx(sc.a[i], sc.bb[i]); c.cx(sc.a[i], ci); c.ccx(ci, sc.bb[i], sc.a[i]);
+    }
+    sc.ge = if j == n { sc.gid[n - 1] } else { sc.a[n - 1] };
+    assert!(dirty[0] != sc.ge && dirty[1] != sc.ge);
+    sc
+}
+
+fn close_ge_fixture(c: &mut Builder, sc: GeScope) {
+    let n = sc.win.n();
+    for i in (sc.j..n).rev() {
+        let ci = sc.cin(i);
+        c.ccx(ci, sc.bb[i], sc.a[i]); c.cx(sc.a[i], ci); c.cx(sc.a[i], sc.bb[i]);
+    }
+    for i in (0..sc.j).rev() {
+        let ci = sc.cin(i);
+        let t = sc.gid[i];
+        c.cx(ci, t); meas_cz(c, t, sc.a[i], sc.bb[i]); c.cx(ci, sc.a[i]); c.cx(ci, sc.bb[i]);
+    }
+    c.x_all(&sc.bb);
+}
+
+fn dirty_mcx_fixture(c: &mut Builder, controls: &[Q], target: Q, dirty: &[Q; 2]) {
+    match controls.len() {
+        0 => c.x(target),
+        1 => c.cx(controls[0], target),
+        2 => c.ccx(controls[0], controls[1], target),
+        m => {
+            let d = &dirty[..m - 2];
+            assert!(m <= 4);
+            assert!(controls.iter().all(|q| *q != target && !d.contains(q)));
+            assert!(!d.contains(&target));
+            for bottom in [true, false] {
+                if bottom { c.ccx(controls[0], controls[1], d[0]); }
+                for i in 1..d.len() { c.ccx(d[i - 1], controls[i + 1], d[i]); }
+                c.ccx(*d.last().unwrap(), *controls.last().unwrap(), target);
+                for i in (1..d.len()).rev() { c.ccx(d[i - 1], controls[i + 1], d[i]); }
+                if bottom { c.ccx(controls[0], controls[1], d[0]); }
+            }
+        }
+    }
+}
+
+fn virtual_d_xor(c: &mut Builder, io: &TickIo, target: Q) {
+    let en = io.en.expect("virtual D requires enabled decoder");
+    c.x(io.s[1]); c.ccx(en, io.s[1], target); c.x(io.s[1]);
+}
+
+fn virtual_amb_xor(c: &mut Builder, io: &TickIo, ge: Q, target: Q, dirty: &[Q; 2]) {
+    let en = io.en.expect("virtual amb requires enabled decoder");
+    c.x(io.s[1]);
+    dirty_mcx_fixture(c, &[en, io.s[1], ge], target, dirty);
+    c.x(io.s[1]);
+}
+
+fn virtual_amb_fredkin(c: &mut Builder, io: &TickIo, ge: Q, x: Q, y: Q, dirty: &[Q; 2]) {
+    let en = io.en.expect("virtual amb requires enabled decoder");
+    c.cx(y, x);
+    c.x(io.s[1]);
+    dirty_mcx_fixture(c, &[en, io.s[1], ge, x], y, dirty);
+    c.x(io.s[1]);
+    c.cx(y, x);
+}
+
+fn mcx3_dirty(c: &mut Builder, a: Q, b: Q, d: Q, target: Q, dirty: Q) {
+    assert!(a != b && a != d && b != d);
+    assert!(target != a && target != b && target != d);
+    assert!(dirty != a && dirty != b && dirty != d && dirty != target);
+    c.ccx(a, b, dirty);
+    c.ccx(dirty, d, target);
+    c.ccx(a, b, dirty);
+    c.ccx(dirty, d, target);
+}
+
 fn assert_borrow_disjoint(io: &TickIo, h: &Hreg, q: Q) {
-    assert_eq!(
-        io.en.is_some(),
-        true,
-        "borrowed ambiguity requires enabled decoder"
-    );
     assert!(io.cflag.is_none(), "borrowed ambiguity cflag unsupported");
     assert!(io.park.is_none(), "borrowed ambiguity park unsupported");
     assert!(q != io.typ && io.en != Some(q));
@@ -260,13 +366,18 @@ fn open_borrow(c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg, q: Q) -> Bor
     let win = Window::new(io.e, cfg.w);
     assert!(io.s.len() >= io.e && io.r.len() >= io.e);
     let n = win.n();
-    let j = gidney_bits(n, cfg.room, true);
+    let j = gidney_bits(n, cfg.room, io.en.is_some());
     let s1 = io.s[1];
-    let en = io.en.unwrap();
-    let d = c.alloc_qubit();
-    c.x(s1);
-    c.ccx(en, s1, d);
-    c.x(s1);
+    let (d, d_fresh) = if let Some(en) = io.en {
+        let d = c.alloc_qubit();
+        c.x(s1);
+        c.ccx(en, s1, d);
+        c.x(s1);
+        (d, true)
+    } else {
+        c.x(s1);
+        (s1, false)
+    };
     let a: Vec<Q> = (0..n).map(|i| io.r[win.lo + i]).collect();
     let bb: Vec<Q> = (0..n)
         .map(|i| {
@@ -282,6 +393,8 @@ fn open_borrow(c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg, q: Q) -> Bor
         win,
         j,
         d,
+        d_fresh,
+        d_r0_host: false,
         ge: io.r[0],
         gid: Vec::with_capacity(j),
         a,
@@ -313,6 +426,14 @@ fn open_borrow(c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg, q: Q) -> Bor
 }
 
 fn close_borrow(c: &mut Builder, io: &TickIo, sc: BorrowScope) {
+    if sc.d_r0_host {
+        let s1 = io.s[1];
+        let en = io.en.expect("r0-hosted D requires enabled decoder");
+        c.x(s1);
+        c.ccx(en, s1, sc.r0);
+        c.x(s1);
+        c.x(sc.r0);
+    }
     let n = sc.win.n();
     for i in (sc.j..n).rev() {
         let ci = sc.cin(i);
@@ -330,14 +451,81 @@ fn close_borrow(c: &mut Builder, io: &TickIo, sc: BorrowScope) {
     }
     c.x_all(&sc.bb);
     let s1 = io.s[1];
-    let en = io.en.unwrap();
-    let m = c.alloc_bit();
-    c.hmr(sc.d, m);
+    if sc.d_fresh {
+        let en = io.en.unwrap();
+        let m = c.alloc_bit();
+        c.hmr(sc.d, m);
+        c.x(s1);
+        c.cz_if(en, s1, m);
+        c.x(s1);
+        c.free_bit(m);
+        c.release_clean(sc.d);
+    } else if !sc.d_r0_host {
+        c.x(s1);
+    }
+}
+
+/// Isolated R6-B fixture scope. Build the compare first with logical r0=1 as
+/// its carry seed, forcing at least the first carry to the non-mutating Gidney
+/// form. Once ge is held, turn the restored r0 owner into D=en&!s1. The close
+/// path restores r0=1 before unwinding the compare. Production dispatch does
+/// not call this API pending the R6 gate.
+fn open_borrow_r0_d(
+    c: &mut Builder,
+    io: &TickIo,
+    h: &Hreg,
+    cfg: DecCfg,
+    q: Q,
+) -> BorrowScope {
+    assert_borrow_disjoint(io, h, q);
+    let en = io.en.expect("r0-hosted D requires enabled decoder");
+    assert_eq!(c.tracked_condition_depth(), Some(0));
+    let win = Window::new(io.e, cfg.w);
+    assert!(io.s.len() >= io.e && io.r.len() >= io.e);
+    let n = win.n();
+    let j = n.min(cfg.room.saturating_sub(1).max(1));
+    let a: Vec<Q> = (0..n).map(|i| io.r[win.lo + i]).collect();
+    let bb: Vec<Q> = (0..n)
+        .map(|i| if i + 1 < n { io.s[win.lo + 1 + i] } else { io.s[0] })
+        .collect();
+    c.x_all(&bb);
+    let r0 = io.r[0];
+    assert!(q != r0 && io.typ != r0 && en != r0);
+    let mut sc = BorrowScope {
+        win,
+        j,
+        d: r0,
+        d_fresh: false,
+        d_r0_host: true,
+        ge: r0,
+        gid: Vec::with_capacity(j),
+        a,
+        bb,
+        r0,
+    };
+    for i in 0..j {
+        let ci = sc.cin(i);
+        c.cx(ci, sc.a[i]);
+        c.cx(ci, sc.bb[i]);
+        let t = c.alloc_qubit();
+        c.ccx(sc.a[i], sc.bb[i], t);
+        c.cx(ci, t);
+        sc.gid.push(t);
+    }
+    for i in j..n {
+        let ci = sc.cin(i);
+        c.cx(sc.a[i], sc.bb[i]);
+        c.cx(sc.a[i], ci);
+        c.ccx(ci, sc.bb[i], sc.a[i]);
+    }
+    sc.ge = if j == n { sc.gid[n - 1] } else { sc.a[n - 1] };
+    let s1 = io.s[1];
+    c.x(r0);
     c.x(s1);
-    c.cz_if(en, s1, m);
+    c.ccx(en, s1, r0);
     c.x(s1);
-    c.free_bit(m);
-    c.release_clean(sc.d);
+    assert!(q != sc.ge && r0 != sc.ge);
+    sc
 }
 
 /// Apply a Fredkin whose control is the virtual predicate `d & ge`, using an
@@ -569,6 +757,128 @@ pub fn pop_borrow_amb(c: &mut Builder, io: &TickIo, h: &Hreg, cfg: DecCfg, borro
     c.cx(sc.d, io.typ);
     shift_out_borrow(c, borrower, sc.d, sc.ge, io.typ, &h.wires);
     close_borrow(c, io, sc);
+}
+
+pub(crate) fn push_borrow_amb_r0_d_fixture(
+    c: &mut Builder,
+    io: &TickIo,
+    h: &Hreg,
+    cfg: DecCfg,
+    borrower: Q,
+) {
+    let sc = open_borrow_r0_d(c, io, h, cfg, borrower);
+    shift_in_borrow(c, borrower, sc.d, sc.ge, io.typ, &h.wires);
+    c.cx(sc.d, io.typ);
+    c.ccx(sc.d, sc.ge, io.typ);
+    close_borrow(c, io, sc);
+}
+
+pub(crate) fn pop_borrow_amb_r0_d_fixture(
+    c: &mut Builder,
+    io: &TickIo,
+    h: &Hreg,
+    cfg: DecCfg,
+    borrower: Q,
+) {
+    let sc = open_borrow_r0_d(c, io, h, cfg, borrower);
+    c.ccx(sc.d, sc.ge, io.typ);
+    c.cx(sc.d, io.typ);
+    shift_out_borrow(c, borrower, sc.d, sc.ge, io.typ, &h.wires);
+    close_borrow(c, io, sc);
+}
+
+pub(crate) fn push_virtual_d_amb_fixture(
+    c: &mut Builder,
+    io: &TickIo,
+    h: &Hreg,
+    cfg: DecCfg,
+    dirty: [Q; 2],
+) {
+    assert!(io.en.is_some() && io.cflag.is_none() && io.park.is_none());
+    assert!(dirty[0] != dirty[1]);
+    assert!(dirty.iter().all(|q| io.en != Some(*q) && !h.wires.contains(q)));
+    let sc = open_ge_fixture(c, io, cfg, &dirty);
+    for i in (1..h.wires.len()).rev() {
+        virtual_amb_fredkin(c, io, sc.ge, h.wires[i], h.wires[i - 1], &dirty);
+    }
+    if let Some(&h0) = h.wires.first() {
+        virtual_amb_fredkin(c, io, sc.ge, h0, io.typ, &dirty);
+    }
+    virtual_d_xor(c, io, io.typ);
+    virtual_amb_xor(c, io, sc.ge, io.typ, &dirty);
+    close_ge_fixture(c, sc);
+}
+
+pub(crate) fn pop_virtual_d_amb_fixture(
+    c: &mut Builder,
+    io: &TickIo,
+    h: &Hreg,
+    cfg: DecCfg,
+    dirty: [Q; 2],
+) {
+    assert!(io.en.is_some() && io.cflag.is_none() && io.park.is_none());
+    assert!(dirty[0] != dirty[1]);
+    assert!(dirty.iter().all(|q| io.en != Some(*q) && !h.wires.contains(q)));
+    let sc = open_ge_fixture(c, io, cfg, &dirty);
+    virtual_amb_xor(c, io, sc.ge, io.typ, &dirty);
+    virtual_d_xor(c, io, io.typ);
+    if let Some(&h0) = h.wires.first() {
+        virtual_amb_fredkin(c, io, sc.ge, h0, io.typ, &dirty);
+    }
+    for i in 1..h.wires.len() {
+        virtual_amb_fredkin(c, io, sc.ge, h.wires[i], h.wires[i - 1], &dirty);
+    }
+    close_ge_fixture(c, sc);
+}
+
+pub(crate) fn push_virtual_d_fresh_amb_fixture(
+    c: &mut Builder,
+    io: &TickIo,
+    h: &Hreg,
+    cfg: DecCfg,
+    dirty: Q,
+) {
+    let en = io.en.expect("R8 requires enabled decoder");
+    assert!(io.cflag.is_none() && io.park.is_none());
+    assert!(dirty != en && dirty != io.typ && !io.s.contains(&dirty)
+        && !io.r.contains(&dirty) && !h.wires.contains(&dirty));
+    let sc = open_ge_fixture(c, io, cfg, &[dirty, dirty]);
+    let amb = c.alloc_qubit();
+    assert!(amb != dirty && amb != en && amb != io.s[1] && amb != sc.ge && amb != io.typ);
+    c.x(io.s[1]);
+    mcx3_dirty(c, en, io.s[1], sc.ge, amb, dirty);
+    shift_in(c, amb, io.typ, &h.wires);
+    c.ccx(en, io.s[1], io.typ);
+    c.cx(amb, io.typ);
+    mcx3_dirty(c, en, io.s[1], sc.ge, amb, dirty);
+    c.x(io.s[1]);
+    c.release_clean(amb);
+    close_ge_fixture(c, sc);
+}
+
+pub(crate) fn pop_virtual_d_fresh_amb_fixture(
+    c: &mut Builder,
+    io: &TickIo,
+    h: &Hreg,
+    cfg: DecCfg,
+    dirty: Q,
+) {
+    let en = io.en.expect("R8 requires enabled decoder");
+    assert!(io.cflag.is_none() && io.park.is_none());
+    assert!(dirty != en && dirty != io.typ && !io.s.contains(&dirty)
+        && !io.r.contains(&dirty) && !h.wires.contains(&dirty));
+    let sc = open_ge_fixture(c, io, cfg, &[dirty, dirty]);
+    let amb = c.alloc_qubit();
+    assert!(amb != dirty && amb != en && amb != io.s[1] && amb != sc.ge && amb != io.typ);
+    c.x(io.s[1]);
+    mcx3_dirty(c, en, io.s[1], sc.ge, amb, dirty);
+    c.cx(amb, io.typ);
+    c.ccx(en, io.s[1], io.typ);
+    shift_out(c, amb, io.typ, &h.wires);
+    mcx3_dirty(c, en, io.s[1], sc.ge, amb, dirty);
+    c.x(io.s[1]);
+    c.release_clean(amb);
+    close_ge_fixture(c, sc);
 }
 
 /// Tick 0 (letters A or C only): `typ ^= !bit1(s)`, `cflag ^= bit1(s)`. Self-inverse, 0 CCX.
